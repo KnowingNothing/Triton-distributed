@@ -1,3 +1,4 @@
+# fmt: off
 from triton.backends.compiler import BaseBackend, GPUTarget
 from triton._C.libtriton import ir, passes, llvm, nvidia
 from triton.runtime.errors import PTXASError
@@ -370,6 +371,11 @@ class CUDABackend(BaseBackend):
         ret = re.sub(r'\.target sm_\d+', f'.target sm_{capability}', ret, flags=re.MULTILINE)
         # Remove the debug flag that prevents ptxas from optimizing the code
         ret = re.sub(r",\s*debug|debug,\s*", "", ret)
+
+        from triton_nvshmem import compiler_util
+        ret = compiler_util.patch_nvshmem_wrapper_externs(ret)
+        metadata["use_nvshmem"] = compiler_util.has_nvshmem_wrappers(ret)
+
         if os.environ.get("NVPTX_ENABLE_DUMP", "0") == "1":
             print("// -----// NVPTX Dump //----- //")
             print(ret)
@@ -383,12 +389,17 @@ class CUDABackend(BaseBackend):
             fsrc.flush()
             fbin = fsrc.name + '.o'
 
+            fbin_combined = fbin + ".combined.cubin"
+            from triton_nvshmem import compiler_util
+            has_nvshmem_wrapper = metadata["use_nvshmem"]
+            compile_only_cmds = ["-c"] if has_nvshmem_wrapper else []
+
             line_info = ["-lineinfo", "-suppress-debug-info"] if os.environ.get("TRITON_DISABLE_LINE_INFO",
                                                                                 "0") == "1" else ["-lineinfo"]
             fmad = [] if opt.enable_fp_fusion else ['--fmad=false']
             arch = sm_arch_from_capability(capability)
             opt_level = ['--opt-level', '0'] if os.environ.get("DISABLE_PTXAS_OPT", "0") == "1" else []
-            ptxas_cmd = [ptxas, *line_info, *fmad, '-v', *opt_level, f'--gpu-name={arch}', fsrc.name, '-o', fbin]
+            ptxas_cmd = [ptxas, *compile_only_cmds, *line_info, *fmad, '-v', *opt_level, f'--gpu-name={arch}', fsrc.name, '-o', fbin]
             try:
                 subprocess.run(ptxas_cmd, check=True, close_fds=False, stderr=flog)
                 if os.path.exists(fsrc.name):
@@ -412,10 +423,37 @@ class CUDABackend(BaseBackend):
                                  f"`ptxas` stderr:\n{log}\n"
                                  f'Repro command: {" ".join(ptxas_cmd)}\n')
 
-            with open(fbin, 'rb') as f:
-                cubin = f.read()
+            if has_nvshmem_wrapper:
+                # nvlink
+                nvlink, _ = compiler_util.get_nvlink(capability)
+                nvlink_cmds = [
+                    nvlink,
+                    f"-arch={arch}",
+                    f"-L{compiler_util.get_nvshmem_lib()}",
+                    "-lnvshmem_device",
+                    fbin,
+                    compiler_util.get_nvshmem_cubin(capability),
+                    "-o",
+                    fbin_combined,
+                ]
+                try:
+                    subprocess.run(nvlink_cmds, check=True, close_fds=False, stderr=flog)
+                except Exception as e:
+                    import logging
+
+                    logging.error(f"error runing nvlink: {nvlink_cmds}")
+                    logging.exception(e)
+
+            if has_nvshmem_wrapper:
+                with open(fbin_combined, "rb") as f:
+                    cubin = f.read()
+            else:
+                with open(fbin, "rb") as f:
+                    cubin = f.read()
             if os.path.exists(fbin):
                 os.remove(fbin)
+            if os.path.exists(fbin_combined):
+                os.remove(fbin_combined)
         return cubin
 
     def add_stages(self, stages, options):
