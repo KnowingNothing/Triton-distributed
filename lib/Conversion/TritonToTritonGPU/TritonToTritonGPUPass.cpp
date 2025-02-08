@@ -17,6 +17,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 #include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
+#include "third_party/distributed/dialect/include/Dialect/Distributed/IR/Dialect.h"
 
 namespace {
 
@@ -640,6 +641,14 @@ void populateProtonPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<GenericOpPattern<triton::proton::RecordOp>>(typeConverter,
                                                            context);
 }
+
+// Distributed patterns
+void populateDistributedPatterns(TritonGPUTypeConverter &typeConverter,
+                            RewritePatternSet &patterns) {
+  MLIRContext *context = patterns.getContext();
+  patterns.add<GenericOpPattern<triton::distributed::WaitOp>>(typeConverter,
+                                                           context);
+}
 //
 // SCF patterns
 //
@@ -855,6 +864,7 @@ public:
     populateMathPatternsAndLegality(typeConverter, patterns, target);
     populateTritonPatterns(typeConverter, patterns, numCTAs);
     populateProtonPatterns(typeConverter, patterns);
+    populateDistributedPatterns(typeConverter, patterns);
     // TODO: can we use
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);

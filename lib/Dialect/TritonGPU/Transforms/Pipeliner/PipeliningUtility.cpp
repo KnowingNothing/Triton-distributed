@@ -9,6 +9,8 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/Support/Casting.h"
 
+#include "third_party/distributed/dialect/include/Dialect/Distributed/IR/Dialect.h"
+
 using namespace mlir;
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
@@ -54,6 +56,10 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
   if (isa<ttg::LocalLoadOp, ttg::LocalStoreOp>(op))
     return op;
   if (isa<ttng::TMEMAllocOp, ttng::TMEMCopyOp>(op))
+    return op;
+  // TODO(zhengsize): add predicate to distributed ops?
+  // Distributed barrier ops
+  if (isa<triton::distributed::WaitOp>(op))
     return op;
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
     rewriter.setInsertionPoint(op);
