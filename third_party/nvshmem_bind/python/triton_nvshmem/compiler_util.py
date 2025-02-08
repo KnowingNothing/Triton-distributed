@@ -38,8 +38,7 @@ def _path_to_binary(binary: str):
         os.path.join(os.path.dirname(__file__), "bin", binary),
     ]
 
-    # TODO(houqi.1993) hardcode here
-    paths += ["/usr/local/cuda/bin/nvlink"]
+    paths += [os.environ.get("CUDA_HOME", "/usr/local/cuda/") + "bin/nvlink"]
 
     for path in paths:
         if os.path.exists(path) and os.path.isfile(path):
@@ -130,13 +129,3 @@ def patch_nvshmem_wrapper_externs(ptx):
     ptx = "\n".join(lines[:loc]) + "\n" + externs + "\n" + "\n".join(lines[loc:])
     return ptx
 
-
-if __name__ == "__main__":
-    # cache_file = "/data00/home/houqi.1993/git/flux/ws/triton-nvshmem/triton_cache/2KGRCPSOESQ7NI75UIUUOCXKHPBTJSNZMMXJ6FS5ZJCHGV5GJ2BQ/ring_put.ptx"
-    # with open(cache_file, "r") as f:
-    #     ptx = f.read()
-    # ptx = patch_nvshmem_wrapper_externs(ptx)
-    # print(ptx)
-
-    print(get_nvlink(89))
-    print(get_nvshmem_home())
