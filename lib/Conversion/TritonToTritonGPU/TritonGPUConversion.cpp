@@ -9,6 +9,8 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
+#include "third_party/distributed/dialect/include/Dialect/Distributed/IR/Dialect.h"
+
 using namespace mlir;
 using namespace mlir::triton::gpu;
 
@@ -97,7 +99,7 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
-                             scf::SCFDialect>([&](Operation *op) {
+                             scf::SCFDialect, triton::distributed::DistributedDialect>([&](Operation *op) {
     bool hasLegalRegions = true;
     for (auto &region : op->getRegions()) {
       hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);

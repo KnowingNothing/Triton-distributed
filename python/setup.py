@@ -479,6 +479,7 @@ class CMakeBuild(build_ext):
         # environment variables we will pass through to cmake
         passthrough_args = [
             "TRITON_BUILD_PROTON",
+            "TRITON_BUILD_DISTRIBUTED",
             "TRITON_BUILD_TUTORIALS",
             "TRITON_BUILD_WITH_CCACHE",
             "TRITON_PARALLEL_LINK_JOBS",
@@ -614,12 +615,19 @@ def add_link_to_proton():
     proton_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "proton", "proton"))
     proton_install_dir = os.path.join(os.path.dirname(__file__), "triton", "profiler")
     update_symlink(proton_install_dir, proton_dir)
+    
+def add_link_to_distributed():
+    distributed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "distributed", "distributed"))
+    distributed_install_dir = os.path.join(os.path.dirname(__file__), "triton", "distributed")
+    update_symlink(distributed_install_dir, distributed_dir)
 
 
 def add_links():
     add_link_to_backends()
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         add_link_to_proton()
+    if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):  # Default ON
+        add_link_to_distributed()
 
 
 class plugin_install(install):
@@ -698,6 +706,8 @@ def get_packages():
     packages += get_extra_packages("tools")
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         packages += ["triton/profiler"]
+    if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):  # Default ON
+        packages += ["triton/distributed"]
 
     return packages
 

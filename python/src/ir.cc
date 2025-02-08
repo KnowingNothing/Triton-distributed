@@ -1,4 +1,4 @@
-﻿#include <optional>
+#include <optional>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -33,6 +33,7 @@
 #include "llvm/Support/SourceMgr.h"
 
 #include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
+#include "third_party/distributed/dialect/include/Dialect/Distributed/IR/Dialect.h"
 
 namespace {
 
@@ -308,8 +309,9 @@ void init_triton_ir(py::module &&m) {
     registry.insert<TritonDialect, ::mlir::triton::gpu::TritonGPUDialect,
                     math::MathDialect, arith::ArithDialect, scf::SCFDialect,
                     ::mlir::gpu::GPUDialect, cf::ControlFlowDialect,
-                    ::mlir::triton::proton::ProtonDialect, LLVM::LLVMDialect,
-                    mlir::ub::UBDialect>();
+                    ::mlir::triton::proton::ProtonDialect,
+                    ::mlir::triton::distributed::DistributedDialect,
+                    LLVM::LLVMDialect, mlir::ub::UBDialect>();
     mlir::LLVM::registerInlinerInterface(registry);
     registerBuiltinDialectTranslation(registry);
     registerLLVMDialectTranslation(registry);
@@ -1737,6 +1739,13 @@ void init_triton_ir(py::module &&m) {
       .def("create_proton_record",
            [](TritonOpBuilder &self, bool isStart, int32_t regionId) -> void {
              self.create<mlir::triton::proton::RecordOp>(isStart, regionId);
+           })
+      // Distributed Ops
+      .def("create_distributed_wait",
+           [](TritonOpBuilder &self, Value &dataPtrs, Value &barrierPtrs,
+              MemSyncScope scope, MemSemantic semantic) -> Value {
+             return self.create<mlir::triton::distributed::WaitOp>(
+                 dataPtrs, barrierPtrs, scope, semantic);
            });
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())
