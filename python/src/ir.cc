@@ -1742,10 +1742,15 @@ void init_triton_ir(py::module &&m) {
            })
       // Distributed Ops
       .def("create_distributed_wait",
-           [](TritonOpBuilder &self, Value &dataPtrs, Value &barrierPtrs,
-              MemSyncScope scope, MemSemantic semantic) -> Value {
+           [](TritonOpBuilder &self, Value &barrierPtrs, Value &numBarriers,
+              MemSyncScope scope, MemSemantic semantic, Type &type) -> Value {
              return self.create<mlir::triton::distributed::WaitOp>(
-                 dataPtrs, barrierPtrs, scope, semantic);
+                 type, barrierPtrs, numBarriers, scope, semantic);
+           })
+      .def("create_distributed_consume_token",
+           [](TritonOpBuilder &self, Value &input, Value &token) -> Value {
+             return self.create<mlir::triton::distributed::ConsumeTokenOp>(
+                 input, token);
            });
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())

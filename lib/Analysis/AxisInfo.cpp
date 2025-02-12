@@ -1051,7 +1051,7 @@ AxisInfoAnalysis::AxisInfoAnalysis(DataFlowSolver &solver)
                   MaxMinOpAxisInfoVisitor<arith::MinUIOp>>();
   visitors.append<LoadOpAxisInfoVisitor>();
   // Distributed ops
-  visitors.append<BarrierOpAxisInfoVisitor<triton::distributed::WaitOp>>();
+  visitors.append<BarrierOpAxisInfoVisitor<triton::distributed::ConsumeTokenOp>>();
 }
 
 LogicalResult AxisInfoAnalysis::visitOperation(

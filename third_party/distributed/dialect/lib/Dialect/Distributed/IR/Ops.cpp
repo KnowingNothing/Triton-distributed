@@ -42,6 +42,13 @@ void WaitOp::getEffects(
                        SideEffects::DefaultResource::get());
 }
 
+// -- ConsumeTokenOp --
+void ConsumeTokenOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+//   empty effects
+}
+
 } // namespace distributed
 } // namespace triton
 } // namespace mlir

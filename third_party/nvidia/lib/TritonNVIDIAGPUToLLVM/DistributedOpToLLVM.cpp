@@ -43,7 +43,7 @@ struct WaitOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
     ::mlir::triton::PTXBuilder ptxBuilder;
-    auto type = op->getOperand(1).getType();
+    auto type = op->getOperand(0).getType();
     assert(isa<triton::PointerType>(type) && "must be a pointer type");
     auto ptree_type = dyn_cast<triton::PointerType>(type).getPointeeType();
     auto intType = dyn_cast<mlir::IntegerType>(ptree_type);
@@ -68,29 +68,52 @@ struct WaitOpConversion
         semantic = "acq_rel";
     }
     const std::string ld_ptx = "ld.global."s + semantic + "."s + scope + ".b"s + std::to_string(barrier_width);
+    const std::string bit_w = std::to_string(barrier_width);
+    const std::string byte_w = std::to_string(barrier_width / 8);
+    // TODO(zhengsize): how about more barriers?
+    // we only consider warp sync now
+    // so numBarriers should be <= WARP_SIZE
+    // otherwise, the behavior is undefined
     const std::string ptx =
         "{                                                              \n\t"s +
-        ".reg .pred %p<1>;                                              \n\t"s +
-        ".reg .b32 %th<1>;                                              \n\t"s +
-        ".reg .b"s + std::to_string(barrier_width) + " %tmp<1>;         \n\t"s +
+        ".reg .pred %p<2>;                                              \n\t"s +
+        ".reg .b32 %th<2>;                                              \n\t"s +
+        ".reg .u64 %addr<2>;                                            \n\t"s +
+        ".reg .b"s + bit_w + " %tmp<1>;                                 \n\t"s +
+        "mov.u32 %th1, $1;                                              \n\t"s +
         "mov.u32 %th0, %tid.x;                                          \n\t"s +
         "rem.u32 %th0, %th0, 32;                                        \n\t"s +
-        "setp.eq.b32 %p0, %th0, 0;                                      \n\t"s +
+        "mul.wide.s32 %addr1, %th0, "s + byte_w + ";                    \n\t"s + 
+        "add.u64 %addr0, $0, %addr1;                                    \n\t"s +
+        "setp.lt.u32 %p0, %th0, %th1;                                   \n\t"s +
         "@!%p0 bra.uni skipLoop;                                        \n\t"s +
         "waitLoop:                                                      \n\t"s +
-        "  "s + ld_ptx + " %tmp0, [$0];                                 \n\t"s +
-        "  setp.eq.b"s + std::to_string(barrier_width) + " %p0, %tmp0, 1;\n\t"s +
+        "  "s + ld_ptx + " %tmp0, [%addr0];                             \n\t"s +
+        "  setp.eq.b"s + bit_w + " %p0, %tmp0, 1;                       \n\t"s +
         "  @!%p0 bra.uni waitLoop;                                      \n\t"s +
         "skipLoop:                                                      \n\t"s +
         "bar.warp.sync 0xffffffff;                                      \n\t"s +
         "}                                                              \n\t"s;
 
     auto &waitOp = *ptxBuilder.create<>(ptx);
-    waitOp({ptxBuilder.newOperand(adaptor.getBarrierPtr(), "l")},
+    waitOp({ptxBuilder.newOperand(adaptor.getBarrierPtr(), "l"),
+            ptxBuilder.newOperand(adaptor.getNumBarriers(), "r")},
               /*onlyAttachMLIRArgs=*/true);
     auto voidTy = void_ty(op->getContext());
     ptxBuilder.launch(rewriter, loc, voidTy);
-    rewriter.replaceOp(op, adaptor.getDataPtr());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct ConsumeTokenOpConversion
+    : public ConvertOpToLLVMPattern<triton::distributed::ConsumeTokenOp> {
+  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::distributed::ConsumeTokenOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getInput());
     return success();
   }
 };
@@ -100,5 +123,5 @@ struct WaitOpConversion
 void mlir::triton::NVIDIA::populateDistributedOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
-  patterns.add<WaitOpConversion>(typeConverter, benefit);
+  patterns.add<WaitOpConversion, ConsumeTokenOpConversion>(typeConverter, benefit);
 }
