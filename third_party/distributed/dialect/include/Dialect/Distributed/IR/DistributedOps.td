@@ -22,36 +22,66 @@ class TT_Distributed_Op<string mnemonic, list<Trait> traits = []> :
 
 def TT_WaitOp : TT_Distributed_Op<"wait", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-  DeclareOpInterfaceMethods<InferTypeOpInterface>,
-  TypesMatchWith<"result matches data ptr type", "dataPtr", "result", "$_self">,
 ]> {
-  let summary = "Wait for a signal to be ready (becomes 1)";
+  let summary = "Wait for a signal to be ready (becomes 1) and produce a token.";
 
   let description = [{
-    The operator creats a wait node that represents a spin lock waiting
-    for a signal pointed by the `barrierPtr` to be set ready (set to 1).
+    The operator creates a wait node that represents a spin lock waiting
+    for a list of signals pointed by the `barrierPtr` to be set ready (set to 1).
 
     Example:
 
     ```mlir
-    distributed.wait() {dataPtr, barrierPtr, scope = 1 : i32, semantic = 0 : i32}
+    token = distributed.wait() {barrierPtr, num_barriers, scope = 1 : i32, semantic = 0 : i32}
     ```
   }];
   let arguments = (
     ins
-    AnyTypeOf<[TT_PtrLike, TT_TensorPtr]>:$dataPtr,
-    AnyTypeOf<[TT_PtrLike, TT_TensorPtr]>:$barrierPtr,
+    TT_PtrLike:$barrierPtr,
+    TT_IntLike:$numBarriers,
 
     DefaultValuedAttr<TT_MemSyncScopeAttr, "MemSyncScope::GPU">:$scope,
     DefaultValuedAttr<TT_MemSemanticAttr, "MemSemantic::ACQUIRE">:$semantic
   );
 
-  let results = (outs TT_Type:$result);
+  let results = (outs TT_IntLike:$token);
 
   let assemblyFormat = [{
-      $dataPtr `,` $barrierPtr `,`
+      $barrierPtr `,` $numBarriers `,`
       `scope` `=` $scope `semantic` `=` $semantic
-      attr-dict `:` type($dataPtr) `,` type($barrierPtr) `->` type($result)
+      attr-dict `:` type($barrierPtr) `,` type($numBarriers) `->` type($token)
+    }];
+}
+
+def TT_ConsumeTokenOp : TT_Distributed_Op<"consume_token", [
+  Elementwise,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+  DeclareOpInterfaceMethods<InferTypeOpInterface>,
+  TypesMatchWith<"result matches input type", "input", "result", "$_self">,
+]> {
+  let summary = "Consumes a token and builds data dependency between wait ops and input";
+
+  let description = [{
+    The operator creates a consume node that represents a data dependency between a wait node
+    that produces a token and another node that uses the input data (e.g., load).
+
+    Example:
+
+    ```mlir
+    distributed.consume_token() {input, token}
+    ```
+  }];
+  let arguments = (
+    ins
+    AnyTypeOf<[TT_Type, TT_TensorDescType]>:$input,
+    TT_IntLike:$token
+  );
+
+  let results = (outs AnyTypeOf<[TT_Type, TT_TensorDescType]>:$result);
+
+  let assemblyFormat = [{
+      $input `,` $token `,`
+      attr-dict `:` type($input) `,` type($token) `->` type($result)
     }];
 }
 

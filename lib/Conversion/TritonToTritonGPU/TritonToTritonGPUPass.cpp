@@ -648,6 +648,8 @@ void populateDistributedPatterns(TritonGPUTypeConverter &typeConverter,
   MLIRContext *context = patterns.getContext();
   patterns.add<GenericOpPattern<triton::distributed::WaitOp>>(typeConverter,
                                                            context);
+  patterns.add<GenericOpPattern<triton::distributed::ConsumeTokenOp>>(typeConverter,
+                                                           context);
 }
 //
 // SCF patterns

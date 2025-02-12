@@ -16,31 +16,27 @@
 ################################################################################
 
 from triton.language import core as tl
-from triton.language.semantic import cast, _str_to_sem, _str_to_scope
+from triton.language.semantic import cast, _str_to_sem, _str_to_scope, to_tensor
 from triton.language.core import builtin
 
 @builtin
-def wait(dataPtrs, barrierPtrs, scope: str, semantic: str, _builder=None):
-    if not dataPtrs.type.scalar.is_ptr():
-        raise ValueError(f"Unsupported dataPtrs type {dataPtrs.type.__repr__()} in `distributed.language.wait`")
+def wait(barrierPtrs, numBarriers, scope: str, semantic: str, _builder=None):
     if not barrierPtrs.type.scalar.is_ptr():
-        raise ValueError(f"Unsupported barrierPtrs type {barrierPtrs.type.__repr__()} in `distributed.language.wait`")
-    ptr_ty = dataPtrs.type.scalar
-    elt_ty = ptr_ty.element_ty
-    # Treat `pointer_type<tl.int1>` as `pointer_type<tl.int8>`
-    is_bool = elt_ty == tl.int1
-    if is_bool:
-        elt_ty = tl.int8
-        ptr_ty = tl.pointer_type(elt_ty, ptr_ty.address_space)
-        dataPtrs = cast(dataPtrs, ptr_ty, _builder)
-    # Create loaded result type `dst_ty`
-    if dataPtrs.type.is_block():
-        shape = dataPtrs.type.get_block_shapes()
-        dst_ty = tl.block_type(tl.pointer_type(elt_ty, ptr_ty.address_space), shape)
-    else:
-        # Load by de-referencing the pointer of scalar
-        dst_ty = tl.pointer_type(elt_ty, ptr_ty.address_space)
+        raise ValueError(
+            f"Unsupported barrierPtrs type {barrierPtrs.type.__repr__()} in `distributed.language.wait`")
         
     scope = _str_to_scope(scope)
     semantic = _str_to_sem(semantic)
-    return tl.tensor(_builder.create_distributed_wait(dataPtrs.handle, barrierPtrs.handle, scope, semantic), dst_ty)
+    return tl.tensor(
+        _builder.create_distributed_wait(
+            barrierPtrs.handle, to_tensor(numBarriers, _builder).handle, scope, semantic, tl.int32.to_ir(_builder)),
+        tl.int32)
+
+@builtin
+def consume_token(value, token, _builder=None):
+    assert token.type.scalar.is_int(), "token must be of int type"
+    handle = _builder.create_distributed_consume_token(value.handle, token.handle)
+    if isinstance(value, tl._experimental_tensor_descriptor):
+        return tl._experimental_tensor_descriptor(handle, value.shape, value.strides, value.type)
+    else:
+        return tl.tensor(handle, value.type)
