@@ -1,0 +1,68 @@
+name: triton-distributed-pre-merge-ci
+trigger:
+  change:
+    types: [ create, push ]
+    notification:
+      when: [ success, failure ]
+jobs:
+  triton-pre-merge:
+    image: hub.byted.org/compile/flux_compile_l20:cuda12-4-llvm16-240711
+    envs:
+      PYTHONPATH: /home/code/python:/home/code/third_party/nvshmem_bind/python/:$PYTHONPATH
+      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      PATH: /home/code/.local/bin:$PATH
+    runs-on:
+      cluster: gpu-h100
+      docker:
+        shared-memory: 1024
+
+    steps:
+      - name: code-format-check
+        commands:
+          - pip3 install pre-commit
+          - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
+          - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
+          - git diff -U0 ${{Event.Change.Target.SHA}} HEAD | clang-format-diff-16 -p1 > clang-format-diff.patch
+          - | 
+            if [ $(tr -d '\n' < "clang-format-diff.patch" | wc -c) -ne 0 ] ; then
+              echo "::add-message level=error:: C++ code not formatted"
+              cat clang-format-diff.patch
+              exit 1
+            fi
+
+      - name: env-check
+        commands:
+          - nvidia-smi
+          - curl -IivvL https://oaitriton.blob.core.windows.net/public/llvm-builds/
+          - mkdir -p /home/code/.local/bin
+          - ln -s `which python3` /home/code/.local/bin/python
+          - ln -s `which pip3` /home/code/.local/bin/pip
+          - hash -r
+          - python --version
+          - pip --version
+          - pip install -U torch torchvision torchaudio
+          - python -c "import torch; print(torch.__version__)"
+
+      - name: build
+        commands:
+          - git submodule update --init --recursive
+          - pip3 install ninja cmake wheel pybind11
+          - pip3 wheel -e python --verbose
+          - mkdir wheel-output
+          - mv triton*.whl wheel-output/
+
+      - name: upload wheel
+        uses: actions/upload-artifact
+        inputs:
+          name: release
+          path: wheel-output
+
+      - name: triton test
+        commands:
+          - make dev-install
+          - make test
+
+      - name: distributed test
+        commands:
+          - bash third_party/distributed/distributed/test/run_test.sh
