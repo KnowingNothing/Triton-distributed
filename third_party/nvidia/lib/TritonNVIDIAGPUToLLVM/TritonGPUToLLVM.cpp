@@ -10,6 +10,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Pass/Pass.h"
+#include "third_party/distributed/dialect/include/Dialect/Distributed/IR/Dialect.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Membar.h"
@@ -17,7 +18,6 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-#include "third_party/distributed/dialect/include/Dialect/Distributed/IR/Dialect.h"
 
 #include "PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
@@ -185,9 +185,11 @@ struct ConvertTritonGPUToLLVM
     mlir::triton::NVIDIA::populateUpcastMXFPToLLVMPatterns(
         typeConverter, patterns, targetInfo, benefit);
     // Distributed ops
+    bool disableNvshmemInlineOpt =
+        mlir::triton::tools::getBoolEnv("DISABLE_NVSHMEM_INLINE_OPT");
     mlir::triton::NVIDIA::populateDistributedOpToLLVMPatterns(
-        typeConverter, patterns, benefit
-    );
+        typeConverter, patterns, benefit, targetInfo,
+        /*enableInline=*/!disableNvshmemInlineOpt);
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
 

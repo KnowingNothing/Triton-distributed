@@ -84,8 +84,10 @@ void populateTensorMemorySubviewOpToLLVMPattern(
     PatternBenefit benefit);
 
 void populateDistributedOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                     RewritePatternSet &patterns,
-                                     PatternBenefit benefit);
+                                         RewritePatternSet &patterns,
+                                         PatternBenefit benefit,
+                                         const TargetInfo &targetInfo,
+                                         bool enableInline = true);
 } // namespace NVIDIA
 } // namespace triton
 } // namespace mlir

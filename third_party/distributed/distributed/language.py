@@ -16,7 +16,7 @@
 ################################################################################
 
 from triton.language import core as tl
-from triton.language.semantic import cast, _str_to_sem, _str_to_scope, to_tensor
+from triton.language.semantic import cast, _str_to_sem, _str_to_scope, to_tensor, _convert_elem_to_ir_value
 from triton.language.core import builtin
 
 @builtin
@@ -40,3 +40,22 @@ def consume_token(value, token, _builder=None):
         return tl._experimental_tensor_descriptor(handle, value.shape, value.strides, value.type)
     else:
         return tl.tensor(handle, value.type)
+
+
+@builtin
+def rank(axis=-1, _builder=None):
+    axis = _convert_elem_to_ir_value(_builder, axis, require_i64=False)
+    return tl.tensor(_builder.create_get_rank(axis), tl.int32)
+
+
+@builtin
+def num_ranks(axis=-1, _builder=None):
+    axis = _convert_elem_to_ir_value(_builder, axis, require_i64=False)
+    return tl.tensor(_builder.create_get_num_ranks(axis), tl.int32)
+
+
+@builtin
+def symm_at(ptr, rank, _builder=None):
+    assert not ptr.type.is_block() and ptr.type.is_ptr(), "only support scalar pointer"
+    rank = _convert_elem_to_ir_value(_builder, rank, require_i64=False)
+    return tl.tensor(_builder.create_symm_at(ptr.handle, rank), ptr.type)

@@ -49,6 +49,13 @@ void ConsumeTokenOp::getEffects(
 //   empty effects
 }
 
+// -- SymmAtOp --
+void SymmAtOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+}
 } // namespace distributed
 } // namespace triton
 } // namespace mlir

@@ -32,8 +32,8 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 
-#include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "third_party/distributed/dialect/include/Dialect/Distributed/IR/Dialect.h"
+#include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
 
 namespace {
 
@@ -1751,6 +1751,18 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &input, Value &token) -> Value {
              return self.create<mlir::triton::distributed::ConsumeTokenOp>(
                  input, token);
+           })
+      .def("create_get_rank",
+           [](TritonOpBuilder &self, Value axis) -> Value {
+             return self.create<mlir::triton::distributed::GetRankOp>(axis);
+           })
+      .def("create_get_num_ranks",
+           [](TritonOpBuilder &self, Value axis) -> Value {
+             return self.create<mlir::triton::distributed::GetNumRanksOp>(axis);
+           })
+      .def("create_symm_at",
+           [](TritonOpBuilder &self, Value ptr, Value rank) -> Value {
+             return self.create<mlir::triton::distributed::SymmAtOp>(ptr.getType(), ptr, rank);
            });
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())

@@ -13,6 +13,12 @@ NVSHMEM_WRAPPER_FUNCS = [
     "nvshmem_int_p_wrapper",
 ]
 
+NVSHMEM_GLOBAL_VARIABLES = [
+    "nvshmemi_device_state_d",
+]
+
+NVSHMEM_SYMBOLS = NVSHMEM_WRAPPER_FUNCS + NVSHMEM_GLOBAL_VARIABLES
+
 NVSHMEM_WRAPPER_EXTERN = {
     "nvshmem_ptr_wrapper": """.extern .func (.param .b64 func_retval0) nvshmem_ptr_wrapper
 (
@@ -27,6 +33,7 @@ NVSHMEM_WRAPPER_EXTERN = {
    .param.b32 nvshmem_int_p_wrapper_param_1,
    .param.b32 nvshmem_int_p_wrapper_param_2
 );""",
+    "nvshmemi_device_state_d": """.extern .const .align 8 .b8 nvshmemi_device_state_d[776];"""
 }
 
 
@@ -101,15 +108,15 @@ def get_nvlink(arch: int):
 
 
 def has_nvshmem_wrappers(ptx):
-    return any([x in ptx for x in NVSHMEM_WRAPPER_FUNCS])
+    return any([x in ptx for x in NVSHMEM_SYMBOLS])
 
 
 def get_nvshmem_wrappers(ptx):
-    funcs = []
-    for func in NVSHMEM_WRAPPER_FUNCS:
-        if func in ptx:
-            funcs.append(func)
-    return funcs
+    extern_symbols = []
+    for symbol in NVSHMEM_SYMBOLS:
+        if symbol in ptx:
+            extern_symbols.append(symbol)
+    return extern_symbols
 
 
 def patch_nvshmem_wrapper_externs(ptx):
@@ -128,4 +135,3 @@ def patch_nvshmem_wrapper_externs(ptx):
     lines = ptx.split("\n")
     ptx = "\n".join(lines[:loc]) + "\n" + externs + "\n" + "\n".join(lines[loc:])
     return ptx
-
