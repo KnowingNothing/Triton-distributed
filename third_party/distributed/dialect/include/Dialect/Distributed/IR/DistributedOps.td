@@ -85,4 +85,43 @@ def TT_ConsumeTokenOp : TT_Distributed_Op<"consume_token", [
     }];
 }
 
+
+// TODO(zhengxuegui.0): device mesh support
+def TT_GetRankOp : TT_Distributed_Op<"get_rank", [Pure]> {
+  let summary = "Rank of the calling PE";
+
+  let arguments = (ins I32:$axis);
+
+  let results = (outs I32:$result);
+
+  let assemblyFormat = "$axis attr-dict `:` type($result)";
+}
+
+
+def TT_GetNumRanksOp : TT_Distributed_Op<"get_num_ranks", [Pure]> {
+  let summary = "Get the number of PEs runing in the program";
+
+  let arguments = (ins I32:$axis);
+
+  let results = (outs I32:$result);
+
+  let assemblyFormat = "$axis attr-dict `:` type($result)";
+}
+
+
+def TT_SymmAtOp : TT_Distributed_Op<"symm_at", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+  TypesMatchWith<"remoteAddr matches symmAddr type", "symmAddr", "remoteAddr", "$_self">,
+]> {
+  let summary = "obtain the symmetric address on the specified Rank.";
+
+  let arguments = (ins
+    TT_Ptr:$symmAddr,
+    I32:$rank
+  );
+
+  let results = (outs TT_Ptr:$remoteAddr);
+
+  let assemblyFormat = "$symmAddr `,` $rank `,` attr-dict `:` qualified(type($symmAddr))";
+}
 #endif // DISTRIBUTED_OPS
