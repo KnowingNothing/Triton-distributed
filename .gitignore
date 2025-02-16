@@ -85,11 +85,13 @@ docs/sg_execution_times.rst
 # macOS
 .DS_Store
 
-# .triton
+# .triton and cache
 .triton
+.triton_cache
 
 # log files
 trace*.log
+prof
 
 # distributed
 python/triton/distributed
