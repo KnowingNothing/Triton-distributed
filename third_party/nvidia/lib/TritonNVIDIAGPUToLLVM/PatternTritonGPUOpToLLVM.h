@@ -87,7 +87,8 @@ void populateDistributedOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                          RewritePatternSet &patterns,
                                          PatternBenefit benefit,
                                          const TargetInfo &targetInfo,
-                                         bool enableInline = true);
+                                         std::string NVSHMEMLibname = "",
+                                         std::string NVSHMEMLibpath = "");
 } // namespace NVIDIA
 } // namespace triton
 } // namespace mlir

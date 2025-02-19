@@ -106,7 +106,7 @@ if [ "$show_only" -eq 1 ]; then
       continue
     fi
     # result=$(diff <(git show :$f) <(git show :$f | black -q -))
-    result=$(diff <(git show :$f) <(git show :$f | yapf -))
+    result=$(diff <(git show :$f) <(git show :$f | yapf $f))
     if [ "$result" != "" ]; then
       echo "===== $f ====="
       echo -e "$result"
