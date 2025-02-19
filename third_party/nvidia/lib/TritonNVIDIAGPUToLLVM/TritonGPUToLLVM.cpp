@@ -185,11 +185,8 @@ struct ConvertTritonGPUToLLVM
     mlir::triton::NVIDIA::populateUpcastMXFPToLLVMPatterns(
         typeConverter, patterns, targetInfo, benefit);
     // Distributed ops
-    bool disableNvshmemInlineOpt =
-        mlir::triton::tools::getBoolEnv("DISABLE_NVSHMEM_INLINE_OPT");
     mlir::triton::NVIDIA::populateDistributedOpToLLVMPatterns(
-        typeConverter, patterns, benefit, targetInfo,
-        /*enableInline=*/!disableNvshmemInlineOpt);
+        typeConverter, patterns, benefit, targetInfo);
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
 

@@ -13,7 +13,7 @@ TRITON_NVSHMEM_DIR=${THIRD_PARTY_DIR}/nvshmem_bind/python
 PYNVSHMEM_DIR=${THIRD_PARTY_DIR}/nvshmem_bind/pynvshmem
 NVSHMEM_ROOT=${THIRD_PARTY_DIR}/nvshmem/build/install
 
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${NVSHMEM_ROOT}/lib
+export LD_LIBRARY_PATH=${NVSHMEM_ROOT}/lib:$LD_LIBRARY_PATH
 export NVSHMEM_DISABLE_CUDA_VMM=1 # moving from cpp to shell
 export NVSHMEM_BOOTSTRAP=UID
 
@@ -22,9 +22,9 @@ export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=eth0
 
 export PYTHONPATH=$PYTHONPATH:${TRITON_NVSHMEM_DIR}:${PYNVSHMEM_DIR}/build
 
-export TRITON_CACHE_DIR=$DISTRIBUTED_DIR/.triton_cache
-export NVSHMEM_HOME=${NVSHMEM_ROOT}
-mkdir -p $DISTRIBUTED_DIR/.triton_cache
+export TRITON_CACHE_DIR=$DISTRIBUTED_DIR/.triton
+
+mkdir -p $DISTRIBUTED_DIR/.triton
 
 nproc_per_node=${ARNOLD_WORKER_GPU:=$(nvidia-smi --list-gpus | wc -l)}
 nnodes=${ARNOLD_WORKER_NUM:=1}

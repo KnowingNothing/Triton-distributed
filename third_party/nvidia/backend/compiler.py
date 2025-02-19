@@ -135,6 +135,7 @@ class CUDAOptions:
     allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee")
     max_num_imprecise_acc_default: bool = None
     extern_libs: dict = None
+    nvshmem_device_lib: str = ""
     debug: bool = False
     backend_name: str = 'cuda'
     sanitize_overflow: bool = True
@@ -145,7 +146,10 @@ class CUDAOptions:
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get('libdevice', None):
             extern_libs['libdevice'] = os.getenv("TRITON_LIBDEVICE_PATH", str(default_libdir / 'libdevice.10.bc'))
+        nvshmem_device_lib = os.getenv("TRITON_LIBDEVICE_PATH", str(default_libdir / 'libnvshmem_device.bc'))
+
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
+        object.__setattr__(self, 'nvshmem_device_lib', nvshmem_device_lib)
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
                "num_warps must be a power of 2"
 
@@ -217,7 +221,9 @@ class CUDABackend(BaseBackend):
 
     def get_module_map(self) -> Dict[str, ModuleType]:
         from triton.language.extra.cuda import libdevice
-        return {"triton.language.extra.libdevice": libdevice}
+        from triton.language.extra.cuda import libnvshmem_device
+        return {"triton.language.extra.libdevice": libdevice,
+                "triton.language.extra.libshmem_device": libnvshmem_device,}
 
     def load_dialects(self, ctx):
         nvidia.load_dialects(ctx)
@@ -337,11 +343,18 @@ class CUDABackend(BaseBackend):
             for k in llvm_mod.get_functions():
                 if not k.is_declaration() and k.is_external_linkage():
                     k.set_nvvm_maxnreg(options.maxnreg)
+        metadata['use_nvshmem'] = False
+        for k in llvm_mod.get_functions():
+            # TODO(zhengxuegui.0): check whether the function exists in libnvshmem_device.bc
+            if "nvshmem" in k.name and k.is_declaration():
+                metadata['use_nvshmem'] = True
+                break
 
         if options.extern_libs:
             paths = [path for (name, path) in options.extern_libs]
             llvm.link_extern_libs(llvm_mod, paths)
-
+        if options.nvshmem_device_lib and metadata['use_nvshmem']:
+            llvm.link_extern_libs(llvm_mod, [options.nvshmem_device_lib])
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
 
         # Get some metadata
@@ -371,11 +384,6 @@ class CUDABackend(BaseBackend):
         ret = re.sub(r'\.target sm_\d+', f'.target sm_{capability}', ret, flags=re.MULTILINE)
         # Remove the debug flag that prevents ptxas from optimizing the code
         ret = re.sub(r",\s*debug|debug,\s*", "", ret)
-
-        from triton_nvshmem import compiler_util
-        ret = compiler_util.patch_nvshmem_wrapper_externs(ret)
-        metadata["use_nvshmem"] = compiler_util.has_nvshmem_wrappers(ret)
-
         if os.environ.get("NVPTX_ENABLE_DUMP", "0") == "1":
             print("// -----// NVPTX Dump //----- //")
             print(ret)
@@ -389,17 +397,12 @@ class CUDABackend(BaseBackend):
             fsrc.flush()
             fbin = fsrc.name + '.o'
 
-            fbin_combined = fbin + ".combined.cubin"
-            from triton_nvshmem import compiler_util
-            has_nvshmem_wrapper = metadata["use_nvshmem"]
-            compile_only_cmds = ["-c"] if has_nvshmem_wrapper else []
-
             line_info = ["-lineinfo", "-suppress-debug-info"] if os.environ.get("TRITON_DISABLE_LINE_INFO",
                                                                                 "0") == "1" else ["-lineinfo"]
             fmad = [] if opt.enable_fp_fusion else ['--fmad=false']
             arch = sm_arch_from_capability(capability)
             opt_level = ['--opt-level', '0'] if os.environ.get("DISABLE_PTXAS_OPT", "0") == "1" else []
-            ptxas_cmd = [ptxas, *compile_only_cmds, *line_info, *fmad, '-v', *opt_level, f'--gpu-name={arch}', fsrc.name, '-o', fbin]
+            ptxas_cmd = [ptxas, *line_info, *fmad, '-v', *opt_level, f'--gpu-name={arch}', fsrc.name, '-o', fbin]
             try:
                 subprocess.run(ptxas_cmd, check=True, close_fds=False, stderr=flog)
                 if os.path.exists(fsrc.name):
@@ -423,37 +426,10 @@ class CUDABackend(BaseBackend):
                                  f"`ptxas` stderr:\n{log}\n"
                                  f'Repro command: {" ".join(ptxas_cmd)}\n')
 
-            if has_nvshmem_wrapper:
-                # nvlink
-                nvlink, _ = compiler_util.get_nvlink(capability)
-                nvlink_cmds = [
-                    nvlink,
-                    f"-arch={arch}",
-                    f"-L{compiler_util.get_nvshmem_lib()}",
-                    "-lnvshmem_device",
-                    fbin,
-                    compiler_util.get_nvshmem_cubin(capability),
-                    "-o",
-                    fbin_combined,
-                ]
-                try:
-                    subprocess.run(nvlink_cmds, check=True, close_fds=False, stderr=flog)
-                except Exception as e:
-                    import logging
-
-                    logging.error(f"error runing nvlink: {nvlink_cmds}")
-                    logging.exception(e)
-
-            if has_nvshmem_wrapper:
-                with open(fbin_combined, "rb") as f:
-                    cubin = f.read()
-            else:
-                with open(fbin, "rb") as f:
-                    cubin = f.read()
+            with open(fbin, "rb") as f:
+                cubin = f.read()
             if os.path.exists(fbin):
                 os.remove(fbin)
-            if os.path.exists(fbin_combined):
-                os.remove(fbin_combined)
         return cubin
 
     def add_stages(self, stages, options):

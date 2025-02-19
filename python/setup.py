@@ -378,7 +378,25 @@ class CMakeBuild(build_ext):
     def finalize_options(self):
         build_ext.finalize_options(self)
 
+    def build_nvshmem(self):
+        nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem_bind")
+        if not os.path.exists(nvshmem_dir):
+            raise RuntimeError("NVSHMEM source directory not found")
+        CUDA_ARCH = ""
+
+        try:
+            import torch
+            if torch.cuda.is_available():
+                CUDA_ARCH = "".join([str(x) for x in torch.cuda.get_device_capability()])
+        except Exception:
+            pass
+
+        extra_args = ["--arch", CUDA_ARCH] if CUDA_ARCH != "" else []
+        subprocess.check_call(["bash", f"{nvshmem_dir}/build.sh"] + extra_args)
+
     def run(self):
+        self.build_nvshmem()
+
         try:
             out = subprocess.check_output(["cmake", "--version"])
         except OSError:
@@ -615,9 +633,11 @@ def add_link_to_proton():
     proton_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "proton", "proton"))
     proton_install_dir = os.path.join(os.path.dirname(__file__), "triton", "profiler")
     update_symlink(proton_install_dir, proton_dir)
-    
+
+
 def add_link_to_distributed():
-    distributed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "distributed", "distributed"))
+    distributed_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "distributed", "distributed"))
     distributed_install_dir = os.path.join(os.path.dirname(__file__), "triton", "distributed")
     update_symlink(distributed_install_dir, distributed_dir)
 
