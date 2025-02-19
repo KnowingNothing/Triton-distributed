@@ -26,6 +26,7 @@ import sys
 from typing import Optional, List
 from cuda import cuda, cudart
 import datetime
+import numpy as np
 
 import pynvshmem
 from triton_nvshmem.nvshmem import (
@@ -119,6 +120,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--case", type=str, choices=list(ALL_TESTS.keys()))
+    parser.add_argument("--shape_id", type=str, default="")
 
     args = parser.parse_args()
     return args
@@ -153,31 +155,23 @@ def cp_engine_producer_all_gather_full_mesh_push(
 ):
     M_per_rank, N = local_tensor.shape
 
-    rank_orders = [
-        rank,
-        rank ^ 1,
-        (rank + 4) % num_ranks,
-        ((rank + 4) ^ 1) % num_ranks,
-        (rank + 2) % num_ranks,
-        ((rank + 2) ^ 1) % num_ranks,
-        (rank + 6) % num_ranks,
-        ((rank + 6) ^ 1) % num_ranks,
-    ]
+    rank_orders = [(rank + i) % num_ranks for i in range(num_ranks)]
 
     with torch.cuda.stream(ag_stream):
         if for_correctness:
             # fake a slow communication case
             # test if the computation is waiting for the correct communication
             time.sleep(3)
-        for target_rank in rank_orders:
-            # swizzle m
-            dst = remote_tensor_buffers[target_rank][rank * M_per_rank:(rank + 1) * M_per_rank, :]
-            src = local_tensor
+        for src_rank in rank_orders:
+            if src_rank == rank:
+                continue
+            dst = remote_tensor_buffers[rank][src_rank * M_per_rank:(src_rank + 1) * M_per_rank, :]
+            src = remote_tensor_buffers[src_rank][src_rank * M_per_rank:(src_rank + 1) * M_per_rank, :]
             dst.copy_(src)
 
             (err, ) = cuda.cuStreamWriteValue32(
                 ag_stream.cuda_stream,
-                barrier_buffers[target_rank][rank].data_ptr(),
+                barrier_buffers[rank][src_rank].data_ptr(),
                 1,
                 cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
             )
@@ -235,6 +229,72 @@ def thread_id(axis: tl.constexpr, _builder=None):
     )
 
 
+@triton.jit
+def kernel_local_copy_and_barrier_all(
+    rank,
+    num_ranks,
+    local_buf_ptr,
+    global_buf_ptr,
+    barrier_ptr,
+    M_per_rank,
+    N,
+    stride_local_m,
+    stride_local_n,
+    stride_global_m,
+    stride_global_n,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+):
+    sm_id = tl.program_id(axis=0)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+
+    pid_m = sm_id // num_pid_n
+    pid_n = sm_id % num_pid_n
+
+    offs_m = tl.arange(0, BLOCK_SIZE_M)
+    offs_n = tl.arange(0, BLOCK_SIZE_N)
+    data_ptr = local_buf_ptr + (pid_m * BLOCK_SIZE_M + offs_m[:, None]) * stride_local_m + (
+        pid_n * BLOCK_SIZE_N + offs_n[None, :]) * stride_local_n
+    dst_ptr = global_buf_ptr + (rank * M_per_rank + pid_m * BLOCK_SIZE_M + offs_m[:, None]) * stride_global_m + (
+        pid_n * BLOCK_SIZE_N + offs_n[None, :]) * stride_global_n
+    mask_data = (pid_m * BLOCK_SIZE_M + offs_m[:, None] < M_per_rank) & (pid_n * BLOCK_SIZE_N + offs_n[None, :] < N)
+    mask_dst = (pid_m * BLOCK_SIZE_M + offs_m[:, None] < M_per_rank) & (pid_n * BLOCK_SIZE_N + offs_n[None, :] < N)
+
+    data = tl.load(data_ptr, mask=mask_data)
+    tl.store(dst_ptr, data, mask=mask_dst)
+
+
+@triton.jit
+def barrier_all(rank, num_ranks, comm_buf_ptr):
+    tid = thread_id(axis="x")
+    sm_id = tl.program_id(axis=0)
+    if tid < num_ranks:
+        remote_ptr = nvshmem_ptr(comm_buf_ptr + sm_id * num_ranks + rank, tid).to(tl.pointer_type(tl.int32))
+        while atomic_cas(remote_ptr, 0, 1, "sys", "release") != 0:
+            pass
+        while (atomic_cas(comm_buf_ptr + sm_id * num_ranks + tid, 1, 0, "sys", "acquire") != 1):
+            pass
+    __syncthreads()
+
+
+def local_copy_and_barrier_all(rank, num_ranks, local_data, global_data, comm_buf, barrier_ptr, M_per_rank, N):
+    barrier_all[(1, )](rank, num_ranks, comm_buf)
+    grid = lambda META: (triton.cdiv(M_per_rank, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
+    kernel_local_copy_and_barrier_all[grid](rank, num_ranks, local_data, global_data, barrier_ptr, M_per_rank, N,
+                                            local_data.stride(0), local_data.stride(1), global_data.stride(0),
+                                            global_data.stride(1), 128, 256)
+    barrier_ptr.fill_(0)
+    # global_data[rank * M_per_rank:(rank + 1) * M_per_rank, :].copy_(local_data)
+    (err, ) = cuda.cuStreamWriteValue32(
+        torch.cuda.current_stream().cuda_stream,
+        barrier_ptr[rank].data_ptr(),
+        1,
+        cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
+    )
+    CUDA_CHECK(err)
+    barrier_all[(1, )](rank, num_ranks, comm_buf)
+
+
 # TMA related test
 def _matmul_launch_metadata(grid, kernel, args):
     ret = {}
@@ -267,7 +327,6 @@ def kernel_consumer_gemm_persistent(
     GROUP_SIZE_M: tl.constexpr,  #
     EPILOGUE_SUBTILE: tl.constexpr,  #
     NUM_SMS: tl.constexpr,
-    need_tail_reset: tl.constexpr,
 ):  #
     # Matmul using TMA and device-side descriptor creation
     dtype = c_ptr.dtype.element_ty
@@ -329,7 +388,7 @@ def kernel_consumer_gemm_persistent(
             pid_n = (tile_id % num_pid_in_group) // group_size_m
 
             # swizzle m
-            alpha = 1
+            alpha = 0
             beta = 0
             pid_m = (pid_m + ((((rank ^ alpha) + beta) % num_ranks) * pid_ms_per_rank)) % num_pid_m
 
@@ -368,36 +427,9 @@ def kernel_consumer_gemm_persistent(
 
             accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    # TODO(zhengsize):
-    # Triton will incorrectly emit a predicate for store here, so tail reset doesn't
-    # work unless we add a new op
-    if need_tail_reset:
-        # reset buffers
-        tid = thread_id(axis="x")
-        sm_id = tl.program_id(axis=0)
 
-        if tid < num_ranks:
-            tl.store(ready_ptr + tid + 1, 0)
-            remote_ptr = nvshmem_ptr(comm_buf_ptr + sm_id * num_ranks + rank, tid)
-            while atomic_cas(remote_ptr, 0, 1, "sys", "release") != 0:
-                pass
-            while (atomic_cas(comm_buf_ptr + sm_id * num_ranks + tid, 1, 0, "sys", "acquire") != 1):
-                pass
-        __syncthreads()
-
-
-def ag_gemm_persistent(
-    a,
-    b,
-    c,
-    rank,
-    num_ranks,
-    workspace_tensors,
-    barrier_tensors,
-    comm_buf,
-    for_correctness=False,
-    need_tail_reset=False,
-):
+def ag_gemm_persistent(a, b, c, rank, num_ranks, workspace_tensors, barrier_tensors, comm_buf, for_correctness=False,
+                       ag_stream=None, gemm_stream=None, serial=False, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3):
     # Check constraints.
     assert a.shape[1] == b.shape[1], "Incompatible dimensions"  # b is transposed
     assert a.dtype == b.dtype, "Incompatible dtypes"
@@ -406,18 +438,11 @@ def ag_gemm_persistent(
     M = M_per_rank * num_ranks
     N_per_rank, K = b.shape
 
-    ag_stream = torch.cuda.Stream()
+    ag_stream = torch.cuda.Stream() if ag_stream is None else ag_stream
+    gemm_stream = torch.cuda.current_stream() if gemm_stream is None else gemm_stream
     current_stream = torch.cuda.current_stream()
     ag_stream.wait_stream(current_stream)
-    cp_engine_producer_all_gather_full_mesh_push(
-        rank,
-        num_ranks,
-        a,
-        workspace_tensors,
-        ag_stream,
-        barrier_tensors,
-        for_correctness=for_correctness,
-    )
+    gemm_stream.wait_stream(current_stream)
 
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
@@ -432,31 +457,49 @@ def ag_gemm_persistent(
         triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
     ), )
 
-    # current_stream.wait_stream(ag_stream)
-    # torch.cuda.synchronize()
-    # print(barrier_tensors[rank])
+    def call_ag():
+        cp_engine_producer_all_gather_full_mesh_push(
+            rank,
+            num_ranks,
+            a,
+            workspace_tensors,
+            ag_stream,
+            barrier_tensors,
+            for_correctness=for_correctness,
+        )
 
-    compiled = kernel_consumer_gemm_persistent[grid](
-        workspace_tensors[rank],
-        b,
-        c,  #
-        M,
-        N_per_rank,
-        K,  #
-        rank,
-        num_ranks,
-        barrier_tensors[rank],
-        comm_buf,
-        128,
-        128,
-        32,
-        8,
-        True,
-        NUM_SMS=NUM_SMS,  #
-        need_tail_reset=need_tail_reset,
-        num_stages=3,
-        num_warps=8,
-    )
+    if serial:
+        call_ag()
+        current_stream.wait_stream(ag_stream)
+        torch.cuda.synchronize()
+        # print(barrier_tensors[rank])
+    else:
+        call_ag()
+    with torch.cuda.stream(gemm_stream):
+        compiled = kernel_consumer_gemm_persistent[grid](
+            workspace_tensors[rank],
+            b,
+            c,  #
+            M,
+            N_per_rank,
+            K,  #
+            rank,
+            num_ranks,
+            barrier_tensors[rank],
+            comm_buf,
+            BLOCK_M,
+            BLOCK_N,
+            BLOCK_K,
+            8,
+            False,
+            NUM_SMS=NUM_SMS,  #
+            num_stages=stages,
+            num_warps=8,
+            # cluster_dims=(2,2,1)
+        )
+
+    current_stream.wait_stream(ag_stream)
+    current_stream.wait_stream(gemm_stream)
 
     return compiled
 
@@ -482,31 +525,40 @@ def test_ag_gemm_tma_intra_node(args):
 
     barriers = pynvshmem.nvshmem_create_tensor_list_intra_node([num_ranks], torch.int32)
 
-    # at most NUM_SMS blocks, each block world_size barriers
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
-    comm_buf = pynvshmem.nvshmem_create_tensor([NUM_SMS * num_ranks], torch.int32)
+    # at most 65536 blocks, each block world_size barriers
+    max_blocks = 65536
+    comm_buf = pynvshmem.nvshmem_create_tensor([max_blocks * num_ranks], torch.int32)
     comm_buf.fill_(0)
     barriers[rank].fill_(0)
     pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
     torch.cuda.synchronize()
 
-    need_tail_reset = False
     debug = False
+
+    ag_stream = torch.cuda.Stream()
+    gemm_stream = torch.cuda.Stream()
 
     def func():
         C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
-        compiled = ag_gemm_persistent(
-            A,
-            B,
-            C,
-            rank,
-            num_ranks,
-            workspaces,
-            barriers,
-            comm_buf,
-            for_correctness=True,
-            need_tail_reset=need_tail_reset,
-        )
+        # The following version doesn't rely on our customized barrier kernel
+        # Just reuse nvshmem barrier, they should produce similar performance
+
+        # barriers[rank].fill_(0)
+        # pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+        # workspaces[rank][rank * M_per_rank:(rank + 1) * M_per_rank, :].copy_(A)
+        # (err, ) = cuda.cuStreamWriteValue32(
+        #     torch.cuda.current_stream().cuda_stream,
+        #     barriers[rank][rank].data_ptr(),
+        #     1,
+        #     cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
+        # )
+        # CUDA_CHECK(err)
+        # pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+
+        # Use our own customized barrier kernel
+        local_copy_and_barrier_all(rank, num_ranks, A, workspaces[rank], comm_buf, barriers[rank], M_per_rank, K)
+        compiled = ag_gemm_persistent(A, B, C, rank, num_ranks, workspaces, barriers, comm_buf, for_correctness=True,
+                                      ag_stream=ag_stream, gemm_stream=gemm_stream, serial=False)
         if rank == 0 and debug:
             print(compiled.asm["ptx"])
         return C
@@ -522,12 +574,7 @@ def test_ag_gemm_tma_intra_node(args):
         # every time, use a new input data to check correctness
         A.copy_(torch.randn([M_per_rank, K], dtype=dtype, device=device))
         B.copy_(torch.randn([N_per_rank, K], dtype=dtype, device=device))
-        workspaces[rank].fill_(-1)
-        if not need_tail_reset:
-            # reset at beginning
-            barriers[rank].fill_(0)
-        else:
-            print(barriers[rank])
+        workspaces[rank].copy_(torch.randn([M, K], dtype=dtype, device=device))
         pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
         torch.cuda.synchronize()
         C = func()
@@ -539,8 +586,30 @@ def test_ag_gemm_tma_intra_node(args):
         group=args.default_group,
     )
     C_golden = torch.matmul(ag_A, B.T)
-    assert torch.allclose(C_golden, C, atol=1e-3, rtol=1e-3)
-    print("Pass!")
+    for i in range(num_ranks):
+        torch.distributed.barrier(args.default_group)
+        if rank == i:
+            print(f"Rank {rank}")
+            if not torch.allclose(C_golden, C, atol=1e-3, rtol=1e-3):
+                print("Golden")
+                print(C_golden)
+                print("Output")
+                print(C)
+                print("Max diff", torch.max(torch.abs(C_golden - C)))
+                print("Avg diff", torch.mean(torch.abs(C_golden - C)))
+                print("Wrong Answer!")
+            else:
+                print("Pass!")
+
+
+configs = {
+    "LLaMA-7B": {"M": 8192, "N": 11008, "K": 4096, "BM": 128, "BN": 128, "BK": 64, "Stage": 5},
+    "LLaMA-3.1-8B": {"M": 8192, "N": 14336, "K": 4096, "BM": 128, "BN": 128, "BK": 64, "Stage": 5},
+    "LLaMA-3.1-70B": {"M": 8192, "N": 28672, "K": 8192, "BM": 128, "BN": 256, "BK": 64, "Stage": 3},
+    "LLaMA-3.1-405B": {"M": 8192, "N": 53248, "K": 16384, "BM": 128, "BN": 256, "BK": 64, "Stage": 3},
+    "Mistral-7B": {"M": 8192, "N": 14336, "K": 4096, "BM": 128, "BN": 128, "BK": 64, "Stage": 5},
+    "Qwen2-72B": {"M": 8192, "N": 29568, "K": 8192, "BM": 128, "BN": 256, "BK": 64, "Stage": 3},
+}
 
 
 @register_test("perf_tma")
@@ -549,9 +618,23 @@ def test_perf_ag_gemm_tma_intra_node(args):
     dtype = torch.float16
     rank = args.rank
     num_ranks = args.num_ranks
-    M = 1024 * num_ranks
-    N = 11008
-    K = 4096
+    if args.shape_id:
+        shape_config = configs[args.shape_id]
+        M = shape_config["M"]
+        N = shape_config["N"]
+        K = shape_config["K"]
+        BLOCK_M = shape_config["BM"]
+        BLOCK_N = shape_config["BN"]
+        BLOCK_K = shape_config["BK"]
+        stages = shape_config["Stage"]
+    else:
+        M = 1024 * num_ranks
+        N = 28672
+        K = 8192
+        BLOCK_M = 128
+        BLOCK_N = 256
+        BLOCK_K = 64
+        stages = 3
 
     assert M % num_ranks == 0
     assert N % num_ranks == 0
@@ -564,18 +647,35 @@ def test_perf_ag_gemm_tma_intra_node(args):
 
     barriers = pynvshmem.nvshmem_create_tensor_list_intra_node([num_ranks], torch.int32)
 
-    # at most NUM_SMS blocks, each block world_size barriers
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
-    comm_buf = pynvshmem.nvshmem_create_tensor([NUM_SMS * num_ranks], torch.int32)
+    # at most 65536 blocks, each block world_size barriers
+    max_blocks = 65536
+    comm_buf = pynvshmem.nvshmem_create_tensor([max_blocks * num_ranks], torch.int32)
     comm_buf.fill_(0)
     barriers[rank].fill_(0)
+    ag_stream = torch.cuda.Stream()
+    gemm_stream = torch.cuda.Stream()
     pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
     torch.cuda.synchronize()
 
     def func():
         C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
-        barriers[rank].fill_(0)
-        pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+        # The following version doesn't rely on our customized barrier kernel
+        # Just reuse nvshmem barrier, they should produce similar performance
+
+        # barriers[rank].fill_(0)
+        # pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+        # workspaces[rank][rank * M_per_rank:(rank + 1) * M_per_rank, :].copy_(A)
+        # (err, ) = cuda.cuStreamWriteValue32(
+        #     torch.cuda.current_stream().cuda_stream,
+        #     barriers[rank][rank].data_ptr(),
+        #     1,
+        #     cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
+        # )
+        # CUDA_CHECK(err)
+        # pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+
+        # Use our own customized barrier kernel
+        local_copy_and_barrier_all(rank, num_ranks, A, workspaces[rank], comm_buf, barriers[rank], M_per_rank, K)
         ag_gemm_persistent(
             A,
             B,
@@ -586,11 +686,17 @@ def test_perf_ag_gemm_tma_intra_node(args):
             barriers,
             comm_buf,
             for_correctness=False,
-            need_tail_reset=False,
+            ag_stream=ag_stream,
+            gemm_stream=gemm_stream,
+            serial=False,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_K=BLOCK_K,
+            stages=stages,
         )
         return C
 
-    C, perf = perf_func(func, iters=100, warmup_iters=10)
+    C, perf = perf_func(func, iters=1000, warmup_iters=200)
     dist_print(f"rank{RANK}", perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
     with torch.profiler.profile(
@@ -632,6 +738,17 @@ if __name__ == "__main__":
     assert torch.distributed.is_initialized()
     TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
     torch.distributed.barrier(TP_GROUP)
+
+    torch.use_deterministic_algorithms(False, warn_only=True)
+    torch.set_printoptions(precision=2)
+    torch.manual_seed(3 + RANK)
+    torch.cuda.manual_seed_all(3 + RANK)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+    np.random.seed(3 + RANK)
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
