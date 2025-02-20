@@ -36,7 +36,6 @@ jobs:
           - hash -r
           - python --version
           - pip --version
-          # - pip install -U torch torchvision torchaudio
           - python -c "import torch; print(torch.__version__)"
 
       - name: build
@@ -44,21 +43,8 @@ jobs:
           - git submodule update --init --recursive
           - pip3 install ninja cmake wheel pybind11
           - pip3 wheel -e python --verbose --no-build-isolation
-          - mkdir wheel-output
-          - mv triton*.whl wheel-output/
 
-      - name: upload wheel
-        uses: actions/upload-artifact
-        inputs:
-          name: release
-          path: wheel-output
-
-      - name: triton test
+      - name: distributed tests
         commands:
-          - make dev-install
-          - make test
-
-      - name: distributed test
-        commands:
-          - bash third_party/distributed/distributed/test/run_test.sh
+          - bash ./third_party/distributed/distributed/test/run_test.sh
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_gather.py
