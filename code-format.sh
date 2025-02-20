@@ -108,13 +108,13 @@ if [ "$show_only" -eq 1 ]; then
     # result=$(diff <(git show :$f) <(git show :$f | black -q -))
     result=$(diff <(git show :$f) <(git show :$f | yapf $f))
     if [ "$result" != "" ]; then
-      echo "===== $f ====="
+      echo "yapf ===== $f ====="
       echo -e "$result"
       has_diff=1
     fi
     ruff_result=$(ruff check --diff $f)
     if [ "$ruff_result" != "" ]; then
-      echo "===== $f ====="
+      echo "ruff ===== $f ====="
       echo -e "$ruff_result"
       has_diff=1
     fi
@@ -127,20 +127,22 @@ if [ "$show_only" -eq 1 ]; then
     # result=$(diff <(git show :$f) <(git show :$f | black --pyi -q -))
     result=$(diff <(git show :$f) <(git show :$f | yapf -))
     if [ "$result" != "" ]; then
-      echo "===== $f ====="
+      echo "yapf ===== $f ====="
       echo -e "$result"
       has_diff=1
     fi
     ruff_result=$(ruff check --diff $f)
     if [ "$ruff_result" != "" ]; then
-      echo "===== $f ====="
+      echo "ruff ===== $f ====="
       echo -e "$ruff_result"
       has_diff=1
     fi
   done
 else
-  echo "Formatting cpp files by clang-format..."
-  echo $files_to_check_cpp | xargs clang-format -i --style=file
+  if [[ ! -z $files_to_check_cpp ]]; then
+    echo "Formatting cpp files by clang-format..."
+    echo $files_to_check_cpp | xargs clang-format -i --style=file
+  fi
   # TODO: (hupuyun)
   # We don't use black because Triton doesn't use black.
   # For future, when Triton switches to black, we will enable this
@@ -155,7 +157,9 @@ else
   # fi
   if [[ ! -z $files_to_check_py ]]; then
     echo "Formatting py files by yapf..."
-    echo $files_to_check_py | xargs yapf -i
+    for f in $files_to_check_py; do
+      echo $f | xargs yapf -i
+    done
   fi
   if [[ ! -z $files_to_check_pyi ]]; then
     echo "Formatting pyi files by yapf..."
