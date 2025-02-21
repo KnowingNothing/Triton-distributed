@@ -378,24 +378,24 @@ class CMakeBuild(build_ext):
     def finalize_options(self):
         build_ext.finalize_options(self)
 
-    def build_nvshmem(self):
+    def build_nvshmem(self, cap):
         nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem_bind")
         if not os.path.exists(nvshmem_dir):
             raise RuntimeError("NVSHMEM source directory not found")
-        CUDA_ARCH = ""
 
-        try:
-            import torch
-            if torch.cuda.is_available():
-                CUDA_ARCH = "".join([str(x) for x in torch.cuda.get_device_capability()])
-        except Exception:
-            pass
-
+        CUDA_ARCH = "".join([str(x) for x in cap])
         extra_args = ["--arch", CUDA_ARCH] if CUDA_ARCH != "" else []
         subprocess.check_call(["bash", f"{nvshmem_dir}/build.sh"] + extra_args)
 
     def run(self):
-        self.build_nvshmem()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                self.build_nvshmem(torch.cuda.get_device_capability())
+        except Exception:
+            print("Cannot import torch.")
+            pass
 
         try:
             out = subprocess.check_output(["cmake", "--version"])
