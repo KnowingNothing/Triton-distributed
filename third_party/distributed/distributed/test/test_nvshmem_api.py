@@ -43,6 +43,7 @@ def test_nvshmemx_getmem_with_scope():
     def _nvshmemx_getmem(ptr, bytes_per_rank, scope: tl.constexpr, nbi: tl.constexpr):
         mype = libshmem_device.my_pe()
         pid = tl.program_id(axis=0)
+        thread_idx = tid(axis=0)
         if pid != mype:
             if nbi:
                 if scope == "block":
@@ -60,12 +61,13 @@ def test_nvshmemx_getmem_with_scope():
                         pid,
                     )
                 elif scope == "thread":
-                    libshmem_device.getmem_nbi_thread(
-                        ptr + pid * bytes_per_rank,
-                        ptr + pid * bytes_per_rank,
-                        bytes_per_rank,
-                        pid,
-                    )
+                    if thread_idx < bytes_per_rank:
+                        libshmem_device.getmem_nbi(
+                            ptr + pid * bytes_per_rank + thread_idx,
+                            ptr + pid * bytes_per_rank + thread_idx,
+                            1,
+                            pid,
+                        )
                 else:
                     raise ValueError("scope must be block, warp, or thread")
             else:
@@ -84,20 +86,24 @@ def test_nvshmemx_getmem_with_scope():
                         pid,
                     )
                 elif scope == "thread":
-                    libshmem_device.getmem_thread(
-                        ptr + pid * bytes_per_rank,
-                        ptr + pid * bytes_per_rank,
-                        bytes_per_rank,
-                        pid,
-                    )
+                    if thread_idx < bytes_per_rank:
+                        libshmem_device.getmem(
+                            ptr + pid * bytes_per_rank + thread_idx,
+                            ptr + pid * bytes_per_rank + thread_idx,
+                            1,
+                            pid,
+                        )
                 else:
                     raise ValueError("scope must be block, warp, or thread")
 
     t = pynvshmem.nvshmem_create_tensor((1024, ), torch.int8)
 
-    for scope in ["block", "warp"]:
+    for scope in ["block", "warp", "thread"]:
         for nbi in [True, False]:
-            print(f"runing nvshmemx_getmem{'_nbi' if nbi else ''}_{scope}...")
+            api = {("block", False): "nvshmemx_getmem_block", ("warp", False): "nvshmemx_getmem_warp",
+                   ("thread", False): "nvshmem_getmem", ("block", True): "nvshmemx_getmem_nbi_block", ("warp", True):
+                   "nvshmemx_getmem_nbi_warp", ("thread", True): "nvshmem_getmem_nbi"}[(scope, nbi)]
+            print(f"runing {api}...")
             t.fill_(RANK + 1)
             pynvshmem.nvshmem_barrier_all()
             _nvshmemx_getmem[(WORLD_SIZE, )](
@@ -117,6 +123,7 @@ def test_nvshmemx_putmem_with_scope():
     def _nvshmemx_putmem(ptr, bytes_per_rank, scope: tl.constexpr, nbi: tl.constexpr):
         mype = libshmem_device.my_pe()
         pid = tl.program_id(axis=0)
+        thread_idx = tid(axis=0)
         if pid != mype:
             if nbi:
                 if scope == "block":
@@ -134,12 +141,13 @@ def test_nvshmemx_putmem_with_scope():
                         pid,
                     )
                 elif scope == "thread":
-                    libshmem_device.putmem_nbi_thread(
-                        ptr + mype * bytes_per_rank,
-                        ptr + mype * bytes_per_rank,
-                        bytes_per_rank,
-                        pid,
-                    )
+                    if thread_idx < bytes_per_rank:
+                        libshmem_device.putmem_nbi(
+                            ptr + mype * bytes_per_rank + thread_idx,
+                            ptr + mype * bytes_per_rank + thread_idx,
+                            1,
+                            pid,
+                        )
                 else:
                     raise ValueError("scope must be block, warp, or thread")
             else:
@@ -158,20 +166,24 @@ def test_nvshmemx_putmem_with_scope():
                         pid,
                     )
                 elif scope == "thread":
-                    libshmem_device.putmem_thread(
-                        ptr + mype * bytes_per_rank,
-                        ptr + mype * bytes_per_rank,
-                        bytes_per_rank,
-                        pid,
-                    )
+                    if thread_idx < bytes_per_rank:
+                        libshmem_device.putmem(
+                            ptr + mype * bytes_per_rank + thread_idx,
+                            ptr + mype * bytes_per_rank + thread_idx,
+                            1,
+                            pid,
+                        )
                 else:
                     raise ValueError("scope must be block, warp, or thread")
 
     t = pynvshmem.nvshmem_create_tensor((1024, ), torch.int8)
 
-    for scope in ["block", "warp"]:
+    for scope in ["block", "warp", "thread"]:
         for nbi in [True, False]:
-            print(f"runing nvshmemx_putmem{'_nbi' if nbi else ''}_{scope}...")
+            api = {("block", False): "nvshmemx_putmem_block", ("warp", False): "nvshmemx_putmem_warp",
+                   ("thread", False): "nvshmem_putmem", ("block", True): "nvshmemx_putmem_nbi_block", ("warp", True):
+                   "nvshmemx_putmem_nbi_warp", ("thread", True): "nvshmem_putmem_nbi"}[(scope, nbi)]
+            print(f"runing {api}...")
             t.fill_(RANK + 1)
             pynvshmem.nvshmem_barrier_all()
             _nvshmemx_putmem[(WORLD_SIZE, )](
@@ -220,6 +232,137 @@ def test_nvshmem_signal():
     torch.cuda.synchronize()
 
 
+def test_nvshmemx_putmem_signal_with_scope():
+
+    @triton.jit
+    def _nvshmemx_putmem_signal(ptr, signal, bytes_per_rank, scope: tl.constexpr, nbi: tl.constexpr):
+        mype = libshmem_device.my_pe()
+        pid = tl.program_id(axis=0)
+        thread_idx = tid(axis=0)
+        wid = thread_idx // 32
+        if pid != mype:
+            if nbi:
+                if scope == "block":
+                    libshmem_device.putmem_signal_nbi_block(
+                        ptr + mype * bytes_per_rank,
+                        ptr + mype * bytes_per_rank,
+                        bytes_per_rank,
+                        signal + mype,
+                        1,
+                        libshmem_device.NVSHMEM_SIGNAL_SET,
+                        pid,
+                    )
+                elif scope == "warp":
+                    if wid == 0:
+                        libshmem_device.putmem_signal_nbi_warp(
+                            ptr + mype * bytes_per_rank,
+                            ptr + mype * bytes_per_rank,
+                            bytes_per_rank,
+                            signal + mype,
+                            1,
+                            libshmem_device.NVSHMEM_SIGNAL_SET,
+                            pid,
+                        )
+                elif scope == "thread":
+                    if thread_idx == 0:
+                        libshmem_device.putmem_signal_nbi(
+                            ptr + mype * bytes_per_rank,
+                            ptr + mype * bytes_per_rank,
+                            bytes_per_rank,
+                            signal + mype,
+                            1,
+                            libshmem_device.NVSHMEM_SIGNAL_SET,
+                            pid,
+                        )
+                else:
+                    raise ValueError("scope must be block, warp, or thread")
+            else:
+                if scope == "block":
+                    libshmem_device.putmem_signal_block(
+                        ptr + mype * bytes_per_rank,
+                        ptr + mype * bytes_per_rank,
+                        bytes_per_rank,
+                        signal + mype,
+                        1,
+                        libshmem_device.NVSHMEM_SIGNAL_SET,
+                        pid,
+                    )
+                elif scope == "warp":
+                    if wid == 0:
+                        libshmem_device.putmem_signal_warp(
+                            ptr + mype * bytes_per_rank,
+                            ptr + mype * bytes_per_rank,
+                            bytes_per_rank,
+                            signal + mype,
+                            1,
+                            libshmem_device.NVSHMEM_SIGNAL_SET,
+                            pid,
+                        )
+                elif scope == "thread":
+                    if thread_idx == 0:
+                        libshmem_device.putmem_signal(
+                            ptr + mype * bytes_per_rank,
+                            ptr + mype * bytes_per_rank,
+                            bytes_per_rank,
+                            signal + mype,
+                            1,
+                            libshmem_device.NVSHMEM_SIGNAL_SET,
+                            pid,
+                        )
+                else:
+                    raise ValueError("scope must be block, warp, or thread")
+
+    t = pynvshmem.nvshmem_create_tensor((1024, ), torch.int8)
+    signal = pynvshmem.nvshmem_create_tensor((WORLD_SIZE, ), torch.uint64)
+
+    for scope in ["block", "warp", "thread"]:
+        for nbi in [True, False]:
+            api = {("block", False): "nvshmemx_putmem_signal_block", ("warp", False): "nvshmemx_putmem_signal_warp",
+                   ("thread", False): "nvshmem_putmem_signal", ("block", True): "nvshmemx_putmem_signal_nbi_block",
+                   ("warp", True): "nvshmemx_putmem_signal_nbi_warp", ("thread", True):
+                   "nvshmem_putmem_signal_nbi"}[(scope, nbi)]
+            print(f"runing {api}...")
+            t.fill_(RANK + 1)
+            signal.fill_(0)
+            pynvshmem.nvshmem_barrier_all()
+            _nvshmemx_putmem_signal[(WORLD_SIZE, )](
+                t,
+                signal,
+                t.nbytes // WORLD_SIZE,
+                scope,
+                nbi,
+                num_warps=4,
+            )
+            pynvshmem.nvshmem_barrier_all()
+            print(t.reshape(8, -1))
+            print(signal)
+
+
+def test_nvshmem_barrier_sync_quiet_fence():
+    """ only test runs, no result checked
+    """
+
+    @triton.jit
+    def _nvshmem_barrier_sync_quiet_fence():
+        libshmem_device.barrier_all()
+        libshmem_device.sync_all()
+        pid = tl.program_id(axis=0)
+        thread_idx = tid(axis=0)
+        if pid == 0:
+            libshmem_device.barrier_all_block()
+            libshmem_device.sync_all_block()
+
+            if thread_idx / 32 == 0:
+                libshmem_device.barrier_all_warp()
+                libshmem_device.sync_all_warp()
+
+        libshmem_device.quiet()
+        libshmem_device.fence()
+
+    print("test nvshmem_barrier/nvshmem_sync/nvshmem_quiet/nvshmem_fence all in one...")
+    _nvshmem_barrier_sync_quiet_fence[(1, )](num_warps=4)
+
+
 if __name__ == "__main__":
     torch.cuda.set_device(LOCAL_RANK)
     torch.distributed.init_process_group(
@@ -234,6 +377,8 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     init_nvshmem_by_uniqueid(TP_GROUP)
 
-    # test_nvshmemx_getmem_with_scope()
-    # test_nvshmemx_putmem_with_scope()
+    test_nvshmemx_getmem_with_scope()
+    test_nvshmemx_putmem_with_scope()
+    test_nvshmemx_putmem_signal_with_scope()
     test_nvshmem_signal()
+    test_nvshmem_barrier_sync_quiet_fence()
