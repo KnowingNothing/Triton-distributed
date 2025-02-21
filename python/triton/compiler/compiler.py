@@ -406,13 +406,17 @@ class CompiledKernel:
         if hasattr(self.metadata,'use_nvshmem'):
             if self.metadata.use_nvshmem:
                 # patch function with nvshmem
+                print("Import nvshmem.")
                 import pynvshmem
                 pynvshmem.nvshmemx_cumodule_init(self.module)
         elif hasattr(self.metadata, 'use_rocshmem'):
             if self.metadata.use_rocshmem:
-                print ('import rocshmem')
+                print("Import rocshmem.")
+                ## TODO
                 # import pyrocshmem
                 # pynvshmem.nvshmemx_cumodule_init(self.module)
+        else:
+            print("No nvshmem/rocshmem imported.")
 
 
     def __getattribute__(self, name):
