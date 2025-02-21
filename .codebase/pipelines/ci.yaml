@@ -42,7 +42,7 @@ jobs:
         commands:
           - git submodule update --init --recursive
           - pip3 install ninja cmake wheel pybind11
-          - pip3 install -e python --verbose --no-build-isolation
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
 
       - name: distributed tests
         commands:
