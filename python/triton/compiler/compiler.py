@@ -403,7 +403,7 @@ class CompiledKernel:
         self.module, self.function, self.n_regs, self.n_spills = driver.active.utils.load_binary(
             self.name, self.kernel, self.metadata.shared, device)
 
-        if hasattr(self.metadata,'use_nvshmem'):
+        if hasattr(self.metadata, 'use_nvshmem'):
             if self.metadata.use_nvshmem:
                 # patch function with nvshmem
                 print("Import nvshmem.")
@@ -417,7 +417,6 @@ class CompiledKernel:
                 # pynvshmem.nvshmemx_cumodule_init(self.module)
         else:
             print("No nvshmem/rocshmem imported.")
-
 
     def __getattribute__(self, name):
         if name == 'run':
