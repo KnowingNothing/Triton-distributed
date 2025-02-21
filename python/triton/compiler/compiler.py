@@ -402,10 +402,18 @@ class CompiledKernel:
         # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
         self.module, self.function, self.n_regs, self.n_spills = driver.active.utils.load_binary(
             self.name, self.kernel, self.metadata.shared, device)
-        if self.metadata.use_nvshmem:
-            # patch function with nvshmem
-            import pynvshmem
-            pynvshmem.nvshmemx_cumodule_init(self.module)
+
+        if hasattr(self.metadata,'use_nvshmem'):
+            if self.metadata.use_nvshmem:
+                # patch function with nvshmem
+                import pynvshmem
+                pynvshmem.nvshmemx_cumodule_init(self.module)
+        elif hasattr(self.metadata, 'use_rocshmem'):
+            if self.metadata.use_rocshmem:
+                print ('import rocshmem')
+                # import pyrocshmem
+                # pynvshmem.nvshmemx_cumodule_init(self.module)
+
 
     def __getattribute__(self, name):
         if name == 'run':
