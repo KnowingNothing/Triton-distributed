@@ -21,6 +21,34 @@ def barrier_all():
     ...
 
 
+def barrier_all_block():
+    ...
+
+
+def barrier_all_warp():
+    ...
+
+
+def sync_all():
+    ...
+
+
+def sync_all_block():
+    ...
+
+
+def sync_all_warp():
+    ...
+
+
+def quiet():
+    ...
+
+
+def fence():
+    ...
+
+
 def getmem_nbi_block(dest, source, bytes, pe):
     ...
 
@@ -37,11 +65,11 @@ def getmem_warp(dest, source, bytes, pe):
     ...
 
 
-def getmem_nbi_thread(dest, source, bytes, pe):
+def getmem_nbi(dest, source, bytes, pe):
     ...
 
 
-def getmem_thread(dest, source, bytes, pe):
+def getmem(dest, source, bytes, pe):
     ...
 
 
@@ -61,11 +89,35 @@ def putmem_nbi_warp(dest, source, bytes, pe):
     ...
 
 
-def putmem_thread(dest, source, bytes, pe):
+def putmem(dest, source, bytes, pe):
     ...
 
 
-def putmem_nbi_thread(dest, source, bytes, pe):
+def putmem_nbi(dest, source, bytes, pe):
+    ...
+
+
+def putmem_signal_nbi(dest, source, bytes, sig_addr, signal, sig_op, pe):
+    ...
+
+
+def putmem_signal(dest, source, bytes, sig_addr, signal, sig_op, pe):
+    ...
+
+
+def putmem_signal_nbi_block(dest, source, bytes, sig_addr, signal, sig_op, pe):
+    ...
+
+
+def putmem_signal_block(dest, source, bytes, sig_addr, signal, sig_op, pe):
+    ...
+
+
+def putmem_signal_nbi_warp(dest, source, bytes, sig_addr, signal, sig_op, pe):
+    ...
+
+
+def putmem_signal_warp(dest, source, bytes, sig_addr, signal, sig_op, pe):
     ...
 
 
