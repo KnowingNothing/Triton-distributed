@@ -4,12 +4,7 @@ import torch
 import pynvshmem
 import os
 import datetime
-from triton_nvshmem.nvshmem import (
-    nvshmem_ptr,
-    nvshmem_my_pe_wrapper,
-    nvshmem_n_pes_wrapper,
-    nvshmem_int_p_wrapper,
-)
+from triton.language.extra import libshmem_device
 
 
 def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup):
@@ -39,10 +34,10 @@ def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
 @triton.jit
 def ring_put(ptr):
     # ptr_out = nvshmem_ptr(ptr, 1)
-    mype = nvshmem_my_pe_wrapper()
-    npes = nvshmem_n_pes_wrapper()
+    mype = libshmem_device.my_pe()
+    npes = libshmem_device.n_pes()
     peer = (mype + 1) % npes
-    nvshmem_int_p_wrapper(ptr, mype, peer)
+    libshmem_device.int_p(ptr, mype, peer)
 
 
 @triton.jit
@@ -60,7 +55,7 @@ def kernel_ag_intra_node_nvlink_small_msg_split_msg(
     # npes = nvshmem_n_pes_wrapper()
     num_bytes_per_pid = tl.cdiv(num_bytes, num_pids)
     for peer in range(0, num_ranks):
-        ptr_in = nvshmem_ptr(symm_data_ptr, peer).to(tl.pointer_type(tl.int8))
+        ptr_in = libshmem_device.remote_ptr(symm_data_ptr, peer.to(tl.int32)).to(tl.pointer_type(tl.int8))
         ptr_out = local_out_ptr + num_bytes * peer
         offs = tl.arange(0, BLOCK_SIZE)
 
@@ -144,7 +139,7 @@ def kernel_ag_intra_node_nvlink_small_msg_split_rank(
         tid = thread_id(axis="x")
 
         if tid < num_ranks:
-            remote_ptr = nvshmem_ptr(comm_buf_ptr + pid * num_ranks + rank, tid)
+            remote_ptr = libshmem_device.remote_ptr(comm_buf_ptr + pid * num_ranks + rank, tid.to(tl.int32))
             while atomic_cas(remote_ptr, 0, 1, "sys", "release") != 0:
                 pass
             while (atomic_cas(comm_buf_ptr + pid * num_ranks + tid, 1, 0, "sys", "acquire") != 1):
@@ -155,7 +150,7 @@ def kernel_ag_intra_node_nvlink_small_msg_split_rank(
     num_ranks_per_pid = num_ranks // num_pids
     for local_peer in range(0, num_ranks_per_pid):
         peer = local_peer + pid * num_ranks_per_pid
-        ptr_in = nvshmem_ptr(symm_data_ptr, peer).to(tl.pointer_type(tl.int8))
+        ptr_in = libshmem_device.remote_ptr(symm_data_ptr, peer.to(tl.int32)).to(tl.pointer_type(tl.int8))
         ptr_out = local_out_ptr + num_bytes * peer
         offs = tl.arange(0, BLOCK_SIZE)
 

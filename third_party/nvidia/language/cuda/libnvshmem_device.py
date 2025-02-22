@@ -92,12 +92,12 @@ def remote_ptr(local_ptr, pe, _builder=None):
         "libnvshmem_device",
         "",
         [local_ptr, pe],
-        {
-            (core.pointer_type(core.dtype("int32")), core.dtype("int32")): (
-                "nvshmem_ptr",
-                core.pointer_type(core.dtype("int32")),
-            ),
-        },
+        {(core.pointer_type(core.dtype(core_dtype)), core.dtype(pe_dtype)): (
+             "nvshmem_ptr",
+             core.pointer_type(core.dtype("int8")),
+         )
+         for core_dtype in core.dtype.SINT_TYPES + core.dtype.UINT_TYPES + core.dtype.FP_TYPES + core.dtype.OTHER_TYPES
+         for pe_dtype in ["int32", "uint32"]},
         is_pure=False,
         _builder=_builder,
         check_args=False,

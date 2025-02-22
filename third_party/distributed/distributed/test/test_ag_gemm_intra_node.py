@@ -18,6 +18,7 @@ import torch
 import triton
 import triton.language as tl
 import triton.distributed.language as dl
+from triton.language.extra import libshmem_device
 
 import time
 import argparse
@@ -29,8 +30,6 @@ import datetime
 import numpy as np
 
 import pynvshmem
-from triton_nvshmem.nvshmem import (
-    nvshmem_ptr, )
 
 
 def perf_func(func, iters, warmup_iters):
@@ -269,7 +268,8 @@ def barrier_all(rank, num_ranks, comm_buf_ptr):
     tid = thread_id(axis="x")
     sm_id = tl.program_id(axis=0)
     if tid < num_ranks:
-        remote_ptr = nvshmem_ptr(comm_buf_ptr + sm_id * num_ranks + rank, tid).to(tl.pointer_type(tl.int32))
+        remote_ptr = libshmem_device.remote_ptr(comm_buf_ptr + sm_id * num_ranks + rank,
+                                                tid.to(tl.int32)).to(tl.pointer_type(tl.int32))
         while atomic_cas(remote_ptr, 0, 1, "sys", "release") != 0:
             pass
         while (atomic_cas(comm_buf_ptr + sm_id * num_ranks + tid, 1, 0, "sys", "acquire") != 1):
