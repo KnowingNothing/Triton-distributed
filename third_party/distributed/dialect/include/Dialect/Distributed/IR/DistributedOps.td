@@ -124,4 +124,19 @@ def TT_SymmAtOp : TT_Distributed_Op<"symm_at", [
 
   let assemblyFormat = "$symmAddr `,` $rank `,` attr-dict `:` qualified(type($symmAddr))";
 }
+
+def TT_NotifyOp : TT_Distributed_Op<"notify", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+]> {
+  let summary = "Update sigAddr with signalVal using operation sigOp on the specified rank";
+
+  let arguments = (ins
+    TT_Ptr:$sigAddr,
+    I64:$signalVal,
+    I32:$rank,
+    TT_SignalOpAttr:$sigOp,
+    TT_CommScopeAttr:$commScope
+  );
+
+}
 #endif // DISTRIBUTED_OPS

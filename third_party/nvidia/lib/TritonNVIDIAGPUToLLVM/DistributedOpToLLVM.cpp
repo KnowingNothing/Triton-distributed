@@ -17,7 +17,10 @@
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
@@ -31,6 +34,18 @@ using namespace mlir::triton;
 using namespace std::literals;
 
 namespace {
+
+Operation *CreateNVSHMEMOp(RewriterBase &rewriter, Operation *curOp,
+                           const StringRef &symbol, StringRef libname,
+                           StringRef libpath, ValueRange inputOperands,
+                           Type retType) {
+  auto loc = curOp->getLoc();
+  Type funcType = mlir::triton::gpu::getFunctionType(retType, inputOperands);
+  LLVM::LLVMFuncOp funcOp = mlir::triton::gpu::appendOrGetExternFuncOp(
+      rewriter, curOp, symbol, funcType, libname, libpath);
+  auto op = LLVM::createLLVMCallOp(rewriter, loc, funcOp, inputOperands);
+  return op;
+}
 
 template <typename DistOp>
 class GenericOpToNVSHMEMDevice : public ConvertOpToLLVMPattern<DistOp> {
@@ -56,11 +71,9 @@ public:
         op->getNumResults() == 0
             ? voidTy
             : this->getTypeConverter()->convertType(op->getResult(0).getType());
-    Type funcType = mlir::triton::gpu::getFunctionType(retType, newOperands);
-    LLVM::LLVMFuncOp funcOp = mlir::triton::gpu::appendOrGetExternFuncOp(
-        rewriter, op, calleeName, funcType, libname, libpath);
-    auto newResult =
-        LLVM::createLLVMCallOp(rewriter, loc, funcOp, newOperands).getResult();
+    auto nvshmemOp = CreateNVSHMEMOp(rewriter, op, calleeName, libname, libpath,
+                                     newOperands, retType);
+    auto newResult = nvshmemOp->getResult(0);
     if (op->getNumResults() == 0) {
       rewriter.eraseOp(op);
     } else {
@@ -171,6 +184,117 @@ struct ConsumeTokenOpConversion
   }
 };
 
+class NotifyOpConversion
+    : public ConvertOpToLLVMPattern<triton::distributed::NotifyOp> {
+public:
+  NotifyOpConversion(const LLVMTypeConverter &converter,
+                     const PatternBenefit &benefit, StringRef libname = "",
+                     StringRef libpath = "")
+      : ConvertOpToLLVMPattern<triton::distributed::NotifyOp>(converter,
+                                                              benefit),
+        libname(libname), libpath(libpath) {}
+
+  LogicalResult
+  matchAndRewrite(triton::distributed::NotifyOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    bool isIntraNode =
+        op.getCommScope() != ::mlir::triton::distributed::CommScope::INTER_NODE;
+    auto signalType = op.getSigAddr().getType();
+    ::mlir::triton::PTXBuilder ptxBuilder;
+    auto b = ::mlir::triton::TritonLLVMOpBuilder(loc, rewriter);
+    Value threadId = rewriter.create<NVVM::ThreadIdXOp>(loc, i32_ty);
+    Value pred = b.icmp_eq(threadId, b.i32_val(0));
+    Block *prevBlock = op->getBlock();
+
+    Block *ifBlock = rewriter.splitBlock(prevBlock, op->getIterator());
+    rewriter.setInsertionPointToStart(ifBlock);
+
+    Block *thenBlock = rewriter.splitBlock(ifBlock, op->getIterator());
+    rewriter.setInsertionPointToEnd(ifBlock);
+    rewriter.create<cf::BranchOp>(loc, thenBlock);
+    rewriter.setInsertionPointToEnd(prevBlock);
+    rewriter.create<cf::CondBranchOp>(loc, pred, ifBlock, thenBlock);
+    rewriter.setInsertionPointToStart(ifBlock);
+
+    rewriter.setInsertionPointToStart(ifBlock);
+    if (isIntraNode) {
+      // remote ptr
+      bool isIntraRank =
+          op.getCommScope() == ::mlir::triton::distributed::CommScope::GPU;
+      Type retType = this->getTypeConverter()->convertType(signalType);
+      Value remotePtr;
+      if (isIntraRank) {
+        remotePtr = adaptor.getSigAddr();
+      } else {
+        remotePtr =
+            CreateNVSHMEMOp(rewriter, op, "nvshmem_ptr", libname, libpath,
+                            {adaptor.getSigAddr(), adaptor.getRank()}, retType)
+                ->getResult(0);
+      }
+      ::mlir::triton::PointerType sigalElemType =
+          llvm::cast<::mlir::triton::PointerType>(signalType);
+      const size_t signalWidth =
+          sigalElemType.getPointeeType().getIntOrFloatBitWidth();
+      std::string semantic = "relaxed";
+      std::string stScope = isIntraRank ? "gpu" : "sys";
+      std::string membarScope = isIntraRank ? "gl" : "sys";
+      const std::string memBarPtx = "membar." + membarScope + ";\n\t";
+
+      if (adaptor.getSigOp() == ::mlir::triton::distributed::SignalOp::SET) {
+        std::string opType = "st";
+        const std::string stSignalPtx =
+            opType + "." + semantic + "." + stScope + ".global.b" +
+            std::to_string(signalWidth) + " [$0], $1" + ";\n\t";
+        const std::string ptx = memBarPtx + stSignalPtx;
+        auto &notifyPtxOp = *ptxBuilder.create<>(ptx);
+        notifyPtxOp({ptxBuilder.newOperand(remotePtr, "l"),
+                     ptxBuilder.newOperand(adaptor.getSignalVal(), "l")}, // u64
+                    /*onlyAttachMLIRArgs=*/true);
+        auto voidTy = void_ty(op->getContext());
+        ptxBuilder.launch(rewriter, loc, voidTy);
+      } else {
+        std::string opType = "add";
+        // Operation .add requires .u32 or .s32 or .u64 or .f64 or f16 or f16x2
+        // or .f32 or .bf16 or .bf16x2 type for instruction 'atom'
+        const std::string stSignalPtx =
+            "atom." + semantic + "." + stScope + ".global." + opType + ".u" +
+            std::to_string(signalWidth) + " $0, [$1], $2" + ";\n\t";
+        const std::string ptx = memBarPtx + stSignalPtx;
+        auto &notifyPtxOp = *ptxBuilder.create<>(ptx);
+        notifyPtxOp({ptxBuilder.newOperand("=l"),
+                     ptxBuilder.newOperand(remotePtr, "l"),
+                     ptxBuilder.newOperand(adaptor.getSignalVal(), "l")}, // u64
+                    /*onlyAttachMLIRArgs=*/true);
+        ptxBuilder.launch(rewriter, loc, retType);
+      }
+    } else {
+      LLVM::LLVMVoidType voidTy = void_ty(op->getContext());
+      // NVSHMEM_SIGNAL_SET = 9
+      // NVSHMEM_SIGNAL_ADD = 10
+      int32_t v = -1;
+      if (adaptor.getSigOp() == ::mlir::triton::distributed::SignalOp::SET) {
+        v = 9;
+      } else if (adaptor.getSigOp() ==
+                 ::mlir::triton::distributed::SignalOp::ADD) {
+        assert(0 && "unsupport sigOp.\n");
+      }
+      Value sigOp = mlir::LLVM::createConstantI32(loc, rewriter, v);
+      auto nvshmemxSignalOp =
+          CreateNVSHMEMOp(rewriter, op, "nvshmemx_signal_op", libname, libpath,
+                          {adaptor.getSigAddr(), adaptor.getSignalVal(), sigOp,
+                           adaptor.getRank()},
+                          voidTy);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  StringRef libname;
+  StringRef libpath;
+};
+
 } // namespace
 
 void mlir::triton::NVIDIA::populateDistributedOpToLLVMPatterns(
@@ -190,4 +314,6 @@ void mlir::triton::NVIDIA::populateDistributedOpToLLVMPatterns(
   registerGenericOpToNVSHMEMDevice<triton::distributed::SymmAtOp>(
       patterns, typeConverter, benefit, "nvshmem_ptr", NVSHMEMLibname,
       NVSHMEMLibpath);
+
+  patterns.add<NotifyOpConversion>(typeConverter, benefit);
 }

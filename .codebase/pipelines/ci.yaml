@@ -55,3 +55,5 @@ jobs:
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_gather.py
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_nvshmem_api.py
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ring_put.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_intra_node.py 8192 8192 29568
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_intra_node.py 8192 8192 29568 --check

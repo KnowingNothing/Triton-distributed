@@ -289,6 +289,17 @@ void init_triton_ir(py::module &&m) {
       .value("FP16", ScaleDotElemType::FP16)
       .export_values();
 
+  py::enum_<distributed::SignalOp>(m, "SIGNAL_OP", py::module_local())
+      .value("SET", distributed::SignalOp::SET)
+      .value("ADD", distributed::SignalOp::ADD)
+      .export_values();
+
+  py::enum_<distributed::CommScope>(m, "COMM_SCOPE", py::module_local())
+      .value("GPU", distributed::CommScope::GPU)
+      .value("INTRA_NODE", distributed::CommScope::INTRA_NODE)
+      .value("INTER_NODE", distributed::CommScope::INTER_NODE)
+      .export_values();
+
   py::class_<MLIRContext>(m, "context", py::module_local())
       .def(py::init<>())
       .def("printOpOnDiagnostic",
@@ -1762,7 +1773,15 @@ void init_triton_ir(py::module &&m) {
            })
       .def("create_symm_at",
            [](TritonOpBuilder &self, Value ptr, Value rank) -> Value {
-             return self.create<mlir::triton::distributed::SymmAtOp>(ptr.getType(), ptr, rank);
+             return self.create<mlir::triton::distributed::SymmAtOp>(
+                 ptr.getType(), ptr, rank);
+           })
+      .def("create_notify",
+           [](TritonOpBuilder &self, Value ptr, Value signal, Value rank,
+              distributed::SignalOp sigOp,
+              distributed::CommScope commScope) -> void {
+             self.create<mlir::triton::distributed::NotifyOp>(ptr, signal, rank,
+                                                              sigOp, commScope);
            });
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())
