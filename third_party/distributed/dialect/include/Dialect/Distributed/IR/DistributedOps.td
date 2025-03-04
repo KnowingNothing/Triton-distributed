@@ -139,4 +139,29 @@ def TT_NotifyOp : TT_Distributed_Op<"notify", [
   );
 
 }
+
+
+
+def TT_ExternCallOp : TT_Distributed_Op<"extern_call", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+  ConditionallySpeculatable,
+]> {
+
+    let description = [{
+        call an external function $symbol implemented in $libpath/$libname with $args
+        return $libpath/$libname:$symbol($args...)
+    }];
+
+    let arguments = (ins Variadic<TT_Type>:$srcs, StrAttr:$libname, StrAttr:$libpath, StrAttr:$symbol, BoolAttr:$pure);
+
+    let results = (outs Variadic<TT_Type>:$result);
+
+    let assemblyFormat = "operands attr-dict `:` functional-type(operands, $result)";
+
+    let extraClassDeclaration = [{
+      // Interface method for ConditionallySpeculatable.
+      Speculation::Speculatability getSpeculatability();
+    }];
+
+}
 #endif // DISTRIBUTED_OPS

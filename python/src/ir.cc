@@ -1782,6 +1782,14 @@ void init_triton_ir(py::module &&m) {
               distributed::CommScope commScope) -> void {
              self.create<mlir::triton::distributed::NotifyOp>(ptr, signal, rank,
                                                               sigOp, commScope);
+           })
+      .def("create_extern_call",
+           [](TritonOpBuilder &self, const std::string &libName,
+              const std::string &libPath, const std::string &symbol,
+              std::vector<Value> &argList, const std::vector<Type> &retTypes,
+              bool isPure) -> OpState {
+             return self.create<mlir::triton::distributed::ExternCallOp>(
+                 retTypes, argList, libName, libPath, symbol, isPure);
            });
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())

@@ -1,5 +1,6 @@
 from triton.language import core
 import triton.language as tl
+from triton.distributed.core import extern_call
 import sys
 
 pi_u64_t = tl.core.pointer_type(tl.core.dtype("uint64"))
@@ -40,7 +41,7 @@ NVSHMEMI_AMO_OP_SENTINEL = sys.maxsize
 
 @core.extern
 def my_pe(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
@@ -54,7 +55,7 @@ def my_pe(_builder=None):
 
 @core.extern
 def n_pes(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
@@ -69,26 +70,24 @@ def n_pes(_builder=None):
 @core.extern
 def int_p(dest, value, pe, _builder=None):
     # force have a return value, even not used.
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [dest, value, pe],
-        {
-            (
-                core.pointer_type(core.dtype("int32")),
-                core.dtype("int32"),
-                core.dtype("int32"),
-            ): ("nvshmem_int_p", core.dtype("int32")),
-        },
+        {(
+            core.pointer_type(core.dtype("int32")),
+            core.dtype("int32"),
+            core.dtype("int32"),
+        ): ("nvshmem_int_p", ()),  # void return type
+         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def remote_ptr(local_ptr, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [local_ptr, pe],
@@ -100,133 +99,124 @@ def remote_ptr(local_ptr, pe, _builder=None):
          for pe_dtype in ["int32", "uint32"]},
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def barrier_all(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
         {
-            (): ("nvshmem_barrier_all", core.dtype("int32")),
+            (): ("nvshmem_barrier_all", ()),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def barrier_all_block(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
         {
-            (): ("nvshmemx_barrier_all_block", core.dtype("int32")),
+            (): ("nvshmemx_barrier_all_block", ()),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def barrier_all_warp(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
         {
-            (): ("nvshmemx_barrier_all_warp", core.dtype("int32")),
+            (): ("nvshmemx_barrier_all_warp", ()),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def sync_all(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
         {
-            (): ("nvshmem_sync_all", core.dtype("int32")),
+            (): ("nvshmem_sync_all", ()),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def sync_all_block(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
         {
-            (): ("nvshmemx_sync_all_block", core.dtype("int32")),
+            (): ("nvshmemx_sync_all_block", ()),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def sync_all_warp(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
         {
-            (): ("nvshmemx_sync_all_warp", core.dtype("int32")),
+            (): ("nvshmemx_sync_all_warp", ()),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def quiet(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
         {
-            (): ("nvshmem_quiet", core.dtype("int32")),
+            (): ("nvshmem_quiet", ()),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def fence(_builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [],
         {
-            (): ("nvshmem_fence", core.dtype("int32")),
+            (): ("nvshmem_fence", ()),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def getmem_nbi_block(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -238,18 +228,17 @@ def getmem_nbi_block(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmemx_getmem_nbi_block",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def getmem_block(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -261,18 +250,17 @@ def getmem_block(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmemx_getmem_block",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def getmem_nbi_warp(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -284,18 +272,17 @@ def getmem_nbi_warp(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmemx_getmem_nbi_warp",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def getmem_warp(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -307,18 +294,17 @@ def getmem_warp(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmemx_getmem_warp",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def getmem_nbi(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -330,18 +316,17 @@ def getmem_nbi(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmem_getmem_nbi",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def getmem(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -353,18 +338,17 @@ def getmem(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmem_getmem",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_block(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -376,18 +360,17 @@ def putmem_block(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmemx_putmem_block",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_nbi_block(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -399,18 +382,17 @@ def putmem_nbi_block(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmemx_putmem_nbi_block",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_warp(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -422,18 +404,17 @@ def putmem_warp(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmemx_putmem_warp",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_nbi_warp(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -445,18 +426,17 @@ def putmem_nbi_warp(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmemx_putmem_nbi_warp",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -468,18 +448,17 @@ def putmem(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmem_putmem",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_nbi(dest, source, bytes, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -491,18 +470,17 @@ def putmem_nbi(dest, source, bytes, pe, _builder=None):
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
                 "nvshmem_putmem_nbi",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_signal(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -517,18 +495,17 @@ def putmem_signal(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=No
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmem_putmem_signal",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_signal_nbi(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -543,18 +520,17 @@ def putmem_signal_nbi(dest, source, bytes, sig_addr, signal, sig_op, pe, _builde
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmem_putmem_signal_nbi",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_signal_block(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -569,18 +545,17 @@ def putmem_signal_block(dest, source, bytes, sig_addr, signal, sig_op, pe, _buil
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmemx_putmem_signal_block",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_signal_nbi_block(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -595,18 +570,17 @@ def putmem_signal_nbi_block(dest, source, bytes, sig_addr, signal, sig_op, pe, _
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmemx_putmem_signal_nbi_block",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_signal_warp(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -621,18 +595,17 @@ def putmem_signal_warp(dest, source, bytes, sig_addr, signal, sig_op, pe, _build
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmemx_putmem_signal_warp",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def putmem_signal_nbi_warp(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -647,18 +620,17 @@ def putmem_signal_nbi_warp(dest, source, bytes, sig_addr, signal, sig_op, pe, _b
         {
             (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmemx_putmem_signal_nbi_warp",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def signal_op(sig_addr, signal, sig_op, pe, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -670,18 +642,17 @@ def signal_op(sig_addr, signal, sig_op, pe, _builder=None):
         {
             (pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmemx_signal_op",
-                tl.int32,
+                (),
             ),
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )
 
 
 @core.extern
 def signal_wait_until(sig_addr, cmp_, cmp_val, _builder=None):
-    return core.extern_elementwise(
+    return extern_call(
         "libnvshmem_device",
         "",
         [
@@ -697,5 +668,4 @@ def signal_wait_until(sig_addr, cmp_, cmp_val, _builder=None):
         },
         is_pure=False,
         _builder=_builder,
-        check_args=False,
     )

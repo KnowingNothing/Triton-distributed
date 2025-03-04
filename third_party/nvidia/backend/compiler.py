@@ -350,6 +350,10 @@ class CUDABackend(BaseBackend):
                 metadata['use_nvshmem'] = True
                 break
 
+        # inline nvshmem ptx
+        if "nvshmemi_device_state_d" in str(llvm_mod):
+            metadata['use_nvshmem'] = True
+
         if options.extern_libs:
             paths = [path for (name, path) in options.extern_libs]
             llvm.link_extern_libs(llvm_mod, paths)
