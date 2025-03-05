@@ -152,7 +152,7 @@ nvshmem_create_tensor_list(const std::vector<int64_t> &shape,
   return tensors;
 }
 
-PYBIND11_MODULE(pynvshmem, m) {
+PYBIND11_MODULE(_pynvshmem, m) {
   m.def("nvshmemx_cumodule_init", [](intptr_t module) {
     CHECK_NVSHMEMX(nvshmemx_cumodule_init((CUmodule)module));
   });

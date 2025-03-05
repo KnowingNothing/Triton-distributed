@@ -52,30 +52,6 @@ class GemmConfig:
     STAGES: int
 
 
-def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup):
-    if not tensor.is_cuda:
-        tensor_gpu = tensor.cuda()
-        torch.distributed.broadcast(tensor_gpu, src=src, group=group)
-        tensor.copy_(tensor_gpu)
-    else:
-        torch.distributed.broadcast(tensor, src=src, group=group)
-    torch.cuda.synchronize()
-
-
-def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
-    rank, nranks = group.rank(), group.size()
-    if rank == 0:
-        unique_id: bytes = pynvshmem.nvshmemx_get_uniqueid()
-        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).clone()
-    else:
-        unique_id = torch.empty(128, dtype=torch.uint8)
-
-    broadcast_cpu(tensor=unique_id, group=group, src=0)
-
-    unique_id = unique_id.numpy().tobytes()
-    pynvshmem.nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)
-
-
 def get_gemm_config(M, N, K):
     return GemmConfig(128, 256, 64, 8, 3)
 
@@ -606,7 +582,7 @@ if __name__ == "__main__":
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    init_nvshmem_by_uniqueid(TP_GROUP)
+    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
     pynvshmem.nvshmem_barrier_all()
     torch.cuda.synchronize()
 

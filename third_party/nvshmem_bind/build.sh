@@ -28,13 +28,7 @@ fi
 
 function build_pynvshmem() {
   pushd ${PROJECT_ROOT}/pynvshmem
-  mkdir -p build
-  pushd build
-  cmake .. \
-    -DNVSHMEM_DIR=${NVSHMEM_DIR}/lib/cmake/nvshmem \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-  make -j VERBOSE=1
-  popd
+  NVSHMEM_HOME=${NVSHMEM_DIR} python3 setup.py install
   popd
 }
 

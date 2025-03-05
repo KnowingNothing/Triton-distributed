@@ -125,12 +125,12 @@ if [ "$show_only" -eq 1 ]; then
       continue
     fi
     # result=$(diff <(git show :$f) <(git show :$f | black --pyi -q -))
-    result=$(diff <(git show :$f) <(git show :$f | yapf -))
-    if [ "$result" != "" ]; then
-      echo "yapf ===== $f ====="
-      echo -e "$result"
-      has_diff=1
-    fi
+    # result=$(diff <(git show :$f) <(git show :$f | yapf -))
+    # if [ "$result" != "" ]; then
+    #   echo "yapf ===== $f ====="
+    #   echo -e "$result"
+    #   has_diff=1
+    # fi
     ruff_result=$(ruff check --diff $f)
     if [ "$ruff_result" != "" ]; then
       echo "ruff ===== $f ====="

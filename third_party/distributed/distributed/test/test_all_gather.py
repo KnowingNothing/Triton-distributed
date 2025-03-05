@@ -23,31 +23,6 @@ import pynvshmem
 import os
 import datetime
 
-def broadcast_cpu(
-    tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup
-):
-    if not tensor.is_cuda:
-        tensor_gpu = tensor.cuda()
-        torch.distributed.broadcast(tensor_gpu, src=src, group=group)
-        tensor.copy_(tensor_gpu)
-    else:
-        torch.distributed.broadcast(tensor, src=src, group=group)
-    torch.cuda.synchronize()
-
-
-def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
-    rank, nranks = group.rank(), group.size()
-    if rank == 0:
-        unique_id: bytes = pynvshmem.nvshmemx_get_uniqueid()
-        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).clone()
-    else:
-        unique_id = torch.empty(128, dtype=torch.uint8)
-
-    broadcast_cpu(tensor=unique_id, group=group, src=0)
-
-    unique_id = unique_id.numpy().tobytes()
-    pynvshmem.nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)
-
 
 # all gather(pull mode)
 @triton.jit
@@ -72,12 +47,12 @@ def all_gather_kernel(
             mask = block_offsets < n_elements_per_rank
             val = tl.load(remote_ptr + block_offsets + rank_offset, mask=mask)
             tl.store(ag_ptr + block_offsets + rank_offset, val, mask=mask)
-                
+
 
 def triton_all_gather(ag_buffer):
     n_elements = ag_buffer.numel()
-    BLOCK_SIZE=4096
-    all_gather_kernel[(32,)](ag_buffer, n_elements, BLOCK_SIZE=BLOCK_SIZE, num_warps=16)
+    BLOCK_SIZE = 4096
+    all_gather_kernel[(32, )](ag_buffer, n_elements, BLOCK_SIZE=BLOCK_SIZE, num_warps=16)
     return ag_buffer
 
 
@@ -101,15 +76,15 @@ if __name__ == "__main__":
     TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
 
     torch.cuda.synchronize()
-    init_nvshmem_by_uniqueid(TP_GROUP)
+    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
 
     n_elements = nelems_per_rank * WORLD_SIZE
     ref_tensor = torch.arange(n_elements, dtype=dtype).cuda()
 
     ag_buffer = pynvshmem.nvshmem_create_tensor((n_elements, ), dtype)
     # local copy
-    ag_buffer[nelems_per_rank * RANK : nelems_per_rank * (RANK + 1)].copy_(
-        ref_tensor[nelems_per_rank * RANK : nelems_per_rank * (RANK + 1)])
+    ag_buffer[nelems_per_rank * RANK:nelems_per_rank * (RANK + 1)].copy_(ref_tensor[nelems_per_rank *
+                                                                                    RANK:nelems_per_rank * (RANK + 1)])
 
     pynvshmem.nvshmem_barrier_all()
     triton_all_gather(ag_buffer)
@@ -122,9 +97,6 @@ if __name__ == "__main__":
         raise e
     else:
         print(f"✅ RANK[{RANK}] check passed")
-
-    # pynvshmem.nvshmem_barrier_all()
-    # ms = triton.testing.do_bench(lambda: triton_all_gather(ag_buffer))
 
     total_iters = warmup_iters + iters
     start_events = [torch.cuda.Event(enable_timing=True) for _ in range(total_iters)]
