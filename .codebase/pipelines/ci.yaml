@@ -23,6 +23,7 @@ jobs:
           - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43
           - pip3 install pre-commit
           - pip3 install cuda-python==12.4
+          - pip3 install pytest
           - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
@@ -35,25 +36,48 @@ jobs:
           - ln -s `which python3` /home/code/.local/bin/python
           - ln -s `which pip3` /home/code/.local/bin/pip
           - hash -r
-          - python --version
-          - pip --version
-          - python -c "import torch; print(torch.__version__)"
+          - python3 --version
+          - pip3 --version
+          - python3 -c "import torch; print(torch.__version__)"
 
       - name: build
         commands:
           - git submodule update --init --recursive
+          - pip3 uninstall triton -y
           - pip3 install ninja cmake wheel pybind11
+          - export USE_TRITON_DISTRIBUTED_AOT=0
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          - export USE_TRITON_DISTRIBUTED_AOT=1
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
 
       - name: distributed tests
         commands:
+          #############
+          # ad-hoc test
+          #############
+          # basic
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_distributed_wait.py --case correctness
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_distributed_wait.py --case correctness_tma
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_distributed_wait.py --case correctness_tma_multi_barrier
+          # ag gemm
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_intra_node.py --case correctness_tma
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_small_msg.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_gather.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_nvshmem_api.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ring_put.py
+          # gemm rs
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_intra_node.py 8192 8192 29568
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_intra_node.py 8192 8192 29568 --check
+          # ag
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_small_msg.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_gather.py
+          # nvshmem related
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_nvshmem_api.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ring_put.py
+          # flash decoding
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_persistent
+          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_persistent_aot
+          #############
+          # pytest (disabled)
+          #############
+          # flash decoding
+          # - pytest ./third_party/distributed/distributed/test/test_decode_attn.py::test_triton_decode_with_paged_kv
+          # - pytest ./third_party/distributed/distributed/test/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent
+          # - USE_TRITON_DISTRIBUTED_AOT=1 pytest ./third_party/distributed/distributed/test/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent_aot

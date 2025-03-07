@@ -507,6 +507,9 @@ class CMakeBuild(build_ext):
         if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
             cmake_args += self.get_proton_cmake_args()
 
+        if check_env_flag("USE_TRITON_DISTRIBUTED_AOT", "1"):  # Default OFF
+            cmake_args += ["-DUSE_TRITON_DISTRIBUTED_AOT=ON"]
+
         if is_offline_build():
             # unit test builds fetch googletests from GitHub
             cmake_args += ["-DTRITON_BUILD_UT=OFF"]

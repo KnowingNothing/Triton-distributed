@@ -18,5 +18,5 @@ export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=eth0
 
 export TRITON_CACHE_DIR=${SCRIPT_DIR}/third_party/nvshmem_bind/python/triton_cache
 export NVSHMEM_HOME=${NVSHMEM_ROOT}
-mkdir -p ${SCRIPT_DIR}/third_party/nvshmem_bind/python/triton_cache
+mkdir -p ${SCRIPT_DIR}/triton_cache
 

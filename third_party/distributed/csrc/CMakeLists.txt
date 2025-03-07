@@ -1,5 +1,4 @@
-add_distributed_library(Distributed
-	Distributed.cpp
-)
-
+if(USE_TRITON_DISTRIBUTED_AOT)  
+    add_subdirectory(triton_aot_generated)
+endif()
 add_subdirectory(lib)
