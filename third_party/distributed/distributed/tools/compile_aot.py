@@ -163,7 +163,8 @@ def _check_signature_or_throw(kernel: triton.JITFunction, signature: str):
 
     signature = signature.split(",")
     signature = [s.strip(" ") for s in signature]
-    assert len(kernel.arg_names) == len(signature), f"{len(kernel.arg_names)} vs {len(signature)}"
+    assert len(kernel.arg_names) == len(
+        signature), f"{len(kernel.arg_names)} vs {len(signature)}: {kernel.arg_names} | {signature}"
     for index, (param, sig) in enumerate(zip(kernel.params, signature)):
         if param.is_constexpr:
             assert (f"%{param.name}" == sig
@@ -172,8 +173,8 @@ def _check_signature_or_throw(kernel: triton.JITFunction, signature: str):
             assert _is_valid_arg_sig(sig), f"invalid none-constepxr signature at {index}-th: {sig}"
 
 
-def make_kernel_algo_info_struct_name(tt_kernel_name):
-    return f"{tt_kernel_name}__triton_algo_info_t"
+def make_kernel_algo_info_struct_name(c_kernel_name):
+    return f"{c_kernel_name}__triton_algo_info_t"
 
 
 def make_algo_info_decl(kernel_name, algo_info_schema):
@@ -408,7 +409,7 @@ def make_kernel_with_algo_info_param(
     schema = context[tt_kernel_name]["constexpr"]
 
     algo_info_variable_name = "algo_info"  # TODO(houqi.1993) do something to force no duplicate
-    src = f"CUresult {c_kernel_name}_ex(CUstream stream, {gen_signature_with_full_args(meta)}, struct {make_kernel_algo_info_struct_name(tt_kernel_name)} {algo_info_variable_name}){{\n"
+    src = f"CUresult {c_kernel_name}_ex(CUstream stream, {gen_signature_with_full_args(meta)}, struct {make_kernel_algo_info_struct_name(c_kernel_name)} {algo_info_variable_name}){{\n"
     for c_kernel_name_with_algo_info in c_kernel_name_with_algo_infos.keys():
         algo_info = _get_algo_info(c_kernel_name_with_algo_info, c_kernel_name)
         algo_info_value = _make_triton_algo_info_with_schema(algo_info, schema)
@@ -522,15 +523,17 @@ def link_all(workspace: Path, libname: str, context: Dict[str, Dict]):
         for c_kernel_name, c_kernel_with_algo_infos in tt_kernel_with_dtypes.items()
     ]
 
-    # per tt_kernel_name
+    # per c_kernel_name
     kernel_algo_infos = [
-        make_algo_info_decl(tt_kernel_name, context[tt_kernel_name]["constexpr"]) for tt_kernel_name in kernels.keys()
+        make_algo_info_decl(c_kernel_name, context[tt_kernel_name]["constexpr"])
+        for tt_kernel_name, tt_kernel_with_dtypes in kernels.items()
+        for c_kernel_name, c_kernel_with_algo_infos in tt_kernel_with_dtypes.items()
     ]
     # per c_kernel_name
     global_decls_with_algo_info = [
         make_global_decl_with_algo_info(
             _take_a_meta(c_kernel_with_algo_infos),  # meta.orig_kernel_name used
-            make_kernel_algo_info_struct_name(tt_kernel_name),
+            make_kernel_algo_info_struct_name(c_kernel_name),
         )
         for tt_kernel_name, tt_kernel_with_dtypes in kernels.items()
         for c_kernel_name, c_kernel_with_algo_infos in tt_kernel_with_dtypes.items()
@@ -653,7 +656,7 @@ namespace ops {
 
     global_pybind_with_algo_info = [
         make_global_pybind_with_algo_info(_take_a_meta(c_kernel_with_algo_infos),  # meta.orig_kernel_name used
-                                          make_kernel_algo_info_struct_name(tt_kernel_name),
+                                          make_kernel_algo_info_struct_name(c_kernel_name),
                                           context[tt_kernel_name]["constexpr"])
         for tt_kernel_name, tt_kernel_with_dtypes in kernels.items()
         for c_kernel_name, c_kernel_with_algo_infos in tt_kernel_with_dtypes.items()

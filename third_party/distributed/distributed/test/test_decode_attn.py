@@ -33,9 +33,7 @@
 
 import torch
 import triton
-import math
 import triton.language as tl
-from triton.language.extra import libdevice
 import pytest
 from typing import List, Optional, Tuple
 
@@ -47,7 +45,8 @@ import datetime
 import numpy as np
 import pynvshmem
 
-from triton.distributed.kernels import gqa_fwd_batch_decode_persistent, gqa_fwd_batch_decode_persistent_aot
+from triton.distributed.kernels import (gqa_fwd_batch_decode_persistent, gqa_fwd_batch_decode_persistent_aot,
+                                        gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot)
 
 
 def perf_func(func, iters, warmup_iters):
@@ -283,298 +282,58 @@ def atomic_add(barrier_ptr, value, scope: tl.constexpr, semantic: tl.constexpr):
     return __atomic_add(barrier_ptr, value, scope, semantic)
 
 
-@triton.jit
-def kernel_gqa_fwd_batch_decode_split_kv(
-    q_ptr,
-    k_cache_ptr,
-    v_cache_ptr,
-    output_ptr,
-    sm_scale,
-    block_table_ptr,
-    kv_length_ptr,
-    workspace_ptr,
-    # strides
-    stride_q_bs,
-    stride_q_h,
-    stride_q_d,
-    stride_k_cache_bs,
-    stride_k_cache_h,
-    stride_k_cache_d,
-    stride_v_cache_bs,
-    stride_v_cache_h,
-    stride_v_cache_d,
-    stride_o_bs,
-    stride_o_h,
-    stride_o_split,
-    stride_o_d,
-    stride_table_bs,
-    stride_table_d,
-    # constants
-    kv_group_num: tl.constexpr,
-    q_head_num: tl.constexpr,
-    BLOCK_HEAD_DIM: tl.constexpr,
-    BLOCK_DPE: tl.constexpr,
-    BLOCK_DV: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_H: tl.constexpr,
-    NUM_KV_SPLITS: tl.constexpr,
-    PAGE_SIZE: tl.constexpr,
-    soft_cap: tl.constexpr,
-    K_DIM: tl.constexpr,
-    V_DIM: tl.constexpr,
-):
-    bid = tl.program_id(0)
-    hid = tl.program_id(1)
-    kv_hid = hid // tl.cdiv(kv_group_num, BLOCK_H)
-    split_kv_id = tl.program_id(2)
-
-    if kv_group_num > BLOCK_H:
-        VALID_BLOCK_H: tl.constexpr = BLOCK_H
-    else:
-        VALID_BLOCK_H: tl.constexpr = kv_group_num
-
-    cur_head = hid * VALID_BLOCK_H + tl.arange(0, BLOCK_H)
-    mask_h = (cur_head < (hid + 1) * VALID_BLOCK_H) & (cur_head < q_head_num)
-
-    offs_d = tl.arange(0, BLOCK_HEAD_DIM)
-    offs_dv = tl.arange(0, BLOCK_DV)
-    mask_d = offs_d < K_DIM
-    mask_dv = offs_dv < V_DIM
-    cur_kv_seq_len = tl.load(kv_length_ptr + bid)
-
-    offs_q = bid * stride_q_bs + cur_head[:, None] * stride_q_h + offs_d[None, :] * stride_q_d
-    q = tl.load(q_ptr + offs_q, mask=(mask_h[:, None]) & (mask_d[None, :]), other=0.0)
-
-    if BLOCK_DPE > 0:
-        offs_dpe = BLOCK_HEAD_DIM + tl.arange(0, BLOCK_DPE)
-        mask_dpe = offs_dpe < K_DIM
-        offs_qpe = bid * stride_q_bs + cur_head[:, None] * stride_q_h + offs_dpe[:, None] * stride_q_d
-        qpe = tl.load(q_ptr + offs_qpe, mask=mask_h[:, None] & mask_dpe[None, :], other=0.0)
-
-    kv_len_per_split = tl.cdiv(cur_kv_seq_len, NUM_KV_SPLITS)
-    split_kv_start = kv_len_per_split * split_kv_id
-    split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_kv_seq_len)
-
-    e_max = tl.zeros([BLOCK_H], dtype=tl.float32) - float("inf")
-    e_sum = tl.zeros([BLOCK_H], dtype=tl.float32)
-    acc = tl.zeros([BLOCK_H, BLOCK_DV], dtype=tl.float32)
-
-    for start_n in range(split_kv_start, split_kv_end, BLOCK_N):
-        offs_n = start_n + tl.arange(0, BLOCK_N)
-        kv_page_number = tl.load(block_table_ptr + bid * stride_table_bs + offs_n // PAGE_SIZE * stride_table_d,
-                                 mask=offs_n < split_kv_end, other=0)
-        kv_loc = kv_page_number * PAGE_SIZE + offs_n % PAGE_SIZE
-        offs_cache_k = kv_loc[None, :] * stride_k_cache_bs + kv_hid * stride_k_cache_h + offs_d[:,
-                                                                                                None] * stride_k_cache_d
-        k = tl.load(k_cache_ptr + offs_cache_k, mask=(offs_n[None, :] < split_kv_end) & mask_d[:, None], other=0.0)
-        qk = tl.dot(q, k.to(q.dtype))
-
-        if BLOCK_DPE > 0:
-            offs_cache_kpe = kv_loc[
-                None, :] * stride_k_cache_bs + kv_hid * stride_k_cache_h + offs_dpe[:, None] * stride_k_cache_d
-            kpe = tl.load(k_cache_ptr + offs_cache_kpe, mask=(offs_n[None, :] < split_kv_end) & mask_dpe[:, None],
-                          other=0.0)
-            qk += tl.dot(qpe, kpe.to(qpe.dtype))
-
-        qk *= sm_scale
-
-        if soft_cap > 0:
-            qk = soft_cap * tanh(qk / soft_cap)
-
-        qk = tl.where(mask_h[:, None] & (offs_n[None, :] < split_kv_end), qk, float("-inf"))
-
-        offs_cache_v = kv_loc[:, None] * stride_v_cache_bs + kv_hid * stride_v_cache_h + offs_dv[
-            None, :] * stride_v_cache_d
-        v = tl.load(v_cache_ptr + offs_cache_v, mask=(offs_n[:, None] < split_kv_end) & mask_dv[None, :], other=0.0)
-
-        n_e_max = tl.maximum(tl.max(qk, 1), e_max)
-        re_scale = libdevice.fast_expf(e_max - n_e_max)
-        p = libdevice.fast_expf(qk - n_e_max[:, None])
-        acc *= re_scale[:, None]
-        acc += tl.dot(p.to(v.dtype), v)
-
-        e_sum = e_sum * re_scale + tl.sum(p, 1)
-        e_max = n_e_max
-
-    offs_out = bid * stride_o_bs + cur_head[:, None] * stride_o_h + split_kv_id * stride_o_split + offs_dv[
-        None, :] * stride_o_d
-    tl.store(output_ptr + offs_out, acc / e_sum[:, None], mask=mask_h[:, None] & mask_dv[None, :])
-
-    offs_log = bid * stride_o_bs + cur_head * stride_o_h + split_kv_id * stride_o_split + V_DIM
-    tl.store(output_ptr + offs_log, e_max + tl.log(e_sum), mask=mask_h)
-
-    # thd = tl.num_programs(0) * tl.num_programs(1) * tl.num_programs(1)
-    # if thread_id("x") == 0:
-    #     if atomic_add(workspace_ptr, 1, "gpu", "release") == thd - 1:
-    #         tl.store(workspace_ptr + 1, 1)
-    # __syncthreads()
-
-
-@triton.jit
-def kernel_gqa_fwd_batch_decode_combine_kv(
-    Mid_O,
-    o,
-    B_Seqlen,
-    workspace_ptr,
-    stride_mid_ob,
-    stride_mid_oh,
-    stride_mid_os,
-    stride_obs,
-    stride_oh,
-    NUM_KV_SPLITS: tl.constexpr,
-    BLOCK_DV: tl.constexpr,
-    Lv: tl.constexpr,
-):
-    cur_batch = tl.program_id(0)
-    cur_head = tl.program_id(1)
-
-    cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
-
-    offs_d = tl.arange(0, BLOCK_DV)
-    mask_d = offs_d < Lv
-
-    e_sum = 0.0
-    e_max = -float("inf")
-    acc = tl.zeros([BLOCK_DV], dtype=tl.float32)
-
-    offs_v = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + offs_d
-    offs_logic = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + Lv
-
-    for split_kv_id in range(0, NUM_KV_SPLITS):
-        kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
-        split_kv_start = kv_len_per_split * split_kv_id
-        split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
-
-        if split_kv_end > split_kv_start:
-            tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0)
-            tlogic = tl.load(Mid_O + offs_logic + split_kv_id * stride_mid_os)
-            n_e_max = tl.maximum(tlogic, e_max)
-
-            old_scale = libdevice.fast_expf(e_max - n_e_max)
-            acc *= old_scale
-            exp_logic = libdevice.fast_expf(tlogic - n_e_max)
-            acc += exp_logic * tv
-
-            e_sum = e_sum * old_scale + exp_logic
-            e_max = n_e_max
-
-    tl.store(
-        o + cur_batch * stride_obs + cur_head * stride_oh + offs_d,
-        acc / e_sum,
-        mask=mask_d,
-    )
-
-
-def gqa_fwd_batch_decode(q, k_cache, v_cache, workspace, q_lens, kv_lens, block_table, scale, soft_cap=0.0,
-                         split_stream=None, combine_stream=None, output_split=None, output_combine=None, kv_split=-1):
-    batch, q_heads, q_head_dim = q.shape
-    _, page_size, kv_heads, k_head_dim = k_cache.shape
-    assert page_size == v_cache.shape[1] and kv_heads == v_cache.shape[2] and k_head_dim == q_head_dim
-    v_head_dim = v_cache.shape[-1]
-
-    BLOCK_N = 64
-    BLOCK_HEAD_DIM = 2**int(math.log2(q_head_dim))
-    BLOCK_DPE = q_head_dim - BLOCK_HEAD_DIM
-    BLOCK_DV = triton.next_power_of_2(v_head_dim)
-
-    kv_group_num = q_heads // kv_heads
-    assert q_heads % kv_heads == 0
-
-    BLOCK_H = 16
-    NUM_KV_SPLITS = 32 if kv_split == -1 else kv_split
-
-    grid_split_kv = (batch, triton.cdiv(q_heads, min(BLOCK_H, kv_group_num)), NUM_KV_SPLITS)
-
-    output_split = torch.empty([batch, q_heads, NUM_KV_SPLITS, v_head_dim +
-                                1], dtype=torch.float32, device=q.device) if output_split is None else output_split
-    output_combine = torch.empty([batch, q_heads, v_head_dim], dtype=torch.float16,
-                                 device=q.device) if output_combine is None else output_combine
-
-    split_stream = torch.cuda.current_stream() if split_stream is None else split_stream
-    combine_stream = torch.cuda.current_stream() if combine_stream is None else combine_stream
-    current_stream = torch.cuda.current_stream()
-
-    split_stream.wait_stream(current_stream)
-    combine_stream.wait_stream(current_stream)
-
-    with torch.cuda.stream(split_stream):
-        kernel_gqa_fwd_batch_decode_split_kv[grid_split_kv](
-            q,
-            k_cache,
-            v_cache,
-            output_split,
-            scale,
-            block_table,
-            kv_lens,
-            workspace,
-            # strides
-            q.stride(0),
-            q.stride(1),
-            q.stride(2),
-            k_cache.stride(-3),
-            k_cache.stride(-2),
-            k_cache.stride(-1),
-            v_cache.stride(-3),
-            v_cache.stride(-2),
-            v_cache.stride(-1),
-            output_split.stride(0),
-            output_split.stride(1),
-            output_split.stride(2),
-            output_split.stride(3),
-            block_table.stride(0),
-            block_table.stride(1),
-            # constants
-            kv_group_num,
-            q_heads,
-            BLOCK_HEAD_DIM,
-            BLOCK_DPE,
-            BLOCK_DV,
-            BLOCK_N,
-            BLOCK_H,
-            NUM_KV_SPLITS,
-            page_size,
-            soft_cap,
-            k_head_dim,
-            v_head_dim,
-            num_warps=4,
-            num_stages=2,
-        )
-
-    with torch.cuda.stream(combine_stream):
-        kernel_gqa_fwd_batch_decode_combine_kv[(batch, q_heads)](
-            output_split,
-            output_combine,
-            kv_lens,
-            workspace,
-            output_split.stride(0),
-            output_split.stride(1),
-            output_split.stride(2),
-            output_combine.stride(0),
-            output_combine.stride(1),
-            NUM_KV_SPLITS,
-            BLOCK_DV,
-            v_head_dim,
-            num_warps=4,
-            num_stages=2,
-        )
-
-    current_stream.wait_stream(split_stream)
-    current_stream.wait_stream(combine_stream)
-
-    return output_combine
-
-
-NUM_BLOCKS = 3200  # Large enough to test overflow in index calculation.
+NUM_BLOCKS = 32000  # Large enough to test overflow in index calculation.
 
 
 @pytest.mark.parametrize("kv_lens", [[1320, 18, 463], [1, 54, 293, 70]])
 @pytest.mark.parametrize("num_heads", [(16, 16), (32, 8), (64, 8), (6, 1)])
 @pytest.mark.parametrize("head_size", [128, 256])
-@pytest.mark.parametrize("block_size", [16, 32])
+@pytest.mark.parametrize("block_size", [1, 16])
 @pytest.mark.parametrize("dtype", [torch.float16])
 @pytest.mark.parametrize("soft_cap", [0, 30, 50])
-@torch.inference_mode
 def test_triton_decode_with_paged_kv(
+    kv_lens: List[int],
+    num_heads: Tuple[int, int],
+    head_size: int,
+    dtype: torch.dtype,
+    block_size: int,
+    soft_cap: Optional[float],
+) -> None:
+    torch.set_default_device("cuda")
+    num_seqs = len(kv_lens)
+    num_query_heads = num_heads[0]
+    num_kv_heads = num_heads[1]
+    assert num_query_heads % num_kv_heads == 0
+    max_kv_len = max(kv_lens)
+    scale = head_size**-0.5
+
+    query = torch.randn(num_seqs, num_query_heads, head_size, dtype=dtype)
+
+    key_value_cache = torch.randn(NUM_BLOCKS + 1, 2, block_size, num_kv_heads, head_size, dtype=dtype)
+    key_cache = key_value_cache[:, 0, :, :, :].contiguous()
+    value_cache = key_value_cache[:, 1, :, :, :].contiguous()
+    workspace = torch.zeros([num_seqs * num_query_heads * 32], dtype=torch.int32)
+
+    max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
+    block_tables = torch.randint(0, NUM_BLOCKS, (num_seqs, max_num_blocks_per_seq), dtype=torch.int32)
+
+    output = gqa_fwd_batch_decode(query, key_cache, value_cache, workspace, [1] * num_seqs,
+                                  torch.tensor(kv_lens, dtype=torch.int32, device=query.device), block_tables, scale,
+                                  soft_cap)
+
+    ref_output = ref_paged_attn(query=query, key_cache=key_cache, value_cache=value_cache, query_lens=[1] * num_seqs,
+                                kv_lens=kv_lens, block_tables=block_tables, scale=scale, soft_cap=soft_cap)
+    torch.testing.assert_close(output, ref_output, atol=1e-2, rtol=1e-2), \
+        f"{torch.max(torch.abs(output - ref_output))}"
+
+
+@pytest.mark.parametrize("kv_lens", [[32], [1320], [18], [463], [1], [54], [293], [70]])
+@pytest.mark.parametrize("num_heads", [(96, 12)])
+@pytest.mark.parametrize("head_size", [128])
+@pytest.mark.parametrize("block_size", [1])
+@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("soft_cap", [0])
+def test_triton_decode_with_paged_kv_aot(
     kv_lens: List[int],
     num_heads: Tuple[int, int],
     head_size: int,
@@ -600,9 +359,11 @@ def test_triton_decode_with_paged_kv(
     max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
     block_tables = torch.randint(0, NUM_BLOCKS, (num_seqs, max_num_blocks_per_seq), dtype=torch.int32)
 
-    output = gqa_fwd_batch_decode(query, key_cache, value_cache, workspace, [1] * num_seqs,
-                                  torch.tensor(kv_lens, dtype=torch.int32, device=query.device), block_tables, scale,
-                                  soft_cap)
+    stream = torch.cuda.current_stream()
+    for i in range(10):
+        output = gqa_fwd_batch_decode_aot(stream, query, key_cache, value_cache, workspace, [1] * num_seqs,
+                                          torch.tensor(kv_lens, dtype=torch.int32, device=query.device), block_tables,
+                                          scale, soft_cap)
 
     ref_output = ref_paged_attn(query=query, key_cache=key_cache, value_cache=value_cache, query_lens=[1] * num_seqs,
                                 kv_lens=kv_lens, block_tables=block_tables, scale=scale, soft_cap=soft_cap)
@@ -616,7 +377,6 @@ def test_triton_decode_with_paged_kv(
 @pytest.mark.parametrize("block_size", [1])
 @pytest.mark.parametrize("dtype", [torch.float16])
 @pytest.mark.parametrize("soft_cap", [0])
-@torch.inference_mode
 def test_triton_decode_with_paged_kv_persistent(
     kv_lens: List[int],
     num_heads: Tuple[int, int],
@@ -659,7 +419,6 @@ def test_triton_decode_with_paged_kv_persistent(
 @pytest.mark.parametrize("block_size", [1])
 @pytest.mark.parametrize("dtype", [torch.float16])
 @pytest.mark.parametrize("soft_cap", [0])
-@torch.inference_mode
 def test_triton_decode_with_paged_kv_persistent_aot(
     kv_lens: List[int],
     num_heads: Tuple[int, int],
@@ -699,7 +458,7 @@ def test_triton_decode_with_paged_kv_persistent_aot(
 
 @register_test("perf_8k")
 def perf_8k_decode(args):
-    for kv_len in [2**i for i in range(14)]:
+    for kv_len in [2**i for i in range(15, 16)]:
         kv_lens = [kv_len]
         torch.set_default_device("cuda")
         num_seqs = len(kv_lens)
@@ -713,7 +472,7 @@ def perf_8k_decode(args):
         soft_cap = 0.0
 
         block_size = 1
-        NUM_BLOCKS = 2**13 + 100
+        NUM_BLOCKS = 2**16 + 100
 
         query = torch.randn(num_seqs, num_query_heads, head_size, dtype=dtype)
 
@@ -722,20 +481,17 @@ def perf_8k_decode(args):
         workspace = torch.zeros([num_seqs * num_query_heads * 32], dtype=torch.int32)
 
         kv_split = 32
-        output_split = torch.empty([num_seqs, num_query_heads, kv_split, head_size + 1], dtype=query.dtype)
+        output_split = torch.empty([num_seqs, num_query_heads, kv_split, head_size + 1], dtype=torch.float32)
         output_combine = torch.empty([num_seqs, num_query_heads, head_size], dtype=query.dtype)
 
         max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
         block_tables = torch.randint(0, NUM_BLOCKS, (num_seqs, max_num_blocks_per_seq), dtype=torch.int32)
+        # block_tables = torch.arange(0, (num_seqs * max_num_blocks_per_seq)).view(num_seqs, -1).to(torch.int32)
         kv_lens = torch.tensor(kv_lens, dtype=torch.int32, device=query.device)
-
-        stream1 = torch.cuda.current_stream()
-        stream2 = torch.cuda.current_stream()
 
         def func():
             gqa_fwd_batch_decode(query, key_cache, value_cache, workspace, [1] * num_seqs, kv_lens, block_tables, scale,
-                                 soft_cap, split_stream=stream1, combine_stream=stream2, output_split=output_split,
-                                 output_combine=output_combine, kv_split=kv_split)
+                                 soft_cap, output_split=output_split, output_combine=output_combine, kv_split=kv_split)
 
         _, perf = perf_func(func, iters=1000, warmup_iters=200)
 
@@ -758,9 +514,70 @@ def perf_8k_decode(args):
         profiler.export_chrome_trace(f"{prof_dir}/rank{RANK}.json")
 
 
+@register_test("perf_8k_aot")
+def perf_8k_decode_aot(args):
+    for kv_len in [2**i for i in range(0, 20)]:
+        kv_lens = [kv_len]
+        torch.set_default_device("cuda")
+        num_seqs = len(kv_lens)
+        num_query_heads = 96
+        num_kv_heads = 12
+        head_size = 128
+        assert num_query_heads % num_kv_heads == 0
+        max_kv_len = max(kv_lens)
+        scale = head_size**-0.5
+        dtype = torch.float16
+        soft_cap = 0
+
+        block_size = 1
+        NUM_BLOCKS = 2**20 + 100
+
+        query = torch.randn(num_seqs, num_query_heads, head_size, dtype=dtype)
+
+        key_cache = torch.randn(NUM_BLOCKS, block_size, num_kv_heads, head_size, dtype=dtype)
+        value_cache = torch.randn(NUM_BLOCKS, block_size, num_kv_heads, head_size, dtype=dtype)
+        workspace = torch.zeros([num_seqs * num_query_heads * 32], dtype=torch.int32)
+
+        kv_split = 32
+        output_split = torch.empty([num_seqs, num_query_heads, kv_split, head_size + 1], dtype=torch.float16)
+        output_combine = torch.empty([num_seqs, num_query_heads, head_size], dtype=query.dtype)
+
+        max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
+        # block_tables = torch.randint(0, NUM_BLOCKS, (num_seqs, max_num_blocks_per_seq), dtype=torch.int32)
+        block_tables = torch.arange(0, (num_seqs * max_num_blocks_per_seq)).view(num_seqs, -1).to(torch.int32)
+        kv_lens = torch.tensor(kv_lens, dtype=torch.int32, device=query.device)
+
+        stream = torch.cuda.current_stream()
+
+        def func():
+            gqa_fwd_batch_decode_aot(stream, query, key_cache, value_cache, workspace, [1] * num_seqs, kv_lens,
+                                     block_tables, scale, soft_cap, output_split=output_split,
+                                     output_combine=output_combine, kv_split=kv_split)
+
+        _, perf = perf_func(func, iters=1000, warmup_iters=200)
+
+        torch.distributed.barrier(args.default_group)
+        dist_print(f"rank: {args.rank} KV len={kv_len} Performance is {perf} ms", allowed_ranks="all", need_sync=True)
+
+        with torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CUDA,
+                    torch.profiler.ProfilerActivity.CPU,
+                ],
+                record_shapes=True,
+                profile_memory=True,
+        ) as profiler:
+            for i in range(20):
+                func()
+
+        prof_dir = f"prof/trace_flash_decode_kvlen_{kv_len}_aot"
+        os.makedirs(prof_dir, exist_ok=True)
+        profiler.export_chrome_trace(f"{prof_dir}/rank{RANK}.json")
+
+
 @register_test("perf_8k_persistent")
 def perf_8k_decode_persistent(args):
-    for kv_len in [2**i for i in range(14)]:
+    for kv_len in [2**i for i in range(16)]:
         kv_lens = [kv_len]
         torch.set_default_device("cuda")
         num_seqs = len(kv_lens)
