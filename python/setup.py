@@ -344,6 +344,28 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
         shutil.copy(src_path, dst_path)
 
 
+def download_nvshmem():
+    version = "3.2.5-1"
+    url = f"https://developer.nvidia.com/downloads/assets/secure/nvshmem/nvshmem_src_{version}.txz"
+    base_dir = os.path.dirname(__file__)
+    triton_cache_path = get_triton_cache_path()
+    tmp_path = os.path.join(triton_cache_path, "nvshmem")  # path to cache the download
+    src_path = "nvshmem_src"
+    src_path = os.path.join(tmp_path, src_path)
+    dst_path = os.path.join(base_dir, os.pardir, "third_party", "nvshmem")
+    download = not os.path.exists(src_path)
+    if download:
+        print(f'downloading and extracting {url} ...')
+        file = tarfile.open(fileobj=open_url(url), mode="r|*")
+        file.extractall(path=tmp_path)
+    os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
+    print(f'copy {src_path} to {dst_path} ...')
+    if os.path.isdir(src_path):
+        shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+    else:
+        shutil.copy(src_path, dst_path)
+
+
 # ---- cmake extension ----
 
 
@@ -610,6 +632,8 @@ download_and_copy(
     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
 )
 backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+
+download_nvshmem()
 
 
 def add_link_to_backends():
