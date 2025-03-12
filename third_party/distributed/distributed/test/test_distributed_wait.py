@@ -1,17 +1,25 @@
 ################################################################################
 #
-# Copyright 2025 ByteDance Ltd. and/or its affiliates. All rights reserved.
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
 import torch
@@ -29,6 +37,7 @@ ALL_TESTS = {}
 
 
 def register_test(name):
+
     def wrapper(func):
         assert name not in ALL_TESTS
         ALL_TESTS[name] = func
@@ -46,12 +55,10 @@ def get_args():
 
 
 def help():
-    print(
-        f"""
+    print(f"""
 Available choices: {list(ALL_TESTS.keys())}.
 run: python {os.path.abspath(__file__)} --case XXX
-"""
-    )
+""")
 
 
 @triton.jit
@@ -154,64 +161,52 @@ def kernel_consumer_gemm(
     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(c_ptrs, c, mask=c_mask)
-    
+
+
 def consumer_gemm(A, B, C, rank, num_ranks, barrier, needs_wait=True):
     M, K = A.shape
     _, N = B.shape
-    grid = lambda META: (
-                triton.cdiv(M, META["BLOCK_SIZE_M"])
-                * triton.cdiv(N, META["BLOCK_SIZE_N"]),
-            )
+    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
     assert K % num_ranks == 0
-    compiled = kernel_consumer_gemm[grid](
-        A, B, C,
-        rank, num_ranks, barrier,
-        M, N, K,
-        K // num_ranks,
-        A.stride(0), A.stride(1),
-        B.stride(0), B.stride(1),
-        C.stride(0), C.stride(1),
-        128, 128, 32,
-        8,
-        False,
-        needs_wait,
-        num_stages=4
-    )
+    compiled = kernel_consumer_gemm[grid](A, B, C, rank, num_ranks, barrier, M, N, K, K // num_ranks, A.stride(0),
+                                          A.stride(1), B.stride(0), B.stride(1), C.stride(0), C.stride(1), 128, 128, 32,
+                                          8, False, needs_wait, num_stages=4)
     return compiled
+
 
 @register_test("lower")
 def test_lower_wait(args):
     os.environ["TRITON_ALWAYS_COMPILE"] = "1"
     os.environ["MLIR_ENABLE_DUMP"] = "1"
-    
-    device="cuda"
-    dtype=torch.float16
-    
+
+    device = "cuda"
+    dtype = torch.float16
+
     rank = 0
     num_ranks = 8
     barrier_tensor = torch.ones([num_ranks], dtype=torch.int32, device=device)
     M = 1024
     N = 1024
     K = 1024
-    
+
     assert M % num_ranks == 0
-    M_per_rank = M // num_ranks
     N_per_rank = N // num_ranks
-    
+
     ag_A = torch.randn([M, K], dtype=dtype, device=device)
     B = torch.randn([K, N_per_rank], dtype=dtype, device=device)
     C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
-    
+
     compiled = consumer_gemm(ag_A, B, C, rank, num_ranks, barrier_tensor)
     print(compiled.asm["ptx"])
-    
+
     os.environ["TRITON_ALWAYS_COMPILE"] = "0"
     os.environ["MLIR_ENABLE_DUMP"] = "0"
 
+
 @register_test("correctness")
 def test_1024_gemm_single_device(args):
-    device="cuda"
-    dtype=torch.float16
+    device = "cuda"
+    dtype = torch.float16
     rank = 0
     num_ranks = 8
     # TODO(zhengsize): why needs + 1?
@@ -219,20 +214,19 @@ def test_1024_gemm_single_device(args):
     M = 1024
     N = 1024
     K = 256
-    
+
     assert M % num_ranks == 0
-    M_per_rank = M // num_ranks
     N_per_rank = N // num_ranks
-    
+
     ag_A = torch.randn([M, K], dtype=dtype, device=device)
     B = torch.randn([K, N_per_rank], dtype=dtype, device=device)
     C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
-    
+
     C_golden = torch.matmul(ag_A, B)
     stream = torch.cuda.Stream()
     with torch.cuda.stream(stream):
         consumer_gemm(ag_A, B, C, rank, num_ranks, barrier_tensor)
-    
+
     print("Consumer GEMM launched!")
     print("signals are:")
     print(barrier_tensor)
@@ -242,7 +236,7 @@ def test_1024_gemm_single_device(args):
     barrier_tensor.fill_(1)
     print("signals are:")
     print(barrier_tensor)
-    
+
     torch.cuda.current_stream().wait_stream(stream)
     print(barrier_tensor)
     assert torch.allclose(C_golden, C, atol=1e-3, rtol=1e-3)
@@ -252,7 +246,7 @@ def test_1024_gemm_single_device(args):
 def measure_cuda_function_performance(cuda_function, warmup=10, repeat=100):
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available.")
-    
+
     for _ in range(warmup):
         cuda_function()
 
@@ -272,11 +266,12 @@ def measure_cuda_function_performance(cuda_function, warmup=10, repeat=100):
 
     avg_time = total_time / repeat
     return avg_time
-    
+
+
 @register_test("perf")
 def test_perf_gemm_single_device(args):
-    device="cuda"
-    dtype=torch.float16
+    device = "cuda"
+    dtype = torch.float16
     rank = 0
     num_ranks = 8
     # TODO(zhengsize): why needs + 1?
@@ -284,30 +279,30 @@ def test_perf_gemm_single_device(args):
     barrier_tensor.fill_(1)
     shapes = [256 * 2**i for i in range(7)]
     perfs = []
-    
+
     for needs_wait in [True, False]:
         print(f"With Barrier {needs_wait}\nShape Perf(ms)", flush=True)
         for shape in shapes:
             M = shape
             N = shape
             K = shape
-            
+
             A = torch.randn([M, K], dtype=dtype, device=device)
             B = torch.randn([K, N], dtype=dtype, device=device)
             C = torch.empty([M, N], dtype=dtype, device=device)
-            
+
             C_golden = torch.matmul(A, B)
-            
+
             consumer_gemm(A, B, C, rank, num_ranks, barrier_tensor, needs_wait)
             assert torch.allclose(C_golden, C, atol=1e-3, rtol=1e-3), f"Correctness not passed for shape {shape}"
-            
+
             avg_time = measure_cuda_function_performance(
                 lambda *x: consumer_gemm(A, B, C, rank, num_ranks, barrier_tensor, needs_wait), warmup=10, repeat=100)
             perfs.append(avg_time)
             print(shape, avg_time, flush=True)
         print()
-        
-        
+
+
 # TMA related test
 def _matmul_launch_metadata(grid, kernel, args):
     ret = {}
@@ -321,20 +316,27 @@ def _matmul_launch_metadata(grid, kernel, args):
     ret["bytes"] = bytes_per_elem * (M * K + N * K + M * N)
     return ret
 
+
 @triton.jit(launch_metadata=_matmul_launch_metadata)
-def kernel_consumer_gemm_persistent(a_ptr, b_ptr, c_ptr,  #
-                                        M, N, K,  #
-                                        rank,
-                                        num_ranks,
-                                        ready_ptr,
-                                        num_barriers_wait_per_block,
-                                        BLOCK_SIZE_M: tl.constexpr,  #
-                                        BLOCK_SIZE_N: tl.constexpr,  #
-                                        BLOCK_SIZE_K: tl.constexpr,  #
-                                        GROUP_SIZE_M: tl.constexpr,  #
-                                        EPILOGUE_SUBTILE: tl.constexpr,  #
-                                        NUM_SMS: tl.constexpr,
-                                        needs_wait: tl.constexpr,):  #
+def kernel_consumer_gemm_persistent(
+    a_ptr,
+    b_ptr,
+    c_ptr,  #
+    M,
+    N,
+    K,  #
+    rank,
+    num_ranks,
+    ready_ptr,
+    num_barriers_wait_per_block,
+    BLOCK_SIZE_M: tl.constexpr,  #
+    BLOCK_SIZE_N: tl.constexpr,  #
+    BLOCK_SIZE_K: tl.constexpr,  #
+    GROUP_SIZE_M: tl.constexpr,  #
+    EPILOGUE_SUBTILE: tl.constexpr,  #
+    NUM_SMS: tl.constexpr,
+    needs_wait: tl.constexpr,
+):  #
     # Matmul using TMA and device-side descriptor creation
     dtype = c_ptr.dtype.element_ty
     start_pid = tl.program_id(axis=0)
@@ -391,12 +393,12 @@ def kernel_consumer_gemm_persistent(a_ptr, b_ptr, c_ptr,  #
 
             offs_am = pid_m * BLOCK_SIZE_M
             offs_bn = pid_n * BLOCK_SIZE_N
-            
+
             if needs_wait:
                 num_barriers_to_wait = num_barriers_wait_per_block
                 token = dl.wait(ready_ptr, num_barriers_to_wait, "gpu", "acquire")
                 a_desc = dl.consume_token(a_desc, token)
-        
+
         # You can also put the barrier here with a minor performance drop
         # if needs_wait:
         #     num_barriers_to_wait = num_barriers_wait_per_block
@@ -433,7 +435,6 @@ def consumer_gemm_persistent(a, b, c, rank, num_ranks, barrier_tensor, needs_wai
 
     M, K = a.shape
     N, K = b.shape
-    dtype = a.dtype
 
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
@@ -445,13 +446,19 @@ def consumer_gemm_persistent(a, b, c, rank, num_ranks, barrier_tensor, needs_wai
 
     grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"])), )
     compiled = kernel_consumer_gemm_persistent[grid](
-        a, b, c,  #
-        M, N, K,  #
+        a,
+        b,
+        c,  #
+        M,
+        N,
+        K,  #
         rank,
         num_ranks,
         barrier_tensor,
         barriers_per_block,
-        128, 256, 64,
+        128,
+        256,
+        64,
         8,
         False,
         NUM_SMS=NUM_SMS,  #
@@ -465,35 +472,35 @@ def consumer_gemm_persistent(a, b, c, rank, num_ranks, barrier_tensor, needs_wai
 def test_lower_tma_wait(args):
     os.environ["TRITON_ALWAYS_COMPILE"] = "1"
     os.environ["MLIR_ENABLE_DUMP"] = "1"
-    
-    device="cuda"
-    dtype=torch.float16
-    
+
+    device = "cuda"
+    dtype = torch.float16
+
     rank = 0
     num_ranks = 8
     barrier_tensor = torch.ones([num_ranks], dtype=torch.int32, device=device)
     M = 1024
     N = 1024
     K = 1024
-    
+
     assert M % num_ranks == 0
-    M_per_rank = M // num_ranks
     N_per_rank = N // num_ranks
-    
+
     ag_A = torch.randn([M, K], dtype=dtype, device=device)
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
     C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
-    
+
     compiled = consumer_gemm_persistent(ag_A, B, C, rank, num_ranks, barrier_tensor)
     print(compiled.asm["ptx"])
-    
+
     os.environ["TRITON_ALWAYS_COMPILE"] = "0"
     os.environ["MLIR_ENABLE_DUMP"] = "0"
 
+
 @register_test("correctness_tma")
 def test_1024_gemm_tma_single_device(args):
-    device="cuda"
-    dtype=torch.float16
+    device = "cuda"
+    dtype = torch.float16
     rank = 0
     num_ranks = 8
     # TODO(zhengsize): why needs + 1?
@@ -501,20 +508,19 @@ def test_1024_gemm_tma_single_device(args):
     M = 1024
     N = 1024
     K = 256
-    
+
     assert M % num_ranks == 0
-    M_per_rank = M // num_ranks
     N_per_rank = N // num_ranks
-    
+
     ag_A = torch.randn([M, K], dtype=dtype, device=device)
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
     C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
-    
+
     C_golden = torch.matmul(ag_A, B.T)
     stream = torch.cuda.Stream()
     with torch.cuda.stream(stream):
         consumer_gemm_persistent(ag_A, B, C, rank, num_ranks, barrier_tensor)
-    
+
     print("Consumer GEMM launched!")
     print("signals are:")
     print(barrier_tensor)
@@ -524,17 +530,17 @@ def test_1024_gemm_tma_single_device(args):
     barrier_tensor.fill_(1)
     print("signals are:")
     print(barrier_tensor)
-    
+
     torch.cuda.current_stream().wait_stream(stream)
     print(barrier_tensor)
     assert torch.allclose(C_golden, C, atol=1e-3, rtol=1e-3)
     print("Pass!")
-    
-    
+
+
 @register_test("correctness_tma_multi_barrier")
-def test_1024_gemm_tma_single_device(args):
-    device="cuda"
-    dtype=torch.float16
+def test_1024_gemm_tma_single_device_multi_barrier(args):
+    device = "cuda"
+    dtype = torch.float16
     rank = 0
     num_ranks = 8
     # TODO(zhengsize): why needs + 1?
@@ -543,21 +549,20 @@ def test_1024_gemm_tma_single_device(args):
     M = 1024
     N = 1024
     K = 256
-    
+
     assert M % num_ranks == 0
-    M_per_rank = M // num_ranks
     N_per_rank = N // num_ranks
-    
+
     ag_A = torch.randn([M, K], dtype=dtype, device=device)
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
     C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
-    
+
     C_golden = torch.matmul(ag_A, B.T)
     stream = torch.cuda.Stream()
     with torch.cuda.stream(stream):
-        consumer_gemm_persistent(
-            ag_A, B, C, rank, num_ranks, barrier_tensor, needs_wait=True, barriers_per_block=barriers_per_block)
-    
+        consumer_gemm_persistent(ag_A, B, C, rank, num_ranks, barrier_tensor, needs_wait=True,
+                                 barriers_per_block=barriers_per_block)
+
     print("Consumer GEMM launched!")
     print("signals are:")
     print(barrier_tensor)
@@ -567,17 +572,17 @@ def test_1024_gemm_tma_single_device(args):
     barrier_tensor.fill_(1)
     print("signals are:")
     print(barrier_tensor)
-    
+
     torch.cuda.current_stream().wait_stream(stream)
     print(barrier_tensor)
     assert torch.allclose(C_golden, C, atol=1e-3, rtol=1e-3)
     print("Pass!")
 
-    
+
 @register_test("perf_tma")
 def test_perf_gemm_tma_single_device(args):
-    device="cuda"
-    dtype=torch.float16
+    device = "cuda"
+    dtype = torch.float16
     rank = 0
     num_ranks = 8
     # TODO(zhengsize): why needs + 1?
@@ -585,29 +590,29 @@ def test_perf_gemm_tma_single_device(args):
     barrier_tensor.fill_(1)
     shapes = [256 * 2**i for i in range(7)]
     perfs = []
-    
+
     for needs_wait in [True, False]:
         print(f"With Barrier {needs_wait}\nShape Perf(ms)", flush=True)
         for shape in shapes:
             M = shape
             N = shape
             K = shape
-            
+
             A = torch.randn([M, K], dtype=dtype, device=device)
             B = torch.randn([N, K], dtype=dtype, device=device)
             C = torch.empty([M, N], dtype=dtype, device=device)
-            
+
             C_golden = torch.matmul(A, B.T)
-            
+
             consumer_gemm_persistent(A, B, C, rank, num_ranks, barrier_tensor, needs_wait)
             assert torch.allclose(C_golden, C, atol=1e-3, rtol=1e-3), f"Correctness not passed for shape {shape}"
-            
+
             avg_time = measure_cuda_function_performance(
-                lambda *X: consumer_gemm_persistent(A, B, C, rank, num_ranks, barrier_tensor, needs_wait), warmup=10, repeat=100)
+                lambda *X: consumer_gemm_persistent(A, B, C, rank, num_ranks, barrier_tensor, needs_wait), warmup=10,
+                repeat=100)
             perfs.append(avg_time)
             print(shape, avg_time, flush=True)
         print()
-
 
 
 if __name__ == "__main__":
@@ -617,6 +622,3 @@ if __name__ == "__main__":
         sys.exit()
     func = ALL_TESTS[args.case]
     func(args)
-
-    
-    

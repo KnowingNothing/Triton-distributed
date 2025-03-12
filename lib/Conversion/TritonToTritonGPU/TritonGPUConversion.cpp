@@ -1,3 +1,6 @@
+/*
+ * Modification Copyright 2025 ByteDance Ltd. and/or its affiliates.
+ */
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 
 #include <algorithm>
@@ -99,16 +102,18 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
-                             scf::SCFDialect, triton::distributed::DistributedDialect>([&](Operation *op) {
-    bool hasLegalRegions = true;
-    for (auto &region : op->getRegions()) {
-      hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
-    }
-    if (hasLegalRegions && typeConverter.isLegal(op)) {
-      return true;
-    }
-    return false;
-  });
+                             scf::SCFDialect,
+                             triton::distributed::DistributedDialect>(
+      [&](Operation *op) {
+        bool hasLegalRegions = true;
+        for (auto &region : op->getRegions()) {
+          hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
+        }
+        if (hasLegalRegions && typeConverter.isLegal(op)) {
+          return true;
+        }
+        return false;
+      });
 
   // We have requirements for the data layouts
   addDynamicallyLegalOp<triton::DotOp>([](triton::DotOp dotOp) -> bool {

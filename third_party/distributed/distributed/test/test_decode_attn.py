@@ -1,39 +1,29 @@
 ################################################################################
 #
-# Copyright 2025 ByteDance Ltd. and/or its affiliates. All rights reserved.
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
 #
-################################################################################
-# Adapted from
-# https://github.com/vllm-project/vllm/blob/main/vllm/attention/ops/triton_decode_attention.py
-# https://github.com/vllm-project/vllm/blob/main/tests/kernels/test_flashinfer.py
-# which was originally adapted from
-# https://github.com/sgl-project/sglang/blob/9f635ea50de920aa507f486daafba26a5b837574/python/sglang/srt/layers/attention/triton_ops/decode_attention.py
-# https://github.com/ModelTC/lightllm/blob/96353e868a840db4d103138caf15ed9dbea8c186/lightllm/models/deepseek2/triton_kernel/gqa_flash_decoding_stage1.py
-# https://github.com/ModelTC/lightllm/blob/96353e868a840db4d103138caf15ed9dbea8c186/lightllm/models/deepseek2/triton_kernel/gqa_flash_decoding_stage2.py
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The original copyright is:
-#
-# SPDX-License-Identifier: Apache-2.0
-#
-# Copyright 2025 vLLM Team
-# Copyright 2023-2024 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
 ################################################################################
 
 import torch
-import triton
-import triton.language as tl
 import pytest
 from typing import List, Optional, Tuple
 
@@ -211,75 +201,6 @@ def ref_paged_attn(
         start_idx += query_len
 
     return torch.cat(outputs, dim=0)
-
-
-@triton.jit
-def tanh(x):
-    # Tanh is just a scaled sigmoid
-    return 2 * tl.sigmoid(2 * x) - 1
-
-
-@tl.core.extern
-def thread_id(axis: tl.constexpr, _builder=None):
-    return tl.inline_asm_elementwise(
-        asm=f"mov.u32 $0, %tid.{axis.value};",
-        constraints="=r",
-        args=[],
-        dtype=tl.uint32,
-        is_pure=True,
-        pack=1,
-        _builder=_builder,
-    )
-
-
-@tl.core.extern
-def __syncthreads(_builder=None):
-    return tl.core.inline_asm_elementwise(
-        asm="""
-        bar.sync 0;
-        mov.u32 $0, 0;
-        """,
-        constraints="=r",  # force have a return value, even not used.
-        args=[],
-        dtype=tl.uint32,
-        is_pure=False,  # no optimize this!
-        pack=1,
-        _builder=_builder,
-    )
-
-
-@tl.core.extern
-def __atomic_add(
-    ptr,
-    value,
-    scope: tl.constexpr = "gpu",
-    semantic: tl.constexpr = "relaxed",
-    _builder=None,
-):
-    return tl.inline_asm_elementwise(
-        asm=f"atom.{semantic.value}.{scope.value}.global.add.s32 $0, [$1], $2;",
-        constraints=("=r,l,r"),
-        args=[
-            ptr,
-            value,
-        ],
-        is_pure=False,
-        pack=1,
-        dtype=tl.int32,
-        _builder=_builder,
-    )
-
-
-@triton.jit
-def atomic_add(barrier_ptr, value, scope: tl.constexpr, semantic: tl.constexpr):
-    """custom atomic_add implementation using extern_elementwise
-
-    :param scope: one of "gpu", "sys". default to "gpu"
-    :param semantic: one of "release", "acquire", "relaxed", "acq_rel". default to "relaxed"
-    :returns: the result of atomic_add
-    :rtype: int
-    """
-    return __atomic_add(barrier_ptr, value, scope, semantic)
 
 
 NUM_BLOCKS = 32000  # Large enough to test overflow in index calculation.

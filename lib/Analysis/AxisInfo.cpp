@@ -1,3 +1,6 @@
+/*
+ * Modification Copyright 2025 ByteDance Ltd. and/or its affiliates.
+ */
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -1051,7 +1054,8 @@ AxisInfoAnalysis::AxisInfoAnalysis(DataFlowSolver &solver)
                   MaxMinOpAxisInfoVisitor<arith::MinUIOp>>();
   visitors.append<LoadOpAxisInfoVisitor>();
   // Distributed ops
-  visitors.append<BarrierOpAxisInfoVisitor<triton::distributed::ConsumeTokenOp>>();
+  visitors
+      .append<BarrierOpAxisInfoVisitor<triton::distributed::ConsumeTokenOp>>();
 }
 
 LogicalResult AxisInfoAnalysis::visitOperation(

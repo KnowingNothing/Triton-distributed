@@ -1,3 +1,6 @@
+/*
+ * Modification Copyright 2025 ByteDance Ltd. and/or its affiliates.
+ */
 #include <optional>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>

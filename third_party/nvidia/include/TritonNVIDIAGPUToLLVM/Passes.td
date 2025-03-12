@@ -1,3 +1,6 @@
+//
+// Modification Copyright 2025 ByteDance Ltd. and/or its affiliates.
+//
 #ifndef TRITONGPU_CONVERSION_PASSES
 #define TRITONGPU_CONVERSION_PASSES
 

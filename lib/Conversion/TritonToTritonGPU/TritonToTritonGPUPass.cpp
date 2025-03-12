@@ -1,3 +1,6 @@
+/*
+ * Modification Copyright 2025 ByteDance Ltd. and/or its affiliates.
+ */
 #include "triton/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -16,8 +19,8 @@
 #include "triton/Conversion/TritonToTritonGPU/Passes.h.inc"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
-#include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "third_party/distributed/dialect/include/Dialect/Distributed/IR/Dialect.h"
+#include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
 
 namespace {
 
@@ -644,12 +647,12 @@ void populateProtonPatterns(TritonGPUTypeConverter &typeConverter,
 
 // Distributed patterns
 void populateDistributedPatterns(TritonGPUTypeConverter &typeConverter,
-                            RewritePatternSet &patterns) {
+                                 RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns.add<GenericOpPattern<triton::distributed::WaitOp>>(typeConverter,
-                                                           context);
-  patterns.add<GenericOpPattern<triton::distributed::ConsumeTokenOp>>(typeConverter,
-                                                           context);
+                                                              context);
+  patterns.add<GenericOpPattern<triton::distributed::ConsumeTokenOp>>(
+      typeConverter, context);
 }
 //
 // SCF patterns

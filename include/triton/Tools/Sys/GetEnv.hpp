@@ -1,3 +1,6 @@
+/*
+ * Modification Copyright 2025 ByteDance Ltd. and/or its affiliates.
+ */
 #ifndef TRITON_TOOLS_SYS_GETENV_HPP
 #define TRITON_TOOLS_SYS_GETENV_HPP
 

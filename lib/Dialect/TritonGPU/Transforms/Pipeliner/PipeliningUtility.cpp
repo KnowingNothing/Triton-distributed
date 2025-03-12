@@ -1,3 +1,6 @@
+/*
+ * Modification Copyright 2025 ByteDance Ltd. and/or its affiliates.
+ */
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -150,14 +153,14 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
   if (isa<triton::distributed::WaitOp>(op)) {
     // fallback to branch
-    scf::IfOp newIfOp = rewriter.create<scf::IfOp>(op->getLoc(), op->getResultTypes(),
-                                                  pred, true);
+    scf::IfOp newIfOp = rewriter.create<scf::IfOp>(
+        op->getLoc(), op->getResultTypes(), pred, true);
     auto thenB = newIfOp.getThenBodyBuilder();
     auto newOpInThen = thenB.clone(*op);
     thenB.create<scf::YieldOp>(op->getLoc(), newOpInThen->getResults());
     auto elseB = newIfOp.getElseBodyBuilder();
     auto elseConst = elseB.create<arith::ConstantOp>(
-      op->getLoc(), IntegerAttr::get(op->getResultTypes().front(), 0));
+        op->getLoc(), IntegerAttr::get(op->getResultTypes().front(), 0));
     elseB.create<scf::YieldOp>(op->getLoc(), elseConst->getResults());
     rewriter.replaceOp(op, newIfOp.getResults());
     return newIfOp;
