@@ -437,7 +437,7 @@ def perf_8k_decode(args):
 
 @register_test("perf_8k_aot")
 def perf_8k_decode_aot(args):
-    for kv_len in [2**i for i in range(0, 20)]:
+    for kv_len in [2**i for i in range(0, 16)]:
         kv_lens = [kv_len]
         torch.set_default_device("cuda")
         num_seqs = len(kv_lens)
