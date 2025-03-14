@@ -27,6 +27,7 @@ import triton
 import triton.language as tl
 import triton.distributed.language as dl
 from triton.language.extra import libshmem_device
+from triton.distributed.autotuner import contextual_autotune
 
 import time
 import argparse
@@ -95,6 +96,7 @@ def register_test(name):
     def wrapper(func):
         assert name not in ALL_TESTS
         ALL_TESTS[name] = func
+        return func
 
     return wrapper
 
@@ -412,8 +414,25 @@ def kernel_consumer_gemm_persistent(
             accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
 
+def matmul_get_configs():
+    return [
+        triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8}, num_stages=s,
+                      num_warps=w)
+        for BM in [128]
+        for BN in [128, 256]
+        for BK in [64, 128]
+        for s in [3, 4]
+        for w in [4, 8]
+    ]
+
+
+kernel_consumer_gemm_persistent_autotune = triton.autotune(configs=matmul_get_configs(),
+                                                           key=["M", "N", "K"])(kernel_consumer_gemm_persistent)
+
+
 def ag_gemm_persistent(a, b, c, rank, num_ranks, workspace_tensors, barrier_tensors, comm_buf, for_correctness=False,
-                       ag_stream=None, gemm_stream=None, serial=False, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3):
+                       ag_stream=None, gemm_stream=None, serial=False, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
+                       autotune=False):
     # Check constraints.
     assert a.shape[1] == b.shape[1], "Incompatible dimensions"  # b is transposed
     assert a.dtype == b.dtype, "Incompatible dtypes"
@@ -460,27 +479,42 @@ def ag_gemm_persistent(a, b, c, rank, num_ranks, workspace_tensors, barrier_tens
     else:
         call_ag()
     with torch.cuda.stream(gemm_stream):
-        compiled = kernel_consumer_gemm_persistent[grid](
-            workspace_tensors[rank],
-            b,
-            c,  #
-            M,
-            N_per_rank,
-            K,  #
-            rank,
-            num_ranks,
-            barrier_tensors[rank],
-            comm_buf,
-            BLOCK_M,
-            BLOCK_N,
-            BLOCK_K,
-            8,
-            False,
-            NUM_SMS=NUM_SMS,  #
-            num_stages=stages,
-            num_warps=8,
-            # cluster_dims=(2,2,1)
-        )
+        if not autotune:
+            compiled = kernel_consumer_gemm_persistent[grid](
+                workspace_tensors[rank],
+                b,
+                c,  #
+                M,
+                N_per_rank,
+                K,  #
+                rank,
+                num_ranks,
+                barrier_tensors[rank],
+                comm_buf,
+                BLOCK_M,
+                BLOCK_N,
+                BLOCK_K,
+                8,
+                False,
+                NUM_SMS=NUM_SMS,  #
+                num_stages=stages,
+                num_warps=8,
+                # cluster_dims=(2,2,1)
+            )
+        else:
+            compiled = kernel_consumer_gemm_persistent_autotune[grid](
+                workspace_tensors[rank], b, c,  #
+                M, N_per_rank, K,  #
+                rank, num_ranks, barrier_tensors[rank], comm_buf,
+                # BLOCK_M,
+                # BLOCK_N,
+                # BLOCK_K,
+                # 8,
+                EPILOGUE_SUBTILE=False, NUM_SMS=NUM_SMS,  #
+                # num_stages=stages,
+                # num_warps=8,
+                # cluster_dims=(2,2,1)
+            )
 
     current_stream.wait_stream(ag_stream)
     current_stream.wait_stream(gemm_stream)
@@ -489,7 +523,7 @@ def ag_gemm_persistent(a, b, c, rank, num_ranks, workspace_tensors, barrier_tens
 
 
 @register_test("correctness_tma")
-def test_ag_gemm_tma_intra_node(args):
+def test_ag_gemm_tma_intra_node(args, autotune=False):
     device = "cuda"
     dtype = torch.float16
     rank = args.rank
@@ -522,7 +556,7 @@ def test_ag_gemm_tma_intra_node(args):
     ag_stream = torch.cuda.Stream()
     gemm_stream = torch.cuda.Stream()
 
-    def func():
+    def func(autotune=False):
         C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
         # The following version doesn't rely on our customized barrier kernel
         # Just reuse nvshmem barrier, they should produce similar performance
@@ -542,10 +576,14 @@ def test_ag_gemm_tma_intra_node(args):
         # Use our own customized barrier kernel
         local_copy_and_barrier_all(rank, num_ranks, A, workspaces[rank], comm_buf, barriers[rank], M_per_rank, K)
         compiled = ag_gemm_persistent(A, B, C, rank, num_ranks, workspaces, barriers, comm_buf, for_correctness=True,
-                                      ag_stream=ag_stream, gemm_stream=gemm_stream, serial=False)
+                                      ag_stream=ag_stream, gemm_stream=gemm_stream, serial=False, autotune=autotune)
         if rank == 0 and debug:
             print(compiled.asm["ptx"])
         return C
+
+    if autotune:
+        _func = func
+        func = contextual_autotune(is_dist=True)(lambda: _func(autotune=True))
 
     if rank == 0 and debug:
         os.environ["TRITON_ALWAYS_COMPILE"] = "1"
@@ -586,6 +624,8 @@ def test_ag_gemm_tma_intra_node(args):
                 print("Pass!")
 
 
+register_test("correctness_tma_autotune")(lambda args: test_ag_gemm_tma_intra_node(args, autotune=True))
+
 configs = {
     "LLaMA-7B": {"M": 8192, "N": 11008, "K": 4096, "BM": 128, "BN": 128, "BK": 64, "Stage": 5},
     "LLaMA-3.1-8B": {"M": 8192, "N": 14336, "K": 4096, "BM": 128, "BN": 128, "BK": 64, "Stage": 5},
@@ -597,7 +637,7 @@ configs = {
 
 
 @register_test("perf_tma")
-def test_perf_ag_gemm_tma_intra_node(args):
+def test_perf_ag_gemm_tma_intra_node(args, autotune=False):
     device = "cuda"
     dtype = torch.float16
     rank = args.rank
@@ -641,7 +681,7 @@ def test_perf_ag_gemm_tma_intra_node(args):
     pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
     torch.cuda.synchronize()
 
-    def func():
+    def func(autotune=False):
         C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
         # The following version doesn't rely on our customized barrier kernel
         # Just reuse nvshmem barrier, they should produce similar performance
@@ -677,8 +717,13 @@ def test_perf_ag_gemm_tma_intra_node(args):
             BLOCK_N=BLOCK_N,
             BLOCK_K=BLOCK_K,
             stages=stages,
+            autotune=autotune,
         )
         return C
+
+    if autotune:
+        _func = func
+        func = contextual_autotune(is_dist=True)(lambda: _func(autotune=True))
 
     C, perf = perf_func(func, iters=1000, warmup_iters=200)
     dist_print(f"rank{RANK}", perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
@@ -707,6 +752,8 @@ def test_perf_ag_gemm_tma_intra_node(args):
     assert torch.allclose(C_golden, C, atol=1e-3, rtol=1e-3)
     return perf
 
+
+register_test("perf_tma_autotune")(lambda args: test_perf_ag_gemm_tma_intra_node(args, autotune=True))
 
 if __name__ == "__main__":
     RANK = int(os.environ.get("RANK", 0))
