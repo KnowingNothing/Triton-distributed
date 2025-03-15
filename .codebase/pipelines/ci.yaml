@@ -27,6 +27,7 @@ jobs:
           - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
+          - python3 scripts/check_license.py
 
       - name: env-check
         commands:
