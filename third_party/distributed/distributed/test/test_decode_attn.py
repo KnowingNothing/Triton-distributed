@@ -35,8 +35,8 @@ import datetime
 import numpy as np
 import pynvshmem
 
-from triton.distributed.kernels import (gqa_fwd_batch_decode_persistent, gqa_fwd_batch_decode_persistent_aot,
-                                        gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot)
+from triton.distributed.kernels.nvidia import (gqa_fwd_batch_decode_persistent, gqa_fwd_batch_decode_persistent_aot,
+                                               gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot)
 
 
 def perf_func(func, iters, warmup_iters):

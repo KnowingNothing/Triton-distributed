@@ -32,7 +32,6 @@ import random
 import argparse
 import os
 from typing import Optional
-from cuda import cuda
 import datetime
 import numpy as np
 
@@ -40,13 +39,14 @@ from functools import partial
 
 import pynvshmem
 
-from utils import (
+from triton.distributed.utils import (
     generate_data,
     get_torch_prof_ctx,
     perf_func,
     dist_print,
-    CUDA_CHECK,
 )
+
+from triton.distributed.kernels.nvidia import gemm_rs_intra_node, create_gemm_rs_intra_node_context
 
 SIGNAL_DTYPE = torch.uint64
 
@@ -377,106 +377,10 @@ class GemmRSIntraNode(torch.nn.Module):
         self.K = K
         self.input_dtype = input_dtype
         self.output_dtype = output_dtype
+        self.scatter_stream = torch.cuda.Stream()
+        self.reduce_stream = torch.cuda.Stream()
 
-        self.scatter_bufs = pynvshmem.nvshmem_create_tensor_list_intra_node([self.max_M, self.N], output_dtype)
-        self.scatter_barriers = pynvshmem.nvshmem_create_tensor_list_intra_node([self.world_size], SIGNAL_DTYPE)
-        self.reduce_barriers = pynvshmem.nvshmem_create_tensor_list_intra_node([self.world_size], SIGNAL_DTYPE)
-
-        self.scatter_buf = self.scatter_bufs[self.rank]
-        self.scatter_barrier = self.scatter_barriers[self.rank]
-        self.reduce_barrier = self.reduce_barriers[self.rank]
-
-        self.scatter_stream: torch.cuda.Stream = torch.cuda.Stream(priority=-1)
-        self.reduce_stream: torch.cuda.Stream = torch.cuda.Stream(priority=-1)
-
-        self.max_blocks = 65536
-        self.sync_buf = pynvshmem.nvshmem_create_tensor([self.max_blocks * self.world_size], torch.int32)
-        self.sync_buf.fill_(0)
-
-    def wait_eq(self, ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=False):
-        if not require_i64:
-            (err, ) = cuda.cuStreamWaitValue32(
-                stream.cuda_stream,
-                ptr,
-                signal,
-                cuda.CUstreamWaitValue_flags.CU_STREAM_WAIT_VALUE_EQ,
-            )
-        else:
-            (err, ) = cuda.cuStreamWaitValue64(
-                stream.cuda_stream,
-                ptr,
-                signal,
-                cuda.CUstreamWaitValue_flags.CU_STREAM_WAIT_VALUE_EQ,
-            )
-        CUDA_CHECK(err)
-
-    def set_signal(self, ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=False):
-        if not require_i64:
-            (err, ) = cuda.cuStreamWriteValue32(
-                stream.cuda_stream,
-                ptr,
-                signal,
-                cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
-            )
-        else:
-            (err, ) = cuda.cuStreamWriteValue64(
-                stream.cuda_stream,
-                ptr,
-                signal,
-                cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
-            )
-        CUDA_CHECK(err)
-
-    def cp_engin_scatter_and_notify_push_mode(self, gemm_out  # [M, N]
-                                              ):
-        M = gemm_out.shape[0]
-        M_per_rank = M // self.world_size
-
-        with torch.cuda.stream(self.scatter_stream):
-            for i in range(0, self.world_size):
-                remote_rank = (self.rank + i + 1) % self.world_size
-                self.wait_eq(self.scatter_barrier[remote_rank].data_ptr(), 1,  # signal
-                             self.scatter_stream, True)
-                remote_buf = self.scatter_bufs[remote_rank][self.rank * M_per_rank:(self.rank + 1) * M_per_rank, :]
-                local_buf = gemm_out[remote_rank * M_per_rank:(remote_rank + 1) * M_per_rank, :]
-                remote_buf.copy_(local_buf)
-                self.set_signal(
-                    self.reduce_barriers[remote_rank][self.rank].data_ptr(),
-                    1,
-                    self.scatter_stream,
-                    require_i64=True,
-                )
-
-    def ring_reduce_after_scatter(
-        self,
-        scatter_out,  # [M, N]
-        stream,
-    ):
-        M, N = scatter_out.shape
-        M_per_rank = M // self.world_size
-        output = torch.empty((M_per_rank, N), dtype=self.output_dtype, device=input.device)
-        grid = lambda META: (triton.cdiv(M_per_rank * N, META["BLOCK_SIZE"]), )
-        with torch.cuda.stream(stream):
-            kernel_consumer_reduce[grid](
-                scatter_out,
-                output,
-                self.reduce_barrier,
-                M_per_rank,
-                N,
-                BLOCK_SIZE=4096,
-                num_warps=8,
-            )
-
-        return output
-
-    def barrier_all_on_stream(
-        self,
-        stream,
-    ):
-
-        with torch.cuda.stream(stream):
-            barrier_all[(1, )](self.rank, self.world_size, self.sync_buf)
-        # pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+        self.ctx = None
 
     def forward(
         self,
@@ -490,27 +394,12 @@ class GemmRSIntraNode(torch.nn.Module):
 
         assert M % self.world_size == 0
         assert weight.shape[1] == local_K
-        local_M = M // self.world_size
-        current_stream = torch.cuda.current_stream()
-        self.barrier_all_on_stream(current_stream)
-        self.scatter_stream.wait_stream(current_stream)
-        self.reduce_stream.wait_stream(current_stream)
 
-        # self.scatter_barrier.fill_(1)
-        output = torch.empty((local_M, N), dtype=self.output_dtype, device=input.device)
-        workspace = torch.zeros((self.world_size, ), dtype=torch.int32, device=input.device)
-        gemm_out = torch.empty((M, N), dtype=self.output_dtype, device=input.device)
-        gemm_rs_producer_persistent(input, weight, gemm_out, self.scatter_barrier, workspace, current_stream)
-
-        # torch.distributed.reduce_scatter_tensor(output, gemm_out, group=TP_GROUP)
-        self.cp_engin_scatter_and_notify_push_mode(gemm_out)
-        current_stream.wait_stream(self.scatter_stream)
-        self.barrier_all_on_stream(current_stream)
-
-        output = self.ring_reduce_after_scatter(self.scatter_buf[:M], current_stream)
-        current_stream.wait_stream(current_stream)
-        self.reduce_barrier.zero_()
-        self.scatter_barrier.zero_()
+        if self.ctx is None:
+            self.ctx = create_gemm_rs_intra_node_context(input, weight, self.rank, self.world_size, self.scatter_stream,
+                                                         self.reduce_stream, output_dtype=self.output_dtype,
+                                                         max_M=self.max_M)
+        output = gemm_rs_intra_node(input, weight, ctx=self.ctx)
 
         return output
 

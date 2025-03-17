@@ -9,6 +9,7 @@ jobs:
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
     envs:
       PYTHONPATH: /home/code/python:/home/code/third_party/nvshmem_bind/python/:$PYTHONPATH
+      LD_LIBRARY_PATH: /home/code/third_party/nvshmem/build/install/lib:$LD_LIBRARY_PATH
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
@@ -44,7 +45,6 @@ jobs:
       - name: build
         commands:
           - git submodule update --init --recursive
-          - pip3 uninstall triton -y
           - pip3 install ninja cmake wheel pybind11
           - export USE_TRITON_DISTRIBUTED_AOT=0
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation

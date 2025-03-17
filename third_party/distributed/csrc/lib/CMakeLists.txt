@@ -56,7 +56,8 @@ target_include_directories(triton_distributed PUBLIC ${TORCH_INCLUDE_DIRS} "../t
 message(STATUS "CUDA include directories: ${CUDA_INCLUDE_DIRS}")
 
 target_link_libraries(triton_distributed PUBLIC torch ${TORCH_PYTHON_LIBRARY})
-if(USE_TRITON_DISTRIBUTED_AOT)
+string(TOLOWER "${USE_TRITON_DISTRIBUTED_AOT}" USE_TRITON_DISTRIBUTED_AOT_LOWER)
+if(USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "on" OR USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "1" OR USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "true")
   target_link_libraries(triton_distributed PUBLIC triton_distributed_kernel)
 endif()
 

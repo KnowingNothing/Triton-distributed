@@ -58,131 +58,13 @@ else:
 if use_aot:
     from triton._C.libtriton_distributed import distributed
 
+from triton.distributed.kernels.nvidia.common_ops import thread_id, __syncthreads, ld_acquire, red_release
+
 
 @triton.jit
 def tanh(x):
     # Tanh is just a scaled sigmoid
     return 2 * tl.sigmoid(2 * x) - 1
-
-
-@tl.core.extern
-def thread_id(axis: tl.constexpr, _builder=None):
-    return tl.inline_asm_elementwise(
-        asm=f"mov.u32 $0, %tid.{axis.value};",
-        constraints="=r",
-        args=[],
-        dtype=tl.uint32,
-        is_pure=True,
-        pack=1,
-        _builder=_builder,
-    )
-
-
-@tl.core.extern
-def __syncthreads(value: tl.constexpr, _builder=None):
-    return tl.core.inline_asm_elementwise(
-        asm=f"""
-        bar.cta.sync {value.value};
-        mov.u32 $0, 0;
-        """,
-        constraints="=r",  # force have a return value, even not used.
-        args=[],
-        dtype=tl.uint32,
-        is_pure=False,  # no optimize this!
-        pack=1,
-        _builder=_builder,
-    )
-
-
-@tl.core.extern
-def atomic_cas(
-    ptr,
-    value,
-    target_value,
-    scope: tl.constexpr,
-    semantic: tl.constexpr,
-    _builder=None,
-):
-    return tl.inline_asm_elementwise(
-        asm=f"atom.{semantic.value}.{scope.value}.global.cas.b32 $0, [$1], $2, $3;",
-        constraints=("=r,l,r,r"),
-        args=[
-            ptr,
-            value,
-            target_value,
-        ],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-        _builder=_builder,
-    )
-
-
-@tl.core.extern
-def __atomic_add(
-    ptr,
-    value,
-    scope: tl.constexpr = "gpu",
-    semantic: tl.constexpr = "relaxed",
-    _builder=None,
-):
-    return tl.inline_asm_elementwise(
-        asm=f"atom.{semantic.value}.{scope.value}.global.add.s32 $0, [$1], $2;",
-        constraints=("=r,l,r"),
-        args=[
-            ptr,
-            value,
-        ],
-        is_pure=False,
-        pack=1,
-        dtype=tl.int32,
-        _builder=_builder,
-    )
-
-
-@triton.jit
-def atomic_add(barrier_ptr, value, scope: tl.constexpr, semantic: tl.constexpr):
-    """custom atomic_add implementation using extern_elementwise
-
-    :param scope: one of "gpu", "sys". default to "gpu"
-    :param semantic: one of "release", "acquire", "relaxed", "acq_rel". default to "relaxed"
-    :returns: the result of atomic_add
-    :rtype: int
-    """
-    return __atomic_add(barrier_ptr, value, scope, semantic)
-
-
-@tl.core.extern
-def red_release(barrier_ptr, value, scope: tl.constexpr = "gpu", _builder=None):
-    tl.inline_asm_elementwise(
-        asm=f"""{{
-        mov.u32         $0, %tid.x;
-        red.release.{scope.value}.global.add.s32 [$1], $2;
-        }}""",
-        constraints=("=r,"
-                     "l,r"),  # no use output, which is threadId.x
-        args=[barrier_ptr, value],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-        _builder=_builder,
-    )
-
-
-@tl.core.extern
-def ld_acquire(barrier_ptr, scope: tl.constexpr = "gpu", _builder=None):
-    return tl.inline_asm_elementwise(
-        asm=f"""{{
-        ld.global.acquire.{scope.value}.b32 $0, [$1];
-        }}
-        """,
-        constraints=("=r,l"),
-        args=[barrier_ptr],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-        _builder=_builder,
-    )
 
 
 split_kv_signature = ((
@@ -631,12 +513,12 @@ def kernel_gqa_fwd_batch_decode_split_kv_persistent(
     tx = thread_id("x")
     if tx == 0:
         red_release(workspace_ptr + sm_id, 1, "gpu")
-    __syncthreads(0)
+    __syncthreads()
 
     if tx < num_sms:
         while ld_acquire(workspace_ptr + tx, "gpu") != 1:
             pass
-    __syncthreads(0)
+    __syncthreads()
 
     if sm_id < batch * q_head_num:
 
@@ -678,7 +560,7 @@ def kernel_gqa_fwd_batch_decode_split_kv_persistent(
             acc / e_sum,
             mask=mask_d,
         )
-    __syncthreads(0)
+    __syncthreads()
     if tx == 0:
         red_release(workspace_ptr + sm_id, -1, "gpu")
 
