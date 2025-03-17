@@ -1,20 +1,15 @@
 CommitLint:
-  commit_lint_name: regex
-  commit_regex: "^(.+)$"
-
   mr_title_lint_name: regex
-  # below is an example:
-  # [megatron] feat: add tensor parallel memory efficient allgather option
+  # Example: [megatron] feat: add tensor parallel memory efficient allgather option
   mr_title_regex: "^(WIP:|)( |)(feat|fix|perf|chore|test|docs|refactor|ci): (.+)$"
-
 
 Merge Request Notification:
   notification_lark_group: ['7319352405508997124'] # 默认的lark群组id，如果设置则会被默认发送到该群组，除非命中monorepo通知规则，获取地址：https://open.feishu.cn/tool/token
-  disable_wip: true # 默认为 false，表示 WIP 的 MR 不会发通知，在 WIP 状态变更为非 WIP 状态的时候才会发送通知。可以修改为 true，这时候会无视 WIP 状态。
+  disable_wip: false # 默认为 false，表示 WIP 的 MR 不会发通知，在 WIP 状态变更为非 WIP 状态的时候才会发送通知。可以修改为 true，这时候会无视 WIP 状态。
   source_branch_black_list: ['<SOURCE_BRANCH>'] # 来源分支黑名单，如设置为 'dev*'，那么所有以 dev 开头的来源分支都不会发送通知
   target_branch_black_list: ['<TARGET_BRANCH>'] # 目标分支黑名单，如设置为 'hotfix*'，则所有以 hotfix 开头的目标分支都不会发送通知
   source_branch_white_list: ['*'] # 来源分支白名单，如设置为 'feat*'，那么所有以 feat 开头的来源分支才会发送通知
-  target_branch_white_list: ['distributed-main'] # 目标分支白名单，如设置为 'master'，则所有目标分支为 master 的才会发送通知
+  target_branch_white_list: ['distributed-main', 'distributed-amd'] # 目标分支白名单，如设置为 'master'，则所有目标分支为 master 的才会发送通知
   # check_run: ['<CHECK_RUN_NAME>'] # 检查名称为 <CHECK_RUN_NAME> 的 check-run, 必须为 success 状态, 才发送通知。如果配置为 ['all'] 表示检查所有 check-run
   # skip_warning_check_run: false # 默认为 false, 和 check_run 配置使用, 表示 success 或者 warning 状态, 才发送通知, 其他状态不发送, 如 failed
   # duty_schedule_name: "<DUTY_NAME>" # https://data.bytedance.net/duty/ 中配置的值班计划的名称, 会 艾特对应的值班人员
