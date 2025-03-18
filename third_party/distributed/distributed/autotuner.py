@@ -22,6 +22,7 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
+
 from typing import List, Iterable
 
 import triton
@@ -124,6 +125,38 @@ def _do_bench_iterator(funcs, n_repeat=5, n_warmup=3, quantiles=None, return_mod
             yield i, None, e
 
 
+def _bench_fn(self: Autotuner, *args, config, **meta):
+    # check for conflicts, i.e. meta-parameters both provided
+    # as kwargs and by the autotuner
+    conflicts = meta.keys() & config.kwargs.keys()
+    if conflicts:
+        raise ValueError(f"Conflicting meta-parameters: {', '.join(conflicts)}."
+                         " Make sure that you don't re-define auto-tuned symbols.")
+    # augment meta-parameters with tunable ones
+    current = dict(meta, **config.all_kwargs())
+    full_nargs = {**self.nargs, **current}
+
+    def kernel_call():
+        if config.pre_hook:
+            config.pre_hook(full_nargs)
+        self.pre_hook(full_nargs)
+        try:
+            ret = self.fn.run(
+                *args,
+                **current,
+            )
+        except Exception as e:
+            try:
+                self.post_hook(full_nargs, exception=e)
+            finally:
+                # Throw exception raised by `self.fn.run`
+                raise
+        self.post_hook(full_nargs, exception=None)
+        return ret
+
+    return kernel_call
+
+
 def _contextual_tuning_run(self: Autotuner, *args, **kwargs):
     self.nargs = dict(zip(self.arg_names, args))
 
@@ -160,7 +193,7 @@ def _contextual_tuning_run(self: Autotuner, *args, **kwargs):
             return f_run(config)
 
         pruned_configs = self.prune_configs(kwargs)
-        bench_fns = [self._bench_fn(*args, config=config, **kwargs) for config in pruned_configs]
+        bench_fns = [_bench_fn(self, *args, config=config, **kwargs) for config in pruned_configs]
 
         bench_iter = _do_bench_iterator(bench_fns, n_repeat=ctx_tuner.n_repeat, n_warmup=ctx_tuner.n_warmup,
                                         return_mode="mean")
