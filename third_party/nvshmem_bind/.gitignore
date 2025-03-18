@@ -2,4 +2,5 @@ triton_cache
 .eggs/
 *.egg-info/
 *.so
+*.egg
 dist

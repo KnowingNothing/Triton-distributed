@@ -64,6 +64,37 @@ def __tid__(axis: core.constexpr, _builder=None):
     )
 
 
+@tl.core.extern
+def load_v4_u32(ptr, _builder=None):
+    return tl.inline_asm_elementwise(
+        asm="""
+        ld.volatile.global.v4.u32 {$0,$1,$2,$3}, [$4];
+        """,
+        constraints=("=r,=r,=r,=r,l"),  # no use output, which is threadId.x
+        args=[ptr],
+        dtype=(tl.int32, tl.int32, tl.int32, tl.int32),
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
+@tl.core.extern
+def store_v2_u32(ptr, val0, val1, _builder=None):
+    return tl.inline_asm_elementwise(
+        asm="""
+        st.volatile.global.v2.u32 [$1], {$2,$3};
+        mov.u32 $0, 0;
+        """,
+        constraints=("=r,l,r,r"),  # no use output
+        args=[ptr, val0, val1],
+        dtype=tl.int32,
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
 @triton.jit
 def tid(axis: core.constexpr):
     if axis == 0:
@@ -78,12 +109,12 @@ def tid(axis: core.constexpr):
 
 # @patch_triton_module
 @tl.core.extern
-def __ntid__(_builder=None):
+def __ntid__(axis: core.constexpr, _builder=None):
     return tl.inline_asm_elementwise(
-        asm="mov.u32 $0, %ntid.x;",
+        asm=f"mov.u32 $0, %ntid.{axis.value};",
         constraints="=r",
         args=[],
-        dtype=tl.int32,
+        dtype=tl.uint32,
         is_pure=True,
         pack=1,
         _builder=_builder,
@@ -91,20 +122,20 @@ def __ntid__(_builder=None):
 
 
 @triton.jit
-def ntid(axis: core.constexpr, _builder=None):
+def ntid(axis: core.constexpr):
     if axis == 0:
-        return __ntid__("x", _builder=_builder)
+        return __ntid__("x")
     elif axis == 1:
-        return __ntid__("y", _builder=_builder)
+        return __ntid__("y")
     elif axis == 2:
-        return __ntid__("z", _builder=_builder)
+        return __ntid__("z")
     else:
-        tl.static_assert(False, "axis must be 0, 1 or 2", _builder=_builder)
+        tl.static_assert(False, "axis must be 0, 1 or 2")
 
 
 # @patch_triton_module
 @tl.core.extern
-def red_release(barrier_ptr, value, scope: core.constexpr = "gpu", _builder=None):
+def red_release(barrier_ptr, value, scope: core.constexpr = core.constexpr("gpu"), _builder=None):
     tl.inline_asm_elementwise(
         asm=f"""{{
         mov.u32         $0, %tid.x;
@@ -164,6 +195,22 @@ def ld_acquire(barrier_ptr, scope: core.constexpr = "gpu", _builder=None):
     )
 
 
+@tl.core.extern
+def ld_u32_acquire(barrier_ptr, scope: core.constexpr = core.constexpr("gpu"), _builder=None):
+    return tl.inline_asm_elementwise(
+        asm=f"""{{
+        ld.global.acquire.{scope.value}.u32 $0, [$1];
+        }}
+        """,  # for older triton, scope maybe scope.value
+        constraints=("=r,l"),
+        args=[barrier_ptr],
+        dtype=tl.int32,
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
 # @patch_triton_module
 @tl.core.extern
 def __atomic_add(
@@ -173,18 +220,80 @@ def __atomic_add(
     semantic: core.constexpr = "relaxed",
     _builder=None,
 ):
-    return tl.inline_asm_elementwise(
-        asm=f"atom.{semantic.value}.{scope.value}.global.add.s32 $0, [$1], $2;",
-        constraints=("=r,l,r"),
-        args=[
-            ptr,
-            value,
-        ],
-        is_pure=False,
-        pack=1,
-        dtype=tl.int32,
-        _builder=_builder,
-    )
+    if ptr.dtype.element_ty == tl.int32:
+        tl.static_assert(
+            value.dtype == tl.int32,
+            "value must be of the same dtype with ptr: int32",
+            _builder=_builder,
+        )
+        return tl.inline_asm_elementwise(
+            asm=f"atom.{semantic.value}.{scope.value}.global.add.s32 $0, [$1], $2;",
+            constraints=("=r,l,r"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.int32,
+            _builder=_builder,
+        )
+    if ptr.dtype.element_ty == tl.uint32:
+        tl.static_assert(
+            value.dtype == tl.uint32,
+            "value must be of the same dtype with ptr: uint32",
+            _builder=_builder,
+        )
+        return tl.inline_asm_elementwise(
+            asm=f"atom.{semantic.value}.{scope.value}.global.add.u32 $0, [$1], $2;",
+            constraints=("=r,l,r"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.uint32,
+            _builder=_builder,
+        )
+    elif ptr.dtype.element_ty == tl.int64:
+        tl.static_assert(
+            value.dtype == tl.int64,
+            "value must be of the same dtype with ptr: int64",
+            _builder=_builder,
+        )
+        return tl.inline_asm_elementwise(
+            asm=f"atom.{semantic.value}.{scope.value}.global.add.s64 $0, [$1], $2;",
+            constraints=("=l,l,l"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.int64,
+            _builder=_builder,
+        )
+    elif ptr.dtype.element_ty == tl.uint64:
+        tl.static_assert(
+            value.dtype == tl.uint64,
+            "value must be of the same dtype with ptr: uint64",
+            _builder=_builder,
+        )
+        return tl.inline_asm_elementwise(
+            asm=f"atom.{semantic.value}.{scope.value}.global.add.u64 $0, [$1], $2;",
+            constraints=("=l,l,l"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.uint64,
+            _builder=_builder,
+        )
+    else:
+        raise ValueError("unsupported dtype")
 
 
 @triton.jit
@@ -268,7 +377,7 @@ def __ld(ptr, scope: core.constexpr = "gpu", nbit: core.constexpr = 32, _builder
         asm=f"ld.global.relaxed.{scope.value}.b{nbit.value} $0, [$1];",
         constraints="=r,l",
         args=[ptr],
-        dtype=tl.int32 if nbit.value == 32 else (tl.int64 if nbit.value == 64 else tl.int16),
+        dtype=(tl.int32 if nbit.value == 32 else (tl.int64 if nbit.value == 64 else tl.int16)),
         is_pure=False,
         pack=1,
         _builder=_builder,
@@ -295,6 +404,7 @@ __all__ = [
     "arrive_inc",
     "red_release",
     "ld_acquire",
+    "ld_u32_acquire",
     "atomic_add",
     "__shfl_sync_i32",
     "__shfl_up_sync_i32",

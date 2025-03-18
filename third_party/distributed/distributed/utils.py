@@ -26,9 +26,14 @@
 import os
 
 import torch
-from typing import Callable, List, Tuple, Union, Sequence
+from typing import Callable, List, Tuple, Union, Sequence, Optional
 from contextlib import contextmanager, nullcontext
 from cuda import cuda, cudart
+import pathlib
+import json
+import logging
+import gzip
+import shutil
 
 
 # Some code from python/flux/util.py in flux project
@@ -151,3 +156,94 @@ def CUDA_CHECK(err):
             raise RuntimeError(f"Cuda Error: {err}: {cudart.cudaGetErrorString(err)}")
     else:
         raise RuntimeError(f"Unknown error type: {err}")
+
+
+def _merge_json(to_merge_files: List[pathlib.Path], output_json: pathlib.Path):
+    events = []
+    for json_file in to_merge_files:
+        if str(json_file).endswith("merged.json"):
+            continue
+        with open(json_file, "rb") as f:
+            logging.debug(f"merge {json_file}")
+            full_tl_json = json.loads(f.read().decode("latin-1"), strict=False)
+
+        rank = full_tl_json["distributedInfo"]["rank"]
+        world_size = full_tl_json["distributedInfo"]["world_size"]
+        for e in full_tl_json["traceEvents"]:
+            e["pid"] = f"{e['pid']}_{rank}"
+            if isinstance(e["tid"], int):
+                e["tid"] = e["tid"] * world_size + rank
+            if e["name"] == "thread_name":
+                e["args"]["name"] = f'{e["args"]["name"]}_{rank}'
+            if e["name"] == "thread_sort_index":  # perfetto does not respect this.
+                e["args"]["sort_index"] = e["args"]["sort_index"] * world_size + rank
+        events.extend(full_tl_json["traceEvents"])
+
+    with open(output_json, "w") as f:
+        full_tl_json["traceEvents"] = events
+        json.dump(events, f)
+
+
+class group_profile:
+
+    def __init__(
+        self,
+        name: str = None,
+        do_prof: bool = True,
+        merge_group: bool = True,
+        keep_merged_only: bool = True,
+        compress: bool = True,
+        group: Optional[torch.distributed.ProcessGroup] = None,
+    ):
+        self.name = name
+        self.do_prof = do_prof
+        self.profile = torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            record_shapes=True,
+            with_stack=True,
+        )
+        self.group = group or torch.distributed.group.WORLD
+        self.merge_group = merge_group
+        self.keep_merged_only = keep_merged_only
+        self.compress = compress
+
+    def __enter__(self):
+        if self.do_prof:
+            self.profile.__enter__()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.do_prof:
+            self.profile.__exit__(exc_type, exc_val, exc_tb)
+            # export chrome trace
+            outfile = pathlib.Path("prof") / f"{self.name}" / f"rank{self.group.rank()}.json"
+            outfile.parent.mkdir(parents=True, exist_ok=True)
+            print(f"export chrome trace to {outfile}")
+            self.profile.export_chrome_trace(str(outfile))
+            if self.merge_group:
+                self.merge_all()
+
+    def merge_all(self):
+        # merge all
+        if self.merge_group:
+            torch.cuda.synchronize()  # wait for all ranks export
+            torch.distributed.barrier(group=self.group)
+            torch.cuda.synchronize()  # wait for all ranks export
+        if self.group.rank() != 0:
+            return
+
+        print("merge profiles...")
+        # merge all json
+        outdir = pathlib.Path("prof") / f"{self.name}"
+        to_merge_files = outdir.glob("*.json")
+        merged_json = pathlib.Path("prof") / f"{self.name}_merged.json"
+        _merge_json(to_merge_files, merged_json)
+        print(f"merge all profiles into {merged_json}")
+        # here is an issue with python 3.10+ & with_stack=True save gz failure: https://github.com/pytorch/pytorch/issues/113564
+        if self.compress:
+            with open(merged_json, "rb") as f:
+                with gzip.open(merged_json.with_suffix(".json.gz"), "wb") as g:
+                    g.write(f.read())
+            merged_json.unlink()
+        if self.keep_merged_only:
+            logging.info(f"remove profile directory: {outdir}")
+            shutil.rmtree(outdir)
