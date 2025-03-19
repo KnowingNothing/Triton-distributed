@@ -396,6 +396,30 @@ def ld(ptr, scope: core.constexpr = "gpu"):
         tl.static_assert(False, "unsupported dtype")
 
 
+@tl.core.extern
+def atomic_cas(
+    ptr,
+    value,
+    target_value,
+    scope: core.constexpr,
+    semantic: core.constexpr,
+    _builder=None,
+):
+    return tl.inline_asm_elementwise(
+        asm=f"atom.{semantic.value}.{scope.value}.global.cas.b32 $0, [$1], $2, $3;",
+        constraints=("=r,l,r,r"),
+        args=[
+            ptr,
+            value,
+            target_value,
+        ],
+        dtype=tl.int32,
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
 __all__ = [
     "__syncthreads",
     "tid",
@@ -412,4 +436,5 @@ __all__ = [
     "__ballot_sync",
     "ld",
     "ffs",
+    "atomic_cas",
 ]

@@ -67,6 +67,8 @@ void SymmAtOp::getEffects(
 void NotifyOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
   effects.emplace_back(MemoryEffects::Write::get(),
                        SideEffects::DefaultResource::get());
 }

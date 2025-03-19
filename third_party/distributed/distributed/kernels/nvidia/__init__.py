@@ -25,10 +25,10 @@
 from .allgather_gemm import ag_gemm_intra_node, create_ag_gemm_intra_node_context
 from .flash_decode import (gqa_fwd_batch_decode_persistent, kernel_gqa_fwd_batch_decode_split_kv_persistent,
                            gqa_fwd_batch_decode_persistent_aot, gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot)
-from .gemm_reduce_scatter import gemm_rs_intra_node, create_gemm_rs_intra_node_context
+from .gemm_reduce_scatter import create_gemm_rs_context, gemm_rs_multi_node
 
 __all__ = [
     "ag_gemm_intra_node", "create_ag_gemm_intra_node_context", "gqa_fwd_batch_decode_persistent",
     "kernel_gqa_fwd_batch_decode_split_kv_persistent", "gqa_fwd_batch_decode_persistent_aot", "gqa_fwd_batch_decode",
-    "gqa_fwd_batch_decode_aot", "gemm_rs_intra_node", "create_gemm_rs_intra_node_context"
+    "gqa_fwd_batch_decode_aot", "gemm_rs_multi_node", "create_gemm_rs_context"
 ]
