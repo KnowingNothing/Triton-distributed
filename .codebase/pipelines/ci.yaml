@@ -66,9 +66,10 @@ jobs:
           # gemm rs
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_multi_node.py 8192 8192 29568
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_multi_node.py 8192 8192 29568 --check
-          # ag
+          # allgather
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_small_msg.py
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_gather.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_fast_allgather.py
           # nvshmem related
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_nvshmem_api.py
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ring_put.py
@@ -77,6 +78,8 @@ jobs:
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_persistent
           - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_persistent_aot
           - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_aot
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case perf
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case correctness
           #############
           # pytest (disabled)
           #############

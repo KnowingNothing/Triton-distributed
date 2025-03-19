@@ -58,7 +58,9 @@ else:
 if use_aot:
     from triton._C.libtriton_distributed import distributed
 
-from triton.distributed.kernels.nvidia.common_ops import thread_id, __syncthreads, ld_acquire, red_release
+from triton.distributed.kernels.nvidia.common_ops import thread_id, ld_acquire, red_release
+from triton.language.extra.cuda.language_extra import (
+    __syncthreads, )
 
 
 @triton.jit
@@ -307,6 +309,120 @@ def kernel_gqa_fwd_batch_decode_combine_kv(
         split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
 
         if split_kv_end > split_kv_start:
+            tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0)
+            tlogic = tl.load(Mid_O + offs_logic + split_kv_id * stride_mid_os)
+            n_e_max = tl.maximum(tlogic, e_max)
+
+            old_scale = libdevice.fast_expf(e_max - n_e_max)
+            acc *= old_scale
+            exp_logic = libdevice.fast_expf(tlogic - n_e_max)
+            acc += exp_logic * tv
+
+            e_sum = e_sum * old_scale + exp_logic
+            e_max = n_e_max
+
+    tl.store(
+        o + cur_batch * stride_obs + cur_head * stride_oh + offs_d,
+        acc / e_sum,
+        mask=mask_d,
+    )
+
+
+@triton.jit
+def kernel_intra_rank_gqa_fwd_batch_decode_combine_kv(
+    Mid_O,
+    o,
+    B_Seqlen,
+    batch,
+    q_heads,
+    stride_mid_ob,
+    stride_mid_oh,
+    stride_mid_os,
+    stride_obs,
+    stride_oh,
+    NUM_KV_SPLITS: tl.constexpr,
+    BLOCK_DV: tl.constexpr,
+    Lv: tl.constexpr,
+):
+    cur_batch = tl.program_id(0)
+    cur_head = tl.program_id(1)
+
+    cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
+
+    offs_d = tl.arange(0, BLOCK_DV)
+    mask_d = offs_d < Lv
+
+    e_sum = 0.0
+    e_max = -float("inf")
+    acc = tl.zeros([BLOCK_DV], dtype=tl.float32)
+
+    offs_v = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + offs_d
+    offs_logic = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + Lv
+
+    for split_kv_id in range(0, NUM_KV_SPLITS):
+        kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
+        split_kv_start = kv_len_per_split * split_kv_id
+        split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
+
+        if split_kv_end > split_kv_start:
+            tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0)
+            tlogic = tl.load(Mid_O + offs_logic + split_kv_id * stride_mid_os)
+            n_e_max = tl.maximum(tlogic, e_max)
+
+            old_scale = libdevice.fast_expf(e_max - n_e_max)
+            acc *= old_scale
+            exp_logic = libdevice.fast_expf(tlogic - n_e_max)
+            acc += exp_logic * tv
+
+            e_sum = e_sum * old_scale + exp_logic
+            e_max = n_e_max
+
+    tl.store(
+        o + cur_batch * stride_obs + cur_head * stride_oh + offs_d,
+        acc / e_sum,
+        mask=mask_d,
+    )
+    tl.store(
+        o + cur_batch * stride_obs + cur_head * stride_oh + Lv,
+        e_max + tl.log(e_sum),
+    )
+
+
+@triton.jit
+def kernel_inter_rank_gqa_fwd_batch_decode_combine_kv(
+    Mid_O,
+    o,
+    B_Seqlens,
+    batch,
+    q_heads,
+    stride_mid_ob,
+    stride_mid_oh,
+    stride_mid_os,
+    stride_obs,
+    stride_oh,
+    NUM_KV_SPLITS: tl.constexpr,
+    BLOCK_DV: tl.constexpr,
+    Lv: tl.constexpr,
+):
+    cur_batch = tl.program_id(0)
+    cur_head = tl.program_id(1)
+
+    cur_batch_seq_len_ptr = B_Seqlens + cur_batch
+
+    offs_d = tl.arange(0, BLOCK_DV)
+    mask_d = offs_d < Lv
+
+    e_sum = 0.0
+    e_max = -float("inf")
+    acc = tl.zeros([BLOCK_DV], dtype=tl.float32)
+
+    offs_v = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + offs_d
+    offs_logic = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + Lv
+
+    for split_kv_id in range(0, NUM_KV_SPLITS):
+        effective_kv_len = tl.load(cur_batch_seq_len_ptr + split_kv_id * batch)
+
+        if effective_kv_len > 0:
             tv = tl.load(Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0)
             tlogic = tl.load(Mid_O + offs_logic + split_kv_id * stride_mid_os)
             n_e_max = tl.maximum(tlogic, e_max)
@@ -629,6 +745,90 @@ def gqa_fwd_batch_decode(q, k_cache, v_cache, workspace, q_lens, kv_lens, block_
     )
 
     kernel_gqa_fwd_batch_decode_combine_kv[(batch, q_heads)](
+        output_split,
+        output_combine,
+        kv_lens,
+        batch,
+        q_heads,
+        output_split.stride(0),
+        output_split.stride(1),
+        output_split.stride(2),
+        output_combine.stride(0),
+        output_combine.stride(1),
+        NUM_KV_SPLITS,
+        BLOCK_DV,
+        v_head_dim,
+        num_warps=4,
+        num_stages=2,
+    )
+
+    return output_combine
+
+
+def gqa_fwd_batch_decode_intra_rank(q, k_cache, v_cache, workspace, q_lens, kv_lens, block_table, scale, soft_cap=0.0,
+                                    output_split=None, output_combine=None, kv_split=-1):
+    batch, q_heads, q_head_dim = q.shape
+    _, page_size, kv_heads, k_head_dim = k_cache.shape
+    assert page_size == v_cache.shape[1] and kv_heads == v_cache.shape[2] and k_head_dim == q_head_dim
+    v_head_dim = v_cache.shape[-1]
+
+    BLOCK_N = 64
+    BLOCK_HEAD_DIM = 2**int(math.log2(q_head_dim))
+    BLOCK_DPE = q_head_dim - BLOCK_HEAD_DIM
+    BLOCK_DV = triton.next_power_of_2(v_head_dim)
+
+    kv_group_num = q_heads // kv_heads
+    assert q_heads % kv_heads == 0
+
+    BLOCK_H = 16
+    NUM_KV_SPLITS = 32 if kv_split == -1 else kv_split
+
+    grid_split_kv = (batch, triton.cdiv(q_heads, min(BLOCK_H, kv_group_num)), NUM_KV_SPLITS)
+
+    output_split = torch.empty([batch, q_heads, NUM_KV_SPLITS, v_head_dim +
+                                1], dtype=q.dtype, device=q.device) if output_split is None else output_split
+    output_combine = torch.empty([batch, q_heads, v_head_dim +
+                                  1], dtype=q.dtype, device=q.device) if output_combine is None else output_combine
+
+    kernel_gqa_fwd_batch_decode_split_kv[grid_split_kv](
+        q,
+        k_cache,
+        v_cache,
+        output_split,
+        scale,
+        block_table,
+        kv_lens,
+        # shape
+        batch,
+        # strides
+        q.stride(0),
+        q.stride(1),
+        k_cache.stride(-3),
+        k_cache.stride(-2),
+        v_cache.stride(-3),
+        v_cache.stride(-2),
+        output_split.stride(0),
+        output_split.stride(1),
+        output_split.stride(2),
+        block_table.stride(0),
+        # constants
+        kv_group_num,
+        q_heads,
+        BLOCK_HEAD_DIM,
+        BLOCK_DPE,
+        BLOCK_DV,
+        BLOCK_N,
+        BLOCK_H,
+        NUM_KV_SPLITS,
+        page_size,
+        soft_cap,
+        k_head_dim,
+        v_head_dim,
+        num_warps=4,
+        num_stages=2,
+    )
+
+    kernel_intra_rank_gqa_fwd_batch_decode_combine_kv[(batch, q_heads)](
         output_split,
         output_combine,
         kv_lens,

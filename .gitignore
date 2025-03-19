@@ -98,3 +98,4 @@ prof
 python/triton/distributed
 triton_aot_generated
 third_party/nvshmem
+rank-*.log

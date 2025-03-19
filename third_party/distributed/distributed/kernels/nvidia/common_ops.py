@@ -29,20 +29,8 @@ from triton.language.extra import libshmem_device
 from triton.distributed.utils import (
     CUDA_CHECK, )
 from cuda import cuda
-
-
-@triton.jit
-def __syncthreads():
-    tl.inline_asm_elementwise(
-        asm="""
-        bar.sync 0;
-        """,
-        constraints="=r",
-        args=[],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-    )
+from triton.language.extra.cuda.language_extra import (
+    __syncthreads, )
 
 
 @tl.core.extern
@@ -94,40 +82,6 @@ def barrier_all(rank, num_ranks, comm_buf_ptr):
         while (atomic_cas(comm_buf_ptr + sm_id * num_ranks + tid, 1, 0, "sys", "acquire") != 1):
             pass
     __syncthreads()
-
-
-@tl.core.extern
-def __atomic_add(
-    ptr,
-    value,
-    scope: tl.constexpr = "gpu",
-    semantic: tl.constexpr = "relaxed",
-    _builder=None,
-):
-    return tl.inline_asm_elementwise(
-        asm=f"atom.{semantic.value}.{scope.value}.global.add.s32 $0, [$1], $2;",
-        constraints=("=r,l,r"),
-        args=[
-            ptr,
-            value,
-        ],
-        is_pure=False,
-        pack=1,
-        dtype=tl.int32,
-        _builder=_builder,
-    )
-
-
-@triton.jit
-def atomic_add(barrier_ptr, value, scope: tl.constexpr, semantic: tl.constexpr):
-    """custom atomic_add implementation using extern_elementwise
-
-    :param scope: one of "gpu", "sys". default to "gpu"
-    :param semantic: one of "release", "acquire", "relaxed", "acq_rel". default to "relaxed"
-    :returns: the result of atomic_add
-    :rtype: int
-    """
-    return __atomic_add(barrier_ptr, value, scope, semantic)
 
 
 @tl.core.extern

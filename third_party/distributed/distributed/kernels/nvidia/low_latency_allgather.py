@@ -25,6 +25,8 @@
 import pynvshmem
 import torch
 import torch.distributed
+from dataclasses import dataclass
+from typing import List
 
 import triton
 import triton.language as tl
@@ -311,81 +313,124 @@ def _forward_push_2d_ll_perf_only_kernel(
         signal_target += 1
 
 
-class AllGatherOp:
+@dataclass
+class FastAllGatherContext:
+    rank: int
+    node: int
+    num_ranks: int
+    num_nodes: int
+    signal_tensor: torch.Tensor
+    ll_buffers: List[torch.Tensor]  # double buffer
+    grid_barrier: torch.Tensor
+    max_buffer_size: int = 2 * 32 * 1024 * 1024
+    signal_target: int = 15
 
-    def __init__(self, nnodes, world_size, rank, max_buffer_size: int = 2 * 32 * 1024 * 1024):
+    def update(self, rank, node, num_ranks, num_nodes, signal_target):
         self.rank = rank
-        self.size = world_size
-        self.signal = pynvshmem.nvshmem_create_tensor((self.size, ), torch.uint64)
-        self.max_buffer_size = max_buffer_size
-        self.ll_buffers = [pynvshmem.nvshmem_create_tensor((self.max_buffer_size, ), torch.int8) for _ in range(2)]
-        self.signal.zero_()
-        self.signal_target = 15  # avoid 1 to constexpr
-        self.nnodes = nnodes
-        self.grid_barrier = torch.zeros((1, ), dtype=torch.uint32, device="cuda")
+        self.node = node
+        self.num_ranks = num_ranks
+        self.num_nodes = num_nodes
+        self.signal_target = signal_target
 
-    def forward_pull(self, symm_buffer: torch.Tensor):
-        self.signal_target += 1
-        # print(f"_forward_pull_kernel: cache_key {_forward_pull_kernel.cache_key} hash: {_forward_pull_kernel.hash}")
-        return _forward_pull_kernel[(self.size, )](
-            symm_buffer,
-            symm_buffer.nbytes // self.size,
-            self.signal,
-            self.size,
-            self.rank,
-            self.signal_target,
-            num_warps=32,
+
+def create_fast_allgather_context(rank, node, num_ranks, num_nodes, max_buffer_size: int = 2 * 32 * 1024 * 1024):
+    signal_tensor = pynvshmem.nvshmem_create_tensor((num_ranks, ), torch.uint64)
+    signal_tensor.zero_()
+    ll_buffers = [pynvshmem.nvshmem_create_tensor((max_buffer_size, ), torch.int8) for _ in range(2)]
+    grid_barrier = torch.zeros((1, ), dtype=torch.uint32, device="cuda")
+
+    ctx = FastAllGatherContext(rank=rank, node=node, num_ranks=num_ranks, num_nodes=num_nodes,
+                               signal_tensor=signal_tensor, ll_buffers=ll_buffers, grid_barrier=grid_barrier,
+                               max_buffer_size=max_buffer_size, signal_target=15)
+
+    return ctx
+
+
+def fast_allgather_pull(ctx, symm_buffer: torch.Tensor):
+    ctx.signal_target += 1
+    return _forward_pull_kernel[(ctx.num_ranks, )](
+        symm_buffer,
+        symm_buffer.nbytes // ctx.num_ranks,
+        ctx.signal_tensor,
+        ctx.num_ranks,
+        ctx.rank,
+        ctx.signal_target,
+        num_warps=32,
+    )
+
+
+def fast_allgather_push_2d(ctx, symm_buffer: torch.Tensor):
+    ctx.signal_target += 1
+    _forward_push_2d_kernel[(ctx.num_ranks // ctx.num_nodes, )](
+        symm_buffer,
+        symm_buffer.nbytes // ctx.num_ranks,
+        ctx.signal_tensor,
+        ctx.num_nodes,
+        ctx.num_ranks,
+        ctx.rank,
+        ctx.signal_target,
+        num_warps=32,
+    )
+    return symm_buffer
+
+
+def fast_allgather_push_2d_ll(ctx, symm_buffer: torch.Tensor):
+    assert symm_buffer.nbytes * 2 < ctx.max_buffer_size
+    ctx.signal_target += 1
+    ll_buffer = ctx.ll_buffers[ctx.signal_target % 2]
+    _forward_push_2d_ll_kernel[(ctx.num_ranks // ctx.num_nodes, )](
+        symm_buffer,
+        symm_buffer.nbytes // ctx.num_ranks,
+        ctx.signal_tensor,
+        ll_buffer,
+        ctx.num_nodes,
+        ctx.num_ranks,
+        ctx.rank,
+        ctx.signal_target,
+        ctx.grid_barrier,
+        num_warps=32,
+    )
+
+    return symm_buffer
+
+
+def fast_allgather_push_2d_ll_perf_only(ctx, symm_buffer: torch.Tensor, iters=10):
+    assert symm_buffer.nbytes * 2 < ctx.max_buffer_size
+    _forward_push_2d_ll_perf_only_kernel[(ctx.num_ranks // ctx.num_nodes, )](
+        symm_buffer,
+        symm_buffer.nbytes // ctx.num_ranks,
+        ctx.signal_tensor,
+        ctx.ll_buffers[0],
+        ctx.ll_buffers[1],
+        ctx.num_nodes,
+        ctx.num_ranks,
+        ctx.rank,
+        ctx.signal_target,
+        ctx.grid_barrier,
+        iters,
+        num_warps=32,
+    )
+    ctx.signal_target += iters
+
+    return symm_buffer
+
+
+FAST_ALLGATHER_FUNC_DISPATCH = {
+    "pull": fast_allgather_pull, "push2d": fast_allgather_push_2d, "push2d_ll": fast_allgather_push_2d_ll,
+    "push2d_ll_perf_only": fast_allgather_push_2d_ll_perf_only
+}
+
+
+def fast_allgather(symm_buffer: torch.Tensor, ctx=None, rank=None, node=None, num_ranks=None, num_nodes=None,
+                   mode="pull"):
+    assert mode in FAST_ALLGATHER_FUNC_DISPATCH
+    if ctx is None:
+        assert rank is not None and node is not None
+        assert num_ranks is not None and num_nodes is not None
+        ctx = create_fast_allgather_context(
+            rank,
+            node,
+            num_ranks,
+            num_nodes,
         )
-
-    def forward_push_2d(self, symm_buffer: torch.Tensor):
-        self.signal_target += 1
-        _forward_push_2d_kernel[(self.size // self.nnodes, )](
-            symm_buffer,
-            symm_buffer.nbytes // self.size,
-            self.signal,
-            self.nnodes,
-            self.size,
-            self.rank,
-            self.signal_target,
-            num_warps=32,
-        )
-        return symm_buffer
-
-    def forward_push_2d_ll(self, symm_buffer: torch.Tensor):
-        assert symm_buffer.nbytes * 2 < self.max_buffer_size
-        self.signal_target += 1
-        ll_buffer = self.ll_buffers[self.signal_target % 2]
-        _forward_push_2d_ll_kernel[(self.size // self.nnodes, )](
-            symm_buffer,
-            symm_buffer.nbytes // self.size,
-            self.signal,
-            ll_buffer,
-            self.nnodes,
-            self.size,
-            self.rank,
-            self.signal_target,
-            self.grid_barrier,
-            num_warps=32,
-        )
-
-        return symm_buffer
-
-    def _forward_push_2d_ll_perf_only(self, symm_buffer: torch.Tensor, iters):
-        assert symm_buffer.nbytes * 2 < self.max_buffer_size
-        _forward_push_2d_ll_perf_only_kernel[(self.size // self.nnodes, )](
-            symm_buffer,
-            symm_buffer.nbytes // self.size,
-            self.signal,
-            self.ll_buffers[0],
-            self.ll_buffers[1],
-            self.nnodes,
-            self.size,
-            self.rank,
-            self.signal_target,
-            self.grid_barrier,
-            iters,
-            num_warps=32,
-        )
-        self.signal_target += iters
-
-        return symm_buffer
+    return FAST_ALLGATHER_FUNC_DISPATCH[mode](ctx, symm_buffer)
