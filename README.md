@@ -26,13 +26,22 @@ Dependencies with other versions may also work well, but this is not guaranteed.
 3. Install dependencies
     ```sh
     pip3 install torch==2.4
-    pip3 install ninja cmake wheel pybind11 cuda-python==12.4 numpy
+    pip3 install black "clang-format==19.1.2" pre-commit ruff yapf==0.43
+    pip3 install ninja cmake wheel pybind11 cuda-python==12.4 numpy chardet pytest
     ```
 4. Build
     ```sh
     cd /home/Triton-distributed
+    export USE_TRITON_DISTRIBUTED_AOT=0
     pip3 install -e python --verbose --no-build-isolation
     ```
+    
+    If you want to use AOT, then
+    ```sh
+    export USE_TRITON_DISTRIBUTED_AOT=1
+    pip3 install -e python --verbose --no-build-isolation
+    ```
+    (Note: You have to first build non-AOT version before building AOT version)
 5. Setup environment variables (Do this step at the beginning every time you use Triton-distributed)
     ```sh
     cd /home/Triton-distributed

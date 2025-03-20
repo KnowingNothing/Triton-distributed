@@ -22,9 +22,10 @@ jobs:
       - name: code-format-check
         commands:
           - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43
-          - pip3 install pre-commit
+          - pip3 install torch==2.4
           - pip3 install cuda-python==12.4
           - pip3 install pytest
+          - pip3 install chardet
           - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
