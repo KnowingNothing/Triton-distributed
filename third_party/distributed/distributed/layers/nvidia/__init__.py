@@ -23,5 +23,6 @@
 #
 ################################################################################
 from .sp_flash_decode_layer import SpGQAFlashDecodeAttention
+from .low_latency_allgather_layer import AllGatherLayer
 
-__all__ = ["SpGQAFlashDecodeAttention"]
+__all__ = ["SpGQAFlashDecodeAttention", "AllGatherLayer"]

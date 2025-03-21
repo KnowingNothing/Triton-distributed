@@ -23,7 +23,7 @@
 #
 ################################################################################
 import torch
-from triton.distributed.kernels.nvidia import fast_allgather, create_fast_allgather_context
+from triton.distributed.layers.nvidia import AllGatherLayer
 import pynvshmem
 
 import os
@@ -49,7 +49,7 @@ def parse_args():
     return args
 
 
-def perf_ag(ag_buffer: torch.Tensor, nbytes: int):
+def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int):
     nbytes_per_rank = nbytes // WORLD_SIZE
     ref_tensor = torch.arange(nbytes, dtype=dtype).cuda()
 
@@ -58,15 +58,17 @@ def perf_ag(ag_buffer: torch.Tensor, nbytes: int):
     ag_buffer[index_start:index_end].copy_(ref_tensor[index_start:index_end])
     ag_buffer = ag_buffer[:nbytes]  # only keeps the needed part
 
-    ctx = create_fast_allgather_context(
-        RANK,
-        RANK // LOCAL_WORLD_SIZE,
-        WORLD_SIZE,
-        WORLD_SIZE // LOCAL_WORLD_SIZE,
-    )
-
     def _run_with_ag_op():
-        return fast_allgather(ag_buffer, ctx=ctx)
+        if args.mode == "push_2d":
+            ag_op.forward_push_2d(ag_buffer)
+        elif args.mode == "push_2d_ll":
+            ag_op.forward_push_2d_ll(ag_buffer)
+        elif args.mode == "pull_1d":
+            ag_op.forward_pull(ag_buffer)
+        elif args.mode == "push_2d_ll_perf_only":
+            ag_op._forward_push_2d_ll_perf_only(ag_buffer, iters=2)
+        else:
+            raise ValueError(f"Unknown mode {args.mode}")
 
     _run_with_ag_op()
 
@@ -125,9 +127,12 @@ if __name__ == "__main__":
 
     ag_buffer = pynvshmem.nvshmem_create_tensor((args.maxbytes, ), dtype)
 
+    nnodes = WORLD_SIZE // LOCAL_WORLD_SIZE
+    ag_op = AllGatherLayer(nnodes, WORLD_SIZE, RANK, max_buffer_size=args.maxbytes * 2)
+
     minbytes = align_to(args.minbytes, 16)
     maxbytes = align_to(args.maxbytes, 16)
     nbytes = minbytes
     while nbytes < maxbytes:
-        perf_ag(ag_buffer, nbytes)
+        perf_ag(ag_op, ag_buffer, nbytes)
         nbytes = args.stepfactor * nbytes

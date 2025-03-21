@@ -79,6 +79,7 @@ def get_args():
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--case", type=str, choices=list(ALL_TESTS.keys()))
     parser.add_argument("--shape_id", type=str, default="")
+    parser.add_argument("--profile", action="store_true")
 
     args = parser.parse_args()
     return args
@@ -220,7 +221,7 @@ def test_triton_decode_with_paged_kv(args) -> None:
 
 @register_test("perf")
 def perf_decode(args):
-    for kv_len_per_rank in [2**i for i in range(15, 16)]:
+    for kv_len_per_rank in [2**i for i in range(10, 19)]:
         kv_lens_per_rank = [kv_len_per_rank]
         num_heads = 96
         head_size = 128
@@ -274,7 +275,7 @@ def perf_decode(args):
 
         pynvshmem.nvshmem_barrier_all()
 
-        with group_profile("sp_flash_decode", do_prof=True, group=TP_GROUP):
+        with group_profile("sp_flash_decode", do_prof=args.profile, group=TP_GROUP):
             torch.cuda._sleep(1000000000)  # in case CPU bound
             _, time_ms = perf_func(
                 func,

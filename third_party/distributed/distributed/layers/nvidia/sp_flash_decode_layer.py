@@ -23,9 +23,9 @@
 #
 ################################################################################
 import torch
-from triton.distributed.kernels.nvidia import (fast_allgather, create_fast_allgather_context,
-                                               gqa_fwd_batch_decode_intra_rank,
+from triton.distributed.kernels.nvidia import (create_fast_allgather_context, gqa_fwd_batch_decode_intra_rank,
                                                kernel_inter_rank_gqa_fwd_batch_decode_combine_kv)
+from .low_latency_allgather_layer import AllGatherLayer
 import pynvshmem
 
 
@@ -52,8 +52,8 @@ class SpGQAFlashDecodeAttention(torch.nn.Module):
 
         # allgather
         self.max_allgather_buffer_size = self.num_ranks * 1024 * 1024 * 4  # bytes
-        self.allgather_ctx = create_fast_allgather_context(self.rank, self.node, self.num_ranks, self.num_nodes,
-                                                           max_buffer_size=self.max_allgather_buffer_size)
+        self.ag_layer = AllGatherLayer(self.num_nodes, self.num_ranks, self.rank,
+                                       max_buffer_size=self.max_allgather_buffer_size)
         self.ag_buffer = pynvshmem.nvshmem_create_tensor((self.max_allgather_buffer_size, ), torch.int8)
 
         # track buffer size
@@ -109,7 +109,7 @@ class SpGQAFlashDecodeAttention(torch.nn.Module):
         self.ag_buffer[index_start:index_end].copy_(output_combine.view(-1).view(torch.int8))
         ag_buffer = self.ag_buffer[:nbytes]  # only keeps the needed part
 
-        fast_allgather(ag_buffer, ctx=self.allgather_ctx)
+        self.ag_layer.forward_push_2d(ag_buffer)
 
         ################
         # final combine

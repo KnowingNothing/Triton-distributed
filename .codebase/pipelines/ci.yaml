@@ -70,7 +70,7 @@ jobs:
           # allgather
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_small_msg.py
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_gather.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_fast_allgather.py
+          - bash -x ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_fast_allgather.py   --iters 10   --warmup_iters 20   --mode push_2d_ll   --minbytes 4096   --maxbytes 8192
           # nvshmem related
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_nvshmem_api.py
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ring_put.py
