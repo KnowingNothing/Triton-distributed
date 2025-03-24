@@ -221,11 +221,12 @@ def __atomic_add(
     _builder=None,
 ):
     if ptr.dtype.element_ty == tl.int32:
-        tl.static_assert(
-            value.dtype == tl.int32,
-            "value must be of the same dtype with ptr: int32",
-            _builder=_builder,
-        )
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.int32,
+                "value must be of the same dtype with ptr: int32",
+                _builder=_builder,
+            )
         return tl.inline_asm_elementwise(
             asm=f"atom.{semantic.value}.{scope.value}.global.add.s32 $0, [$1], $2;",
             constraints=("=r,l,r"),
@@ -239,11 +240,12 @@ def __atomic_add(
             _builder=_builder,
         )
     if ptr.dtype.element_ty == tl.uint32:
-        tl.static_assert(
-            value.dtype == tl.uint32,
-            "value must be of the same dtype with ptr: uint32",
-            _builder=_builder,
-        )
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.uint32,
+                "value must be of the same dtype with ptr: uint32",
+                _builder=_builder,
+            )
         return tl.inline_asm_elementwise(
             asm=f"atom.{semantic.value}.{scope.value}.global.add.u32 $0, [$1], $2;",
             constraints=("=r,l,r"),
@@ -257,11 +259,12 @@ def __atomic_add(
             _builder=_builder,
         )
     elif ptr.dtype.element_ty == tl.int64:
-        tl.static_assert(
-            value.dtype == tl.int64,
-            "value must be of the same dtype with ptr: int64",
-            _builder=_builder,
-        )
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.int64,
+                "value must be of the same dtype with ptr: int64",
+                _builder=_builder,
+            )
         return tl.inline_asm_elementwise(
             asm=f"atom.{semantic.value}.{scope.value}.global.add.s64 $0, [$1], $2;",
             constraints=("=l,l,l"),
@@ -275,11 +278,12 @@ def __atomic_add(
             _builder=_builder,
         )
     elif ptr.dtype.element_ty == tl.uint64:
-        tl.static_assert(
-            value.dtype == tl.uint64,
-            "value must be of the same dtype with ptr: uint64",
-            _builder=_builder,
-        )
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.uint64,
+                "value must be of the same dtype with ptr: uint64",
+                _builder=_builder,
+            )
         return tl.inline_asm_elementwise(
             asm=f"atom.{semantic.value}.{scope.value}.global.add.u64 $0, [$1], $2;",
             constraints=("=l,l,l"),
@@ -306,6 +310,107 @@ def atomic_add(barrier_ptr, value, scope: core.constexpr, semantic: core.constex
     :rtype: int
     """
     return __atomic_add(barrier_ptr, value, scope, semantic)
+
+
+# @patch_triton_module
+@tl.core.extern
+def __atomic_store(
+    ptr,
+    value,
+    scope: core.constexpr = "gpu",
+    semantic: core.constexpr = "relaxed",
+    _builder=None,
+):
+    if ptr.dtype.element_ty == tl.int32:
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.int32,
+                "value must be of the same dtype with ptr: int32",
+                _builder=_builder,
+            )
+        return tl.inline_asm_elementwise(
+            asm=f"st.{semantic.value}.{scope.value}.global.s32 [$1], $2;\n mov.u32 $0, 0;",
+            constraints=("=r,l,r"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.int32,
+            _builder=_builder,
+        )
+    if ptr.dtype.element_ty == tl.uint32:
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.uint32,
+                "value must be of the same dtype with ptr: uint32",
+                _builder=_builder,
+            )
+        return tl.inline_asm_elementwise(
+            asm=f"st.{semantic.value}.{scope.value}.global.u32 [$1], $2;\n mov.u32 $0, 0;",
+            constraints=("=r,l,r"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.int32,
+            _builder=_builder,
+        )
+    elif ptr.dtype.element_ty == tl.int64:
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.int64,
+                "value must be of the same dtype with ptr: int64",
+                _builder=_builder,
+            )
+        return tl.inline_asm_elementwise(
+            asm=f"st.{semantic.value}.{scope.value}.global.s64 [$1], $2;\n mov.u32 $0, 0;",
+            constraints=("=r,l,l"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.int32,
+            _builder=_builder,
+        )
+    elif ptr.dtype.element_ty == tl.uint64:
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.uint64,
+                "value must be of the same dtype with ptr: uint64",
+                _builder=_builder,
+            )
+        return tl.inline_asm_elementwise(
+            asm=f"st.{semantic.value}.{scope.value}.global.u64 [$1], $2;\n mov.u32 $0, 0;",
+            constraints=("=r,l,l"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.int32,
+            _builder=_builder,
+        )
+    else:
+        raise ValueError("unsupported dtype")
+
+
+@triton.jit
+def atomic_store(barrier_ptr, value, scope: core.constexpr, semantic: core.constexpr):
+    """custom atomic_store implementation using extern_elementwise
+
+    :param scope: one of "gpu", "sys". default to "gpu"
+    :param semantic: one of "release", "acquire", "relaxed", "acq_rel". default to "relaxed"
+    :returns: the result of atomic_store
+    :rtype: int
+    """
+    return __atomic_store(barrier_ptr, value, scope, semantic)
 
 
 @triton.jit
@@ -430,6 +535,7 @@ __all__ = [
     "ld_acquire",
     "ld_u32_acquire",
     "atomic_add",
+    "atomic_store",
     "__shfl_sync_i32",
     "__shfl_up_sync_i32",
     "__shfl_down_sync_i32",

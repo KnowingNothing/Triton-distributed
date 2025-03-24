@@ -38,6 +38,7 @@ CMD="torchrun \
   --node_rank=${node_rank} \
   --nproc_per_node=${nproc_per_node} \
   --nnodes=${nnodes} \
+  ${DIST_TRITON_EXTRA_TORCHRUN_ARGS} \
   ${additional_args} \
   ${DIST_TRITON_EXTRA_TORCHRUN_ARGS} \
   $@"

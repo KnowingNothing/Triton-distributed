@@ -72,7 +72,7 @@ class AllGatherLayer:
         assert symm_buffer.nbytes * 2 < self.max_buffer_size
         self.signal_target += 1
         ll_buffer = self.ll_buffers[self.signal_target % 2]
-        _forward_push_2d_ll_kernel[(self.size // self.nnodes, )](
+        _forward_push_2d_ll_kernel[(self.size, )](
             symm_buffer,
             symm_buffer.nbytes // self.size,
             self.signal,
@@ -81,7 +81,6 @@ class AllGatherLayer:
             self.size,
             self.rank,
             self.signal_target,
-            self.grid_barrier,
             num_warps=32,
         )
 
