@@ -49,13 +49,17 @@ export NVSHMEM_LIBFABRIC_SUPPORT=0
 export NVSHMEM_MPI_SUPPORT=1
 export NVSHMEM_USE_GDRCOPY=0
 export NVSHMEM_ENABLE_ALL_DEVICE_INLINING=1
-export NVSHMEM_BUILD_BITCODE_LIBRARY=0
+export NVSHMEM_BUILD_BITCODE_LIBRARY=${NVSHMEM_BUILD_BITCODE_LIBRARY:-0}
 
 export NVSHMEM_SRC=${PROJECT_ROOT}/../nvshmem
 
 pushd ${NVSHMEM_SRC}
 mkdir -p build
 cd build
+if [ ${NVSHmem_BUILD_BITCODE_LIBRARY} -eq "1" ]; then
+  echo "libclang-19-dev or higher is required."
+  mkdir -p src/llvm_lib
+fi
 CMAKE=${CMAKE:-cmake} # default cmake version maybe <= 3.19
 if [ ! -f CMakeCache.txt ]; then
     ${CMAKE} .. \
@@ -64,9 +68,9 @@ if [ ! -f CMakeCache.txt ]; then
         -DNVSHMEM_BUILD_TESTS=OFF \
         -DNVSHMEM_BUILD_EXAMPLES=OFF \
         -DNVSHMEM_BUILD_PACKAGES=OFF \
+        -DNVSHMEM_BUILD_BITCODE_LIBRARY=${NVSHmem_BUILD_BITCODE_LIBRARY} \
         -DCMAKE_INSTALL_PREFIX=${NVSHMEM_SRC}/build/install
 fi
-# -DNVSHMEM_TRACE=ON
 make VERBOSE=1 -j${JOBS}
 make install
 popd

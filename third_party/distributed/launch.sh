@@ -10,18 +10,12 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 DISTRIBUTED_DIR=$SCRIPT_DIR
 THIRD_PARTY_DIR=$(dirname -- "$SCRIPT_DIR")
 
-TRITON_NVSHMEM_DIR=${THIRD_PARTY_DIR}/nvshmem_bind/python
-PYNVSHMEM_DIR=${THIRD_PARTY_DIR}/nvshmem_bind/pynvshmem
 NVSHMEM_ROOT=${THIRD_PARTY_DIR}/nvshmem/build/install
 
 export LD_LIBRARY_PATH=${NVSHMEM_ROOT}/lib:$LD_LIBRARY_PATH
 export NVSHMEM_DISABLE_CUDA_VMM=1 # moving from cpp to shell
 export NVSHMEM_BOOTSTRAP=UID
-
-export PYTHONPATH=$PYTHONPATH:${PYNVSHMEM_DIR}/build:$TRITON_NVSHMEM_DIR
 export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=eth0
-
-export PYTHONPATH=$PYTHONPATH:${TRITON_NVSHMEM_DIR}:${PYNVSHMEM_DIR}/build
 
 export TRITON_CACHE_DIR=$DISTRIBUTED_DIR/.triton
 
@@ -45,6 +39,7 @@ CMD="torchrun \
   --nproc_per_node=${nproc_per_node} \
   --nnodes=${nnodes} \
   ${additional_args} \
+  ${DIST_TRITON_EXTRA_TORCHRUN_ARGS} \
   $@"
 
 echo ${CMD}

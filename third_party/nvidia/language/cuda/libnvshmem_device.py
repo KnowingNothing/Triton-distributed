@@ -239,18 +239,18 @@ def fence(_builder=None):
 
 
 @core.extern
-def getmem_nbi_block(dest, source, bytes, pe, _builder=None):
+def getmem_nbi_block(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmemx_getmem_nbi_block",
                 (),
             ),
@@ -266,13 +266,13 @@ def getmem_block(dest, source, bytes, pe, _builder=None):
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
             tl.cast(bytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmemx_getmem_block",
                 (),
             ),
@@ -283,18 +283,18 @@ def getmem_block(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def getmem_nbi_warp(dest, source, bytes, pe, _builder=None):
+def getmem_nbi_warp(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmemx_getmem_nbi_warp",
                 (),
             ),
@@ -305,18 +305,18 @@ def getmem_nbi_warp(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def getmem_warp(dest, source, bytes, pe, _builder=None):
+def getmem_warp(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmemx_getmem_warp",
                 (),
             ),
@@ -327,18 +327,18 @@ def getmem_warp(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def getmem_nbi(dest, source, bytes, pe, _builder=None):
+def getmem_nbi(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmem_getmem_nbi",
                 (),
             ),
@@ -349,18 +349,18 @@ def getmem_nbi(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def getmem(dest, source, bytes, pe, _builder=None):
+def getmem(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmem_getmem",
                 (),
             ),
@@ -371,18 +371,18 @@ def getmem(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def putmem_block(dest, source, bytes, pe, _builder=None):
+def putmem_block(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmemx_putmem_block",
                 (),
             ),
@@ -393,20 +393,20 @@ def putmem_block(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def putmem_nbi_block(dest, source, bytes, pe, _builder=None):
+def putmem_nbi_block(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmemx_putmem_nbi_block",
-                (),
+                (tl.int32),
             ),
         },
         is_pure=False,
@@ -415,18 +415,18 @@ def putmem_nbi_block(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def putmem_warp(dest, source, bytes, pe, _builder=None):
+def putmem_warp(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmemx_putmem_warp",
                 (),
             ),
@@ -437,18 +437,18 @@ def putmem_warp(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def putmem_nbi_warp(dest, source, bytes, pe, _builder=None):
+def putmem_nbi_warp(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmemx_putmem_nbi_warp",
                 (),
             ),
@@ -459,18 +459,18 @@ def putmem_nbi_warp(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def putmem(dest, source, bytes, pe, _builder=None):
+def putmem(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmem_putmem",
                 (),
             ),
@@ -481,18 +481,18 @@ def putmem(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def putmem_nbi(dest, source, bytes, pe, _builder=None):
+def putmem_nbi(dest, source, nbytes, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmem_putmem_nbi",
                 (),
             ),
@@ -503,21 +503,21 @@ def putmem_nbi(dest, source, bytes, pe, _builder=None):
 
 
 @core.extern
-def putmem_signal(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
+def putmem_signal(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             sig_addr,  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _builder=_builder),
             tl.cast(sig_op, tl.int32, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmem_putmem_signal",
                 (),
             ),
@@ -528,21 +528,21 @@ def putmem_signal(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=No
 
 
 @core.extern
-def putmem_signal_nbi(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
+def putmem_signal_nbi(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             sig_addr,  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _builder=_builder),
             tl.cast(sig_op, tl.int32, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmem_putmem_signal_nbi",
                 (),
             ),
@@ -553,21 +553,21 @@ def putmem_signal_nbi(dest, source, bytes, sig_addr, signal, sig_op, pe, _builde
 
 
 @core.extern
-def putmem_signal_block(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
+def putmem_signal_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             sig_addr,  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _builder=_builder),
             tl.cast(sig_op, tl.int32, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmemx_putmem_signal_block",
                 (),
             ),
@@ -578,21 +578,21 @@ def putmem_signal_block(dest, source, bytes, sig_addr, signal, sig_op, pe, _buil
 
 
 @core.extern
-def putmem_signal_nbi_block(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
+def putmem_signal_nbi_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             sig_addr,  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _builder=_builder),
             tl.cast(sig_op, tl.int32, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmemx_putmem_signal_nbi_block",
                 (),
             ),
@@ -603,21 +603,21 @@ def putmem_signal_nbi_block(dest, source, bytes, sig_addr, signal, sig_op, pe, _
 
 
 @core.extern
-def putmem_signal_warp(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
+def putmem_signal_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             sig_addr,  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _builder=_builder),
             tl.cast(sig_op, tl.int32, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmemx_putmem_signal_warp",
                 (),
             ),
@@ -628,21 +628,21 @@ def putmem_signal_warp(dest, source, bytes, sig_addr, signal, sig_op, pe, _build
 
 
 @core.extern
-def putmem_signal_nbi_warp(dest, source, bytes, sig_addr, signal, sig_op, pe, _builder=None):
+def putmem_signal_nbi_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            tl.cast(dest, tl.pi32_t, _builder=_builder),
-            tl.cast(source, tl.pi32_t, _builder=_builder),
-            tl.cast(bytes, tl.uint64, _builder=_builder),
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nbytes, tl.uint64, _builder=_builder),
             sig_addr,  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _builder=_builder),
             tl.cast(sig_op, tl.int32, _builder=_builder),
             tl.cast(pe, tl.int32, _builder=_builder),
         ],
         {
-            (tl.pi32_t, tl.pi32_t, tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
+            (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, pi_u64_t, tl.uint64, tl.int32, tl.int32): (
                 "nvshmemx_putmem_signal_nbi_warp",
                 (),
             ),
