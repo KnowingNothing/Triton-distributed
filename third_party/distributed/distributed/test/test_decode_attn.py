@@ -414,7 +414,7 @@ def perf_8k_decode(args):
             gqa_fwd_batch_decode(query, key_cache, value_cache, workspace, [1] * num_seqs, kv_lens, block_tables, scale,
                                  soft_cap, output_split=output_split, output_combine=output_combine, kv_split=kv_split)
 
-        _, perf = perf_func(func, iters=1000, warmup_iters=200)
+        _, perf = perf_func(func, iters=100, warmup_iters=20)
 
         torch.distributed.barrier(args.default_group)
         dist_print(f"rank: {args.rank} KV len={kv_len} Performance is {perf} ms", allowed_ranks="all", need_sync=True)
@@ -475,7 +475,7 @@ def perf_8k_decode_aot(args):
                                      block_tables, scale, soft_cap, output_split=output_split,
                                      output_combine=output_combine, kv_split=kv_split)
 
-        _, perf = perf_func(func, iters=1000, warmup_iters=200)
+        _, perf = perf_func(func, iters=100, warmup_iters=20)
 
         torch.distributed.barrier(args.default_group)
         dist_print(f"rank: {args.rank} KV len={kv_len} Performance is {perf} ms", allowed_ranks="all", need_sync=True)
@@ -533,7 +533,7 @@ def perf_8k_decode_persistent(args):
                                             block_tables, scale, soft_cap, output_split=output_split,
                                             output_combine=output_combine, kv_split=kv_split)
 
-        _, perf = perf_func(func, iters=1000, warmup_iters=200)
+        _, perf = perf_func(func, iters=100, warmup_iters=20)
 
         torch.distributed.barrier(args.default_group)
         dist_print(f"rank: {args.rank} KV len={kv_len} Performance is {perf} ms", allowed_ranks="all", need_sync=True)
@@ -592,7 +592,7 @@ def perf_8k_decode_persistent_aot(args):
                                                 kv_lens, block_tables, scale, soft_cap, output_split=output_split,
                                                 output_combine=output_combine, kv_split=kv_split)
 
-        _, perf = perf_func(func, iters=1000, warmup_iters=200)
+        _, perf = perf_func(func, iters=100, warmup_iters=20)
 
         torch.distributed.barrier(args.default_group)
         dist_print(f"rank: {args.rank} KV len={kv_len} Performance is {perf} ms", allowed_ranks="all", need_sync=True)

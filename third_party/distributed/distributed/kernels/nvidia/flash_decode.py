@@ -72,7 +72,7 @@ def tanh(x):
 split_kv_signature = ((
     "*{input_dtype}:16, *{cache_dtype}:16, *{cache_dtype}:16, *{output_dtype}:16, "  # q/k_cache/v_cache/output
     "fp32, "  # sm_scale
-    "*i32:16, *i32:16, "  # block_table/kv_length
+    "*i32:16, *i32, "  # block_table/kv_length
     "i32, ") +  # batch
                       (
                           ", ".join([
@@ -113,14 +113,18 @@ def get_triton_split_kv_algo_info(q_heads, kv_heads, q_head_dim, v_head_dim, pag
 
 @aot_compile_spaces({
     "gqa_fwd_batch_decode_split_kv_fp16_fp16_fp32": {
-        "signature": split_kv_signature.format(input_dtype="fp16", cache_dtype="fp16", output_dtype="fp32"), "grid":
+        "signature":
+        split_kv_signature.format(input_dtype="fp16", cache_dtype="fp16", output_dtype="fp32"), "grid":
         _split_kv_grid, "triton_algo_infos": [
             get_triton_split_kv_algo_info(96, 12, 128, 128, 1, split_kv=32, soft_cap=0),
+            get_triton_split_kv_algo_info(96 // 4, 12 // 4, 128, 128, 1, split_kv=32, soft_cap=0),
         ]
     }, "gqa_fwd_batch_decode_split_kv_fp16_fp16_fp16": {
-        "signature": split_kv_signature.format(input_dtype="fp16", cache_dtype="fp16", output_dtype="fp16"), "grid":
+        "signature":
+        split_kv_signature.format(input_dtype="fp16", cache_dtype="fp16", output_dtype="fp16"), "grid":
         _split_kv_grid, "triton_algo_infos": [
             get_triton_split_kv_algo_info(96, 12, 128, 128, 1, split_kv=32, soft_cap=0),
+            get_triton_split_kv_algo_info(96 // 4, 12 // 4, 128, 128, 1, split_kv=32, soft_cap=0),
         ]
     }
 })
@@ -239,7 +243,7 @@ def kernel_gqa_fwd_batch_decode_split_kv(
 
 combine_kv_signature = ((
     "*{input_dtype}:16, *{output_dtype}:16, "  # mid_o/o
-    "*i32:16, "  # kv_length
+    "*i32, "  # kv_length
 ) + (
     ", ".join([
         "i32", "i32", "i32:16", "i32:16", "i32",  # mid_o
@@ -249,26 +253,56 @@ combine_kv_signature = ((
                          "%BLOCK_DV, "
                          "%Lv"))
 
+combine_kv_signature_intra_rank = ((
+    "*{input_dtype}:16, *{output_dtype}:16, "  # mid_o/o
+    "*i32, "  # kv_length
+) + (
+    ", ".join([
+        "i32", "i32", "i32:16", "i32:16", "i32",  # mid_o
+        "i32:16", "i32",  # o
+    ]) + ", ") +  # strides
+                                   ("%NUM_KV_SPLITS, "
+                                    "%BLOCK_DV, "
+                                    "%Lv"))
+
+combine_kv_signature_inter_rank = ((
+    "*{input_dtype}:16, *{output_dtype}:16, "  # mid_o/o
+    "*i32, "  # kv_length
+) + (
+    ", ".join([
+        "i32", "i32", "i32:16", "i32", "i32:16",  # mid_o
+        "i32:16", "i32:16",  # o
+    ]) + ", ") +  # strides
+                                   ("%NUM_KV_SPLITS, "
+                                    "%BLOCK_DV, "
+                                    "%Lv"))
+
 _combine_kv_grid = ["batch", "q_heads", "1"]
 
 
-def get_triton_combine_kv_algo_info(split_kv, v_head_dim):
+def get_triton_combine_kv_algo_info(split_kv, v_head_dim, block_dv=None):
     return {
-        "NUM_KV_SPLITS": split_kv, "BLOCK_DV": triton.next_power_of_2(v_head_dim), "Lv": v_head_dim, "num_warps": 4,
-        "num_stages": 2
+        "NUM_KV_SPLITS": split_kv, "BLOCK_DV": triton.next_power_of_2(v_head_dim) if block_dv is None else block_dv,
+        "Lv": v_head_dim, "num_warps": 4, "num_stages": 2
     }
 
 
 @aot_compile_spaces({
     "gqa_fwd_batch_decode_combine_kv_fp32_fp16": {
-        "signature": combine_kv_signature.format(input_dtype="fp32", output_dtype="fp16"), "grid": _combine_kv_grid,
-        "triton_algo_infos": [
+        "signature":
+        combine_kv_signature.format(input_dtype="fp32", output_dtype="fp16"), "grid":
+        _combine_kv_grid, "triton_algo_infos": [
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128),
             get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128),
         ]
     }, "gqa_fwd_batch_decode_combine_kv_fp16_fp16": {
-        "signature": combine_kv_signature.format(input_dtype="fp16", output_dtype="fp16"), "grid": _combine_kv_grid,
-        "triton_algo_infos": [
+        "signature":
+        combine_kv_signature.format(input_dtype="fp16", output_dtype="fp16"), "grid":
+        _combine_kv_grid, "triton_algo_infos": [
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128),
             get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128),
         ]
     }
 })
@@ -328,6 +362,35 @@ def kernel_gqa_fwd_batch_decode_combine_kv(
     )
 
 
+@aot_compile_spaces({
+    "intra_rank_gqa_fwd_batch_decode_combine_kv_fp32_fp16": {
+        "signature":
+        combine_kv_signature_intra_rank.format(input_dtype="fp32", output_dtype="fp16"), "grid":
+        _combine_kv_grid, "triton_algo_infos": [
+            get_triton_combine_kv_algo_info(split_kv=8, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=8, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128, block_dv=1024),
+        ]
+    }, "intra_rank_gqa_fwd_batch_decode_combine_kv_fp16_fp16": {
+        "signature":
+        combine_kv_signature_intra_rank.format(input_dtype="fp16", output_dtype="fp16"), "grid":
+        _combine_kv_grid, "triton_algo_infos": [
+            get_triton_combine_kv_algo_info(split_kv=8, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=8, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128, block_dv=1024),
+        ]
+    }
+})
 @triton.jit
 def kernel_intra_rank_gqa_fwd_batch_decode_combine_kv(
     Mid_O,
@@ -388,6 +451,35 @@ def kernel_intra_rank_gqa_fwd_batch_decode_combine_kv(
     )
 
 
+@aot_compile_spaces({
+    "inter_rank_gqa_fwd_batch_decode_combine_kv_fp32_fp16": {
+        "signature":
+        combine_kv_signature_inter_rank.format(input_dtype="fp32", output_dtype="fp16"), "grid":
+        _combine_kv_grid, "triton_algo_infos": [
+            get_triton_combine_kv_algo_info(split_kv=8, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=8, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128, block_dv=1024),
+        ]
+    }, "inter_rank_gqa_fwd_batch_decode_combine_kv_fp16_fp16": {
+        "signature":
+        combine_kv_signature_inter_rank.format(input_dtype="fp16", output_dtype="fp16"), "grid":
+        _combine_kv_grid, "triton_algo_infos": [
+            get_triton_combine_kv_algo_info(split_kv=8, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128),
+            get_triton_combine_kv_algo_info(split_kv=8, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=16, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=32, v_head_dim=128, block_dv=1024),
+            get_triton_combine_kv_algo_info(split_kv=64, v_head_dim=128, block_dv=1024),
+        ]
+    }
+})
 @triton.jit
 def kernel_inter_rank_gqa_fwd_batch_decode_combine_kv(
     Mid_O,
@@ -446,7 +538,7 @@ persistent_signature = (
     (
         "*{input_dtype}:16, *{cache_dtype}:16, *{cache_dtype}:16, *{output_dtype}:16, *{output_dtype}:16, "  # q/k_cache/v_cache/output/final_output
         "fp32, "  # sm_scale
-        "*i32:16, *i32:16, *i32:16, "  # block_table/kv_length/workspace
+        "*i32:16, *i32, *i32:16, "  # block_table/kv_length/workspace
         "i32, ") +  # batch
     (
         ", ".join([
@@ -952,6 +1044,64 @@ def gqa_fwd_batch_decode_aot(stream, q, k_cache, v_cache, workspace, q_lens, kv_
             kernel_combine = distributed.gqa_fwd_batch_decode_combine_kv_fp16_fp16
             split_algo_info = distributed.gqa_fwd_batch_decode_split_kv_fp16_fp16_fp16__triton_algo_info_t()
             combine_algo_info = distributed.gqa_fwd_batch_decode_combine_kv_fp16_fp16__triton_algo_info_t()
+        else:
+            raise RuntimeError("Unsupported data type of intermediate output:", output_split.dtype)
+
+        py_split_algo_info = get_triton_split_kv_algo_info(q_heads, kv_heads, q_head_dim, v_head_dim, page_size,
+                                                           split_kv=NUM_KV_SPLITS, soft_cap=soft_cap)
+        py_combine_algo_info = get_triton_combine_kv_algo_info(split_kv=NUM_KV_SPLITS, v_head_dim=v_head_dim)
+        for k, v in py_split_algo_info.items():
+            setattr(split_algo_info, k, v)
+        for k, v in py_combine_algo_info.items():
+            setattr(combine_algo_info, k, v)
+
+        kernel_split(stream.cuda_stream, q.data_ptr(), k_cache.data_ptr(), v_cache.data_ptr(), output_split.data_ptr(),
+                     scale, block_table.data_ptr(), kv_lens.data_ptr(),
+                     # shape,
+                     batch,
+                     # strides
+                     q.stride(0), q.stride(1),  # q.strides
+                     k_cache.stride(-3), k_cache.stride(-2),  # k_cache
+                     v_cache.stride(-3), v_cache.stride(-2),  # v_cache
+                     output_split.stride(0), output_split.stride(1), output_split.stride(2),  # output_split
+                     block_table.stride(0),  # block_table
+                     # algo_info
+                     split_algo_info)
+        kernel_combine(stream.cuda_stream, output_split.data_ptr(), output_combine.data_ptr(), kv_lens.data_ptr(),
+                       batch, q_heads, output_split.stride(0), output_split.stride(1), output_split.stride(2),
+                       output_combine.stride(0), output_combine.stride(1), combine_algo_info)
+        return output_combine
+    else:
+        raise RuntimeError("Should enable USE_TRITON_DISTRIBUTED_AOT")
+
+
+def gqa_fwd_batch_decode_intra_rank_aot(stream, q, k_cache, v_cache, workspace, q_lens, kv_lens, block_table, scale,
+                                        soft_cap=0, output_split=None, output_combine=None, kv_split=-1):
+    if use_aot:
+        batch, q_heads, q_head_dim = q.shape
+        _, page_size, kv_heads, k_head_dim = k_cache.shape
+        assert page_size == v_cache.shape[1] and kv_heads == v_cache.shape[2] and k_head_dim == q_head_dim
+        v_head_dim = v_cache.shape[-1]
+
+        assert q_heads % kv_heads == 0
+
+        NUM_KV_SPLITS = 32 if kv_split == -1 else kv_split
+
+        output_split = torch.empty([batch, q_heads, NUM_KV_SPLITS, v_head_dim +
+                                    1], dtype=torch.float16, device=q.device) if output_split is None else output_split
+        output_combine = torch.empty([batch, q_heads, v_head_dim + 1], dtype=torch.float16,
+                                     device=q.device) if output_combine is None else output_combine
+
+        if output_split.dtype == torch.float32:
+            kernel_split = distributed.gqa_fwd_batch_decode_split_kv_fp16_fp16_fp32
+            kernel_combine = distributed.intra_rank_gqa_fwd_batch_decode_combine_kv_fp32_fp16
+            split_algo_info = distributed.gqa_fwd_batch_decode_split_kv_fp16_fp16_fp32__triton_algo_info_t()
+            combine_algo_info = distributed.intra_rank_gqa_fwd_batch_decode_combine_kv_fp32_fp16__triton_algo_info_t()
+        elif output_split.dtype == torch.float16:
+            kernel_split = distributed.gqa_fwd_batch_decode_split_kv_fp16_fp16_fp16
+            kernel_combine = distributed.intra_rank_gqa_fwd_batch_decode_combine_kv_fp16_fp16
+            split_algo_info = distributed.gqa_fwd_batch_decode_split_kv_fp16_fp16_fp16__triton_algo_info_t()
+            combine_algo_info = distributed.intra_rank_gqa_fwd_batch_decode_combine_kv_fp16_fp16__triton_algo_info_t()
         else:
             raise RuntimeError("Unsupported data type of intermediate output:", output_split.dtype)
 

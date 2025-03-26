@@ -136,12 +136,13 @@ def make_ast_source(kernel: triton.JITFunction, signature: str) -> triton.compil
 
 def kernel_name_suffix(
     signature,
+    const_sig,
     hints,
     num_stages: int,
     num_warps: int,
 ):
     meta_sig = f"warps{num_warps}xstages{num_stages}"
-    sig_hash = hash_signature(list(signature.values()) + [meta_sig])
+    sig_hash = hash_signature(list(signature.values()) + [const_sig] + [meta_sig])
     suffix = ''
     for i, ty in enumerate(signature.values()):
         suffix += str(i)
@@ -187,7 +188,7 @@ def materialize_c_params(
     constants = ccinfo.src.constants
     signature = _indexed_signature(src)
     const_sig = _make_const_sig(src)
-    suffix = kernel_name_suffix(signature, hints, num_stages, num_warps)
+    suffix = kernel_name_suffix(signature, const_sig, hints, num_stages, num_warps)
     func_name = f"{out_name}_{suffix}"
 
     doc_string = [f"{kernel.arg_names[i[0]]}={constants[i]}" for i in constants]

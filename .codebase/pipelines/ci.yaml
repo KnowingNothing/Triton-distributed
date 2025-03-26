@@ -22,7 +22,6 @@ jobs:
       - name: code-format-check
         commands:
           - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43
-          - pip3 install torch==2.4
           - pip3 install cuda-python==12.4
           - pip3 install pytest
           - pip3 install chardet
@@ -49,6 +48,7 @@ jobs:
           - pip3 install ninja cmake wheel pybind11
           - export USE_TRITON_DISTRIBUTED_AOT=0
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          - bash ./scripts/gen_aot_code.sh
           - export USE_TRITON_DISTRIBUTED_AOT=1
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
 
@@ -81,6 +81,7 @@ jobs:
           - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_aot
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case perf
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case correctness
+          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case correctness
           # moe rs
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2 --check

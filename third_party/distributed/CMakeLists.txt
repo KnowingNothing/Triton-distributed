@@ -38,14 +38,14 @@ if(USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "on" OR USE_TRITON_DISTRIBUTED_AOT_
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     COMMAND_ERROR_IS_FATAL ANY
   )
-  set(TRITON_AOT_GENERATED "triton_aot_generated")
-  file(REMOVE_RECURSE "${CMAKE_CURRENT_SOURCE_DIR}/csrc/${TRITON_AOT_GENERATED}")
-  set(FLASH_DECODE_KERNEL ${PROJECT_SOURCE_DIR}/distributed/kernels/nvidia/flash_decode.py:kernel_gqa_fwd_batch_decode_split_kv_persistent ${PROJECT_SOURCE_DIR}/distributed/kernels/nvidia/flash_decode.py:kernel_gqa_fwd_batch_decode_split_kv ${PROJECT_SOURCE_DIR}/distributed/kernels/nvidia/flash_decode.py:kernel_gqa_fwd_batch_decode_combine_kv)
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/distributed/tools/compile_aot.py --workspace ${CMAKE_CURRENT_SOURCE_DIR}/csrc/${TRITON_AOT_GENERATED} --kernels ${FLASH_DECODE_KERNEL}  --library triton_distributed_kernel
-    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    COMMAND_ERROR_IS_FATAL ANY
-  )
+  # set(TRITON_AOT_GENERATED "triton_aot_generated")
+  # file(REMOVE_RECURSE "${CMAKE_CURRENT_SOURCE_DIR}/csrc/${TRITON_AOT_GENERATED}")
+  # set(FLASH_DECODE_KERNEL ${PROJECT_SOURCE_DIR}/distributed/kernels/nvidia/flash_decode.py:kernel_gqa_fwd_batch_decode_split_kv_persistent ${PROJECT_SOURCE_DIR}/distributed/kernels/nvidia/flash_decode.py:kernel_gqa_fwd_batch_decode_split_kv ${PROJECT_SOURCE_DIR}/distributed/kernels/nvidia/flash_decode.py:kernel_gqa_fwd_batch_decode_combine_kv)
+  # execute_process(
+  #   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/distributed/tools/compile_aot.py --workspace ${CMAKE_CURRENT_SOURCE_DIR}/csrc/${TRITON_AOT_GENERATED} --kernels ${FLASH_DECODE_KERNEL}  --library triton_distributed_kernel
+  #   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  #   COMMAND_ERROR_IS_FATAL ANY
+  # )
   add_definitions(-DUSE_TRITON_DISTRIBUTED_AOT)
 endif()
 

@@ -60,7 +60,7 @@ def _forward_pull_kernel(symm_ptr, bytes_per_rank, symm_flag, world_size, rank, 
     else:
         peer = pid
         if thread_idx == 0:
-            libshmem_device.signal_wait_until(symm_flag + peer, libshmem_device.NVSHMEM_CMP_GE, signal_target)
+            libshmem_device.signal_wait_until(symm_flag + peer, libshmem_device.NVSHMEM_CMP_EQ, signal_target)
         __syncthreads()
         libshmem_device.getmem_block(
             tl.cast(symm_ptr, tl.pointer_type(tl.int8)) + peer * bytes_per_rank,
@@ -71,7 +71,7 @@ def _forward_pull_kernel(symm_ptr, bytes_per_rank, symm_flag, world_size, rank, 
 
 
 @triton.jit
-def _forward_push_2d_kernel(symm_ptr, bytes_per_rank, symm_flag, nnodes, world_size, rank, signal_target):
+def _forward_push_2d_kernel(symm_ptr, bytes_per_rank, symm_flag, symm_bar, nnodes, world_size, rank, signal_target):
     local_world_size = world_size // nnodes
     local_rank = rank % local_world_size
     # tl.static_assert(world_size % nnodes == 0)
@@ -97,7 +97,7 @@ def _forward_push_2d_kernel(symm_ptr, bytes_per_rank, symm_flag, nnodes, world_s
         if thread_idx < world_size and thread_idx != rank:
             libshmem_device.signal_wait_until(
                 symm_flag + thread_idx,
-                libshmem_device.NVSHMEM_CMP_GE,
+                libshmem_device.NVSHMEM_CMP_EQ,
                 signal_target,
             )
         __syncthreads()
@@ -110,7 +110,7 @@ def _forward_push_2d_kernel(symm_ptr, bytes_per_rank, symm_flag, nnodes, world_s
                 if thread_idx == 0:
                     libshmem_device.signal_wait_until(
                         symm_flag + segment,
-                        libshmem_device.NVSHMEM_CMP_GE,
+                        libshmem_device.NVSHMEM_CMP_EQ,
                         signal_target,
                     )
                 __syncthreads()
@@ -210,6 +210,7 @@ def _forward_push_2d_ll_kernel(
     symm_ptr,
     bytes_per_rank,
     symm_flag,
+    symm_bar,
     symm_ll_buffer,
     nnodes,
     world_size,

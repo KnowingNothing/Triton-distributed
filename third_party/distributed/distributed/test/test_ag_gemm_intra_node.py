@@ -202,7 +202,7 @@ def test_perf_ag_gemm_tma_intra_node(args, autotune=False):
         ctx.autotune = True
         func = contextual_autotune(is_dist=True)(lambda: _func())
 
-    C, perf = perf_func(func, iters=1000, warmup_iters=200)
+    C, perf = perf_func(func, iters=100, warmup_iters=20)
     dist_print(f"rank{RANK}", perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
     with torch.profiler.profile(

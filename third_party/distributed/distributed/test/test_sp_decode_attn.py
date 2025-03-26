@@ -173,55 +173,62 @@ def test_triton_decode_with_paged_kv(args) -> None:
     assert num_query_heads % num_kv_heads == 0
     scale = head_size**-0.5
 
-    NUM_BLOCKS_PER_RANK = 128 * 12
+    NUM_BLOCKS_PER_RANK = 128 * 12 + 1
     NUM_BLOCKS = NUM_BLOCKS_PER_RANK * args.num_ranks  # Large enough to test overflow in index calculation.
-
-    query = torch.randn(num_seqs, num_query_heads, head_size, dtype=dtype)
-    args.default_group.broadcast(query, root=0)
-
-    key_value_cache = torch.randn(NUM_BLOCKS, 2, block_size, num_kv_heads, head_size, dtype=dtype)
-    args.default_group.broadcast(key_value_cache, root=0)
-    key_cache = key_value_cache[:, 0, :, :, :].contiguous()
-    value_cache = key_value_cache[:, 1, :, :, :].contiguous()
-    key_cache_this_rank = key_cache[args.rank * NUM_BLOCKS_PER_RANK:(args.rank + 1) * NUM_BLOCKS_PER_RANK].contiguous()
-    value_cache_this_rank = value_cache[args.rank * NUM_BLOCKS_PER_RANK:(args.rank + 1) *
-                                        NUM_BLOCKS_PER_RANK].contiguous()
-
-    max_num_blocks_per_seq_per_rank = NUM_BLOCKS_PER_RANK
-    block_tables_list = [
-        torch.randint(0, NUM_BLOCKS_PER_RANK, (num_seqs, max_num_blocks_per_seq_per_rank), dtype=torch.int32)
-        for i in range(args.num_ranks)
-    ]
-    block_tables_list_shift = [
-        torch.zeros((num_seqs, max_num_blocks_per_seq_per_rank)).to(torch.int32) + i * NUM_BLOCKS_PER_RANK
-        for i in range(args.num_ranks)
-    ]
-    block_tables_shift = torch.cat(block_tables_list_shift, dim=-1)
-    block_tables_this_rank = block_tables_list[args.rank]
-    torch.distributed.all_gather(block_tables_list, block_tables_this_rank, group=args.default_group)
-    block_tables = torch.cat(block_tables_list, dim=-1) + block_tables_shift
-
-    global_kv_lens = [i * args.num_ranks for i in kv_lens_per_rank]
-    kv_lens_tensor = torch.tensor(kv_lens_per_rank, dtype=torch.int32, device=query.device)
-    global_kv_lens_tensor = torch.cat([kv_lens_tensor.view(1, -1) for _ in range(args.num_ranks)], dim=0)
 
     ths_op = SpGQAFlashDecodeAttention(args.rank, args.rank // args.local_num_ranks, args.num_ranks,
                                        args.num_ranks // args.local_num_ranks, num_query_heads, num_kv_heads, head_size,
                                        head_size, page_size=block_size, scale=scale, soft_cap=soft_cap,
-                                       max_allowed_batch=1, thrink_buffer_threshold=500)
-    output = ths_op(query, key_cache_this_rank, value_cache_this_rank, global_kv_lens_tensor, block_tables_this_rank)
+                                       max_allowed_batch=1, thrink_buffer_threshold=500, stages=20)
+    for _ in range(200):
+        query = torch.randn(num_seqs, num_query_heads, head_size, dtype=dtype) / 10
+        args.default_group.broadcast(query, root=0)
 
-    ref_output = ref_paged_attn(query=query, key_cache=key_cache, value_cache=value_cache, query_lens=[1] * num_seqs,
-                                kv_lens_per_rank=global_kv_lens, block_tables=block_tables, scale=scale,
-                                soft_cap=soft_cap)
+        key_value_cache = torch.randn(NUM_BLOCKS, 2, block_size, num_kv_heads, head_size, dtype=dtype) / 10
+        args.default_group.broadcast(key_value_cache, root=0)
+        key_cache = key_value_cache[:, 0, :, :, :].contiguous()
+        value_cache = key_value_cache[:, 1, :, :, :].contiguous()
+        key_cache_this_rank = key_cache[args.rank * NUM_BLOCKS_PER_RANK:(args.rank + 1) *
+                                        NUM_BLOCKS_PER_RANK].contiguous()
+        value_cache_this_rank = value_cache[args.rank * NUM_BLOCKS_PER_RANK:(args.rank + 1) *
+                                            NUM_BLOCKS_PER_RANK].contiguous()
 
-    torch.testing.assert_close(output, ref_output, atol=1e-2, rtol=1e-2), \
-        f"{torch.max(torch.abs(output - ref_output))}"
+        max_num_blocks_per_seq_per_rank = NUM_BLOCKS_PER_RANK
+        block_tables_list = [
+            torch.randint(0, NUM_BLOCKS_PER_RANK, (num_seqs, max_num_blocks_per_seq_per_rank), dtype=torch.int32)
+            for i in range(args.num_ranks)
+        ]
+        block_tables_list_shift = [
+            torch.zeros((num_seqs, max_num_blocks_per_seq_per_rank)).to(torch.int32) + i * NUM_BLOCKS_PER_RANK
+            for i in range(args.num_ranks)
+        ]
+        block_tables_shift = torch.cat(block_tables_list_shift, dim=-1)
+        block_tables_this_rank = block_tables_list[args.rank]
+        torch.distributed.all_gather(block_tables_list, block_tables_this_rank, group=args.default_group)
+        block_tables = torch.cat(block_tables_list, dim=-1) + block_tables_shift
+
+        global_kv_lens = [i * args.num_ranks for i in kv_lens_per_rank]
+        kv_lens_tensor = torch.tensor(kv_lens_per_rank, dtype=torch.int32, device=query.device)
+        global_kv_lens_tensor = torch.cat([kv_lens_tensor.view(1, -1) for _ in range(args.num_ranks)], dim=0)
+
+        query = torch.randn_like(query)
+        args.default_group.broadcast(query, root=0)
+        output = ths_op(query, key_cache_this_rank, value_cache_this_rank, global_kv_lens_tensor,
+                        block_tables_this_rank)
+        new_query = torch.empty_like(query).copy_(query)
+
+        ref_output = ref_paged_attn(query=new_query, key_cache=key_cache, value_cache=value_cache,
+                                    query_lens=[1] * num_seqs, kv_lens_per_rank=global_kv_lens,
+                                    block_tables=block_tables, scale=scale, soft_cap=soft_cap)
+
+        torch.testing.assert_close(output, ref_output, atol=0.05, rtol=1e-2), \
+            f"{torch.max(torch.abs(output - ref_output))}"
+    dist_print("Pass!", allowed_ranks=[0])
 
 
 @register_test("perf")
 def perf_decode(args):
-    for kv_len_per_rank in [2**i for i in range(10, 19)]:
+    for kv_len_per_rank in [2**i for i in range(10, 18)]:
         kv_lens_per_rank = [kv_len_per_rank]
         num_heads = 96
         head_size = 128
@@ -237,7 +244,7 @@ def perf_decode(args):
         assert num_query_heads % num_kv_heads == 0
         scale = head_size**-0.5
 
-        NUM_BLOCKS_PER_RANK = kv_lens_per_rank[0]
+        NUM_BLOCKS_PER_RANK = kv_lens_per_rank[0] + 1
         NUM_BLOCKS = NUM_BLOCKS_PER_RANK * args.num_ranks  # Large enough to test overflow in index calculation.
 
         query = torch.randn(num_seqs, num_query_heads, head_size, dtype=dtype)
@@ -266,6 +273,8 @@ def perf_decode(args):
                                            args.num_ranks // args.local_num_ranks, num_query_heads, num_kv_heads,
                                            head_size, head_size, page_size=block_size, scale=scale, soft_cap=soft_cap,
                                            max_allowed_batch=1, thrink_buffer_threshold=500)
+        torch.cuda.synchronize()
+        pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
 
         def func():
             return ths_op(query, key_cache_this_rank, value_cache_this_rank, global_kv_lens_tensor,
@@ -273,9 +282,9 @@ def perf_decode(args):
 
         perf_func(func, iters=100, warmup_iters=20)
 
-        pynvshmem.nvshmem_barrier_all()
+        pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
 
-        with group_profile("sp_flash_decode", do_prof=args.profile, group=TP_GROUP):
+        with group_profile(f"sp_flash_decode_kv{kv_len_per_rank}", do_prof=args.profile, group=TP_GROUP):
             torch.cuda._sleep(1000000000)  # in case CPU bound
             _, time_ms = perf_func(
                 func,

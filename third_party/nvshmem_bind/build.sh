@@ -28,7 +28,7 @@ fi
 
 function build_pynvshmem() {
   pushd ${PROJECT_ROOT}/pynvshmem
-  NVSHMEM_HOME=${NVSHMEM_DIR} python3 setup.py install --user
+  NVSHMEM_HOME=${NVSHMEM_DIR} pip3 install .
   popd
 }
 

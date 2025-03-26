@@ -30,21 +30,31 @@ from triton.distributed.kernels.nvidia import _forward_push_2d_ll_kernel, _forwa
 
 class AllGatherLayer:
 
-    def __init__(self, nnodes, world_size, rank, max_buffer_size: int = 2 * 32 * 1024 * 1024):
+    def __init__(self, nnodes, world_size, rank, max_buffer_size: int = 2 * 32 * 128 * 128, stages=10):
         self.rank = rank
         self.size = world_size
-        self.signal = pynvshmem.nvshmem_create_tensor((self.size, ), torch.uint64)
+        self.signal = pynvshmem.nvshmem_create_tensor((
+            stages,
+            self.size,
+        ), torch.uint64)
+        self.signal_bar = pynvshmem.nvshmem_create_tensor((
+            stages,
+            self.size,
+        ), torch.uint64)
         self.max_buffer_size = max_buffer_size
-        self.ll_buffers = [pynvshmem.nvshmem_create_tensor((self.max_buffer_size, ), torch.int8) for _ in range(2)]
-        self.signal.zero_()
+        self.ll_buffers = pynvshmem.nvshmem_create_tensor((
+            stages,
+            self.max_buffer_size,
+        ), torch.int8)
         self.signal_target = 15  # avoid 1 to constexpr
+        for i in range(stages):
+            self.signal[i].zero_()
+            self.signal_bar[i].fill_(self.signal_target)
         self.nnodes = nnodes
-        self.grid_barrier = torch.zeros((1, ), dtype=torch.uint32, device="cuda")
+        self.stages = stages
 
     def forward_pull(self, symm_buffer: torch.Tensor):
-        self.signal_target += 1
-        # print(f"_forward_pull_kernel: cache_key {_forward_pull_kernel.cache_key} hash: {_forward_pull_kernel.hash}")
-        return _forward_pull_kernel[(self.size, )](
+        _forward_pull_kernel[(self.size, )](
             symm_buffer,
             symm_buffer.nbytes // self.size,
             self.signal,
@@ -53,29 +63,36 @@ class AllGatherLayer:
             self.signal_target,
             num_warps=32,
         )
+        self.signal_target += 1
+        return symm_buffer
 
     def forward_push_2d(self, symm_buffer: torch.Tensor):
-        self.signal_target += 1
         _forward_push_2d_kernel[(self.size // self.nnodes, )](
             symm_buffer,
             symm_buffer.nbytes // self.size,
             self.signal,
+            self.signal_bar,
             self.nnodes,
             self.size,
             self.rank,
             self.signal_target,
             num_warps=32,
         )
+        self.signal_target += 1
         return symm_buffer
 
     def forward_push_2d_ll(self, symm_buffer: torch.Tensor):
         assert symm_buffer.nbytes * 2 < self.max_buffer_size
-        self.signal_target += 1
-        ll_buffer = self.ll_buffers[self.signal_target % 2]
+        if self.signal_target % self.stages == 0:
+            pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        signal = self.signal[self.signal_target % self.stages]
+        signal_bar = self.signal_bar[self.signal_target % self.stages]
+        ll_buffer = self.ll_buffers[self.signal_target % self.stages]
         _forward_push_2d_ll_kernel[(self.size, )](
             symm_buffer,
             symm_buffer.nbytes // self.size,
-            self.signal,
+            signal,
+            signal_bar,
             ll_buffer,
             self.nnodes,
             self.size,
@@ -83,5 +100,5 @@ class AllGatherLayer:
             self.signal_target,
             num_warps=32,
         )
-
+        self.signal_target += 1
         return symm_buffer

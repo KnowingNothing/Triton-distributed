@@ -23,16 +23,27 @@
 #
 ################################################################################
 import torch
-from triton.distributed.kernels.nvidia import (create_fast_allgather_context, gqa_fwd_batch_decode_intra_rank,
+import os
+from triton.distributed.kernels.nvidia import (create_fast_allgather_context, get_triton_combine_kv_algo_info,
+                                               gqa_fwd_batch_decode_intra_rank_aot, gqa_fwd_batch_decode_intra_rank,
                                                kernel_inter_rank_gqa_fwd_batch_decode_combine_kv)
 from .low_latency_allgather_layer import AllGatherLayer
 import pynvshmem
+if "USE_TRITON_DISTRIBUTED_AOT" in os.environ and os.environ["USE_TRITON_DISTRIBUTED_AOT"] in [
+        "1", "true", "on", "ON", "On", True
+]:
+    use_aot = True
+else:
+    use_aot = False
+
+if use_aot:
+    from triton._C.libtriton_distributed import distributed
 
 
 class SpGQAFlashDecodeAttention(torch.nn.Module):
 
     def __init__(self, rank, node, num_ranks, num_nodes, num_q_heads, num_kv_heads, q_head_dim, v_head_dim, page_size=1,
-                 scale=1, soft_cap=0, max_allowed_batch=1, thrink_buffer_threshold=500):
+                 scale=1, soft_cap=0, max_allowed_batch=1, thrink_buffer_threshold=500, stages=20):
         super().__init__()
         self.rank = rank
         self.num_ranks = num_ranks
@@ -49,12 +60,16 @@ class SpGQAFlashDecodeAttention(torch.nn.Module):
         self.scale = scale
         self.kv_split = 32
         self.max_allowed_batch = max_allowed_batch
+        self.stages = stages
 
         # allgather
-        self.max_allgather_buffer_size = self.num_ranks * 1024 * 1024 * 4  # bytes
+        self.max_allgather_buffer_size = self.num_ranks * self.num_q_heads * self.v_head_dim * 8  # bytes
         self.ag_layer = AllGatherLayer(self.num_nodes, self.num_ranks, self.rank,
-                                       max_buffer_size=self.max_allgather_buffer_size)
-        self.ag_buffer = pynvshmem.nvshmem_create_tensor((self.max_allgather_buffer_size, ), torch.int8)
+                                       max_buffer_size=self.max_allgather_buffer_size, stages=self.stages)
+        self.ag_buffer = pynvshmem.nvshmem_create_tensor((
+            self.stages,
+            self.max_allgather_buffer_size,
+        ), torch.int8)
 
         # track buffer size
         self.count_less_than_half = 0
@@ -77,11 +92,17 @@ class SpGQAFlashDecodeAttention(torch.nn.Module):
         output_combine = torch.empty([batch, self.num_q_heads, self.v_head_dim + 1], dtype=q.dtype, device=q.device)
         final_output = torch.empty([batch, self.num_q_heads, self.v_head_dim], dtype=q.dtype, device=q.device)
 
-        gqa_fwd_batch_decode_intra_rank(q, k_cache, v_cache, self.workspace, [1] * q.shape[0],
-                                        global_kv_lens[self.rank], block_table, self.scale, soft_cap=self.soft_cap,
-                                        output_split=output_split, output_combine=output_combine,
-                                        kv_split=self.kv_split)
-
+        current_stream = torch.cuda.current_stream()
+        if use_aot:
+            gqa_fwd_batch_decode_intra_rank_aot(current_stream, q, k_cache, v_cache, self.workspace, [1] * q.shape[0],
+                                                global_kv_lens[self.rank], block_table, self.scale,
+                                                soft_cap=self.soft_cap, output_split=output_split,
+                                                output_combine=output_combine, kv_split=self.kv_split)
+        else:
+            gqa_fwd_batch_decode_intra_rank(q, k_cache, v_cache, self.workspace, [1] * q.shape[0],
+                                            global_kv_lens[self.rank], block_table, self.scale, soft_cap=self.soft_cap,
+                                            output_split=output_split, output_combine=output_combine,
+                                            kv_split=self.kv_split)
         ################
         # allgather part
         nbytes_per_rank = output_combine.nbytes
@@ -91,7 +112,10 @@ class SpGQAFlashDecodeAttention(torch.nn.Module):
             self.max_allgather_buffer_size *= 2
             self.allgather_ctx = create_fast_allgather_context(self.rank, self.node, self.num_ranks, self.num_nodes,
                                                                max_buffer_size=self.max_allgather_buffer_size)
-            self.ag_buffer = pynvshmem.nvshmem_create_tensor((self.max_allgather_buffer_size, ), torch.int8)
+            self.ag_buffer = pynvshmem.nvshmem_create_tensor((
+                self.stages,
+                self.max_allgather_buffer_size,
+            ), torch.int8)
         if nbytes < self.max_allgather_buffer_size // 2:
             self.count_less_than_half += 1
         if self.count_less_than_half >= self.shrink_buffer_threshold:
@@ -100,33 +124,61 @@ class SpGQAFlashDecodeAttention(torch.nn.Module):
             del self.ag_buffer
             self.allgather_ctx = create_fast_allgather_context(self.rank, self.node, self.num_ranks, self.num_nodes,
                                                                max_buffer_size=self.max_allgather_buffer_size)
-            self.ag_buffer = pynvshmem.nvshmem_create_tensor((self.max_allgather_buffer_size, ), torch.int8)
+            self.ag_buffer = pynvshmem.nvshmem_create_tensor((
+                self.stages,
+                self.max_allgather_buffer_size,
+            ), torch.int8)
             # reset counter
             self.count_less_than_half = 0
 
         # local copy
         index_start, index_end = nbytes_per_rank * self.rank, nbytes_per_rank * (self.rank + 1)
-        self.ag_buffer[index_start:index_end].copy_(output_combine.view(-1).view(torch.int8))
-        ag_buffer = self.ag_buffer[:nbytes]  # only keeps the needed part
-
-        self.ag_layer.forward_push_2d(ag_buffer)
+        self.ag_buffer[self.ag_layer.signal_target % self.stages][index_start:index_end].copy_(
+            output_combine.view(-1).view(torch.int8))
+        ag_buffer = self.ag_layer.forward_push_2d_ll(self.ag_buffer[self.ag_layer.signal_target % self.stages][:nbytes])
 
         ################
         # final combine
-        all_ranks_output_combine = ag_buffer.view(q.dtype)
+        all_ranks_output_combine = ag_buffer.view(output_combine.dtype)
         all_ranks_output_combine = all_ranks_output_combine.view(
             [self.num_ranks, batch, self.num_q_heads, self.v_head_dim + 1])
 
-        kernel_inter_rank_gqa_fwd_batch_decode_combine_kv[(batch, self.num_q_heads, 1)](
-            all_ranks_output_combine, final_output, global_kv_lens, batch, self.num_q_heads,
-            all_ranks_output_combine.stride(1),  # batch
-            all_ranks_output_combine.stride(2),  # head
-            all_ranks_output_combine.stride(0),  # num_ranks
-            final_output.stride(0),  # batch
-            final_output.stride(1),  # head
-            self.num_ranks,  # split_kv
-            1024,  # BLOCK_DV
-            self.v_head_dim,  # Lv
-        )
+        if use_aot:
+            if output_split.dtype == torch.float32:
+                kernel_combine = distributed.inter_rank_gqa_fwd_batch_decode_combine_kv_fp32_fp16
+                combine_algo_info = distributed.inter_rank_gqa_fwd_batch_decode_combine_kv_fp32_fp16__triton_algo_info_t(
+                )
+            elif output_split.dtype == torch.float16:
+                kernel_combine = distributed.inter_rank_gqa_fwd_batch_decode_combine_kv_fp16_fp16
+                combine_algo_info = distributed.inter_rank_gqa_fwd_batch_decode_combine_kv_fp16_fp16__triton_algo_info_t(
+                )
+            else:
+                raise RuntimeError("Unsupported data type of intermediate output:", output_split.dtype)
+            py_combine_algo_info = get_triton_combine_kv_algo_info(split_kv=self.num_ranks, v_head_dim=self.v_head_dim,
+                                                                   block_dv=1024)
+
+            for k, v in py_combine_algo_info.items():
+                setattr(combine_algo_info, k, v)
+
+            kernel_combine(current_stream.cuda_stream, all_ranks_output_combine.data_ptr(), final_output.data_ptr(),
+                           global_kv_lens.data_ptr(), batch, self.num_q_heads,
+                           all_ranks_output_combine.stride(1),  # batch
+                           all_ranks_output_combine.stride(2),  # head
+                           all_ranks_output_combine.stride(0),  # num_ranks
+                           final_output.stride(0),  # batch
+                           final_output.stride(1),  # head
+                           combine_algo_info)
+        else:
+            kernel_inter_rank_gqa_fwd_batch_decode_combine_kv[(batch, self.num_q_heads, 1)](
+                all_ranks_output_combine, final_output, global_kv_lens, batch, self.num_q_heads,
+                all_ranks_output_combine.stride(1),  # batch
+                all_ranks_output_combine.stride(2),  # head
+                all_ranks_output_combine.stride(0),  # num_ranks
+                final_output.stride(0),  # batch
+                final_output.stride(1),  # head
+                self.num_ranks,  # split_kv
+                512,  # BLOCK_DV
+                self.v_head_dim,  # Lv
+            )
 
         return final_output
