@@ -37,7 +37,7 @@ from triton.distributed.utils import CUDA_CHECK
 from triton.distributed.kernels.nvidia.common_ops import barrier_all
 
 
-def cp_engine_producer_all_gather_full_mesh_push(
+def cp_engine_producer_all_gather_full_mesh_pull(
     rank,
     num_ranks,
     local_tensor: torch.Tensor,
@@ -335,7 +335,7 @@ def ag_gemm_intra_node_persistent_op(a, b, c, rank, num_ranks, workspace_tensors
     ), )
 
     def call_ag():
-        cp_engine_producer_all_gather_full_mesh_push(
+        cp_engine_producer_all_gather_full_mesh_pull(
             rank,
             num_ranks,
             a,
