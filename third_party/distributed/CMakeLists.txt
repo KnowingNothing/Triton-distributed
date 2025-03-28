@@ -1,4 +1,5 @@
-project(Distributed LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.17 FATAL_ERROR)
+project(Distributed LANGUAGES C CXX CUDA)
 
 set(DISTRIBUTED_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/csrc")
 

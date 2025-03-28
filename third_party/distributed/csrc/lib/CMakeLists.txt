@@ -43,21 +43,23 @@ if(TORCH_CXX_FLAGS)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 endif()
 
+file(GLOB CU_FILES "moe_utils.cu")
+message(STATUS "cu files: ${CU_FILES}")
+
 file(GLOB LIB_FILES "*.cc")
 message(STATUS "lib files: ${LIB_FILES}")
 file(GLOB PYBIND_FILES "../triton_aot_generated/pybind/*.cc")
 message(STATUS "pybind files: ${PYBIND_FILES}")
 
-add_distributed_library(triton_distributed ${LIB_FILES} ${PYBIND_FILES})
+add_distributed_library(triton_distributed ${LIB_FILES} ${PYBIND_FILES} ${CU_FILES})
 include_directories(${CUDA_INCLUDE_DIRS})
 target_include_directories(triton_distributed PUBLIC ${TORCH_INCLUDE_DIRS} ".")
 target_include_directories(triton_distributed PUBLIC ${TORCH_INCLUDE_DIRS} "..")
 target_include_directories(triton_distributed PUBLIC ${TORCH_INCLUDE_DIRS} "../triton_aot_generated")
 message(STATUS "CUDA include directories: ${CUDA_INCLUDE_DIRS}")
 
-target_link_libraries(triton_distributed PUBLIC torch ${TORCH_PYTHON_LIBRARY})
+target_link_libraries(triton_distributed PUBLIC torch ${TORCH_PYTHON_LIBRARY} CUDA::cudart)
 string(TOLOWER "${USE_TRITON_DISTRIBUTED_AOT}" USE_TRITON_DISTRIBUTED_AOT_LOWER)
 if(USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "on" OR USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "1" OR USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "true")
   target_link_libraries(triton_distributed PUBLIC triton_distributed_kernel)
 endif()
-

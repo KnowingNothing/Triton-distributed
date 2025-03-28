@@ -85,6 +85,11 @@ jobs:
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case perf
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case correctness
           - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case correctness
+          # ag moe
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 2048
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 4096
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 8192
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 16384
           # moe rs
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2 --check

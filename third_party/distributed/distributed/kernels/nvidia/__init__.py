@@ -24,6 +24,10 @@
 ################################################################################
 from .allgather_gemm import ag_gemm_intra_node, create_ag_gemm_intra_node_context
 from .low_latency_allgather import fast_allgather, create_fast_allgather_context, _forward_pull_kernel, _forward_push_2d_kernel, _forward_push_2d_ll_kernel
+from .allgather_group_gemm import (
+    ag_group_gemm_intra_node,
+    create_ag_group_gemm_intra_node_context,
+)
 from .flash_decode import (gqa_fwd_batch_decode_persistent, kernel_gqa_fwd_batch_decode_split_kv_persistent,
                            gqa_fwd_batch_decode_persistent_aot, gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot,
                            gqa_fwd_batch_decode_intra_rank_aot, get_triton_combine_kv_algo_info,
@@ -33,6 +37,24 @@ from .moe_reduce_rs import create_moe_rs_context, get_dataflowconfig, moe_reduce
 from .low_latency_all_to_all import create_all_to_all_context, fast_all_to_all, all_to_all_post_process
 
 __all__ = [
+    "ag_gemm_intra_node",
+    "create_ag_gemm_intra_node_context",
+    "ag_group_gemm_intra_node",
+    "create_ag_group_gemm_intra_node_context",
+    "gqa_fwd_batch_decode_persistent",
+    "kernel_gqa_fwd_batch_decode_split_kv_persistent",
+    "gqa_fwd_batch_decode_persistent_aot",
+    "gqa_fwd_batch_decode",
+    "gqa_fwd_batch_decode_aot",
+    "gqa_fwd_batch_decode_intra_rank",
+    "kernel_inter_rank_gqa_fwd_batch_decode_combine_kv",
+    "fast_allgather",
+    "create_fast_allgather_context",
+    "gemm_rs_multi_node",
+    "create_gemm_rs_context",
+    "_forward_pull_kernel",
+    "_forward_push_2d_kernel",
+    "_forward_push_2d_ll_kernel"
     "ag_gemm_intra_node",
     "create_ag_gemm_intra_node_context",
     "gqa_fwd_batch_decode_persistent",

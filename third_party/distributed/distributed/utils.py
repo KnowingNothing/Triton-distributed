@@ -23,8 +23,11 @@
 #
 ################################################################################
 
+import datetime
 import os
+import random
 
+import numpy as np
 import torch
 from typing import Callable, List, Tuple, Union, Sequence, Optional, Any, Dict
 from contextlib import contextmanager, nullcontext
@@ -38,8 +41,81 @@ from multiprocessing import Pool, cpu_count
 import re
 import string
 
+import pynvshmem
 
 # Some code from python/flux/util.py in flux project
+
+_TP_LOCAL_GROUP = None
+_TP_GROUP = None
+
+
+def init_seed(seed=0):
+    os.environ["NCCL_DEBUG"] = os.getenv("NCCL_DEBUG", "ERROR")
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.set_printoptions(precision=2)
+    torch.manual_seed(3 + seed)
+    torch.cuda.manual_seed_all(3 + seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+    np.random.seed(3 + seed)
+    random.seed(3 + seed)
+
+
+def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
+    rank, nranks = group.rank(), group.size()
+    if rank == 0:
+        unique_id: bytes = pynvshmem.nvshmemx_get_uniqueid()
+        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).clone()
+    else:
+        unique_id = torch.empty(128, dtype=torch.uint8)
+
+    if not unique_id.is_cuda:
+        tensor_gpu = unique_id.cuda()
+        torch.distributed.broadcast(tensor_gpu, src=0, group=group)
+        unique_id.copy_(tensor_gpu)
+    else:
+        torch.distributed.broadcast(unique_id, src=0, group=group)
+    torch.cuda.synchronize()
+
+    unique_id = unique_id.numpy().tobytes()
+    pynvshmem.nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)
+
+
+def initialize_distributed():
+    global _TP_GROUP
+    assert _TP_GROUP is None, "TP_GROUP has already been initialized"
+
+    RANK = int(os.environ.get("RANK", 0))
+    LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
+    WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
+    torch.cuda.set_device(LOCAL_RANK)
+    torch.distributed.init_process_group(
+        backend="nccl",
+        world_size=WORLD_SIZE,
+        rank=RANK,
+        timeout=datetime.timedelta(seconds=1800),
+    )
+    assert torch.distributed.is_initialized()
+    # use all ranks as tp group
+    _TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
+
+    init_seed(seed=RANK)
+    init_nvshmem_by_uniqueid(_TP_GROUP)
+    pynvshmem.nvshmem_barrier_all()
+    torch.cuda.synchronize()
+    return _TP_GROUP
+
+
+def TP_GROUP() -> torch.distributed.ProcessGroup:
+    global _TP_GROUP
+    assert _TP_GROUP is not None, "TP_GROUP has not been initialized"
+    return _TP_GROUP
+
+
 @contextmanager
 def with_torch_deterministic(mode: bool, warn_only: bool = True):
     old_mode = torch.are_deterministic_algorithms_enabled()
@@ -96,7 +172,10 @@ def generate_data(configs):
 
 def get_torch_prof_ctx(do_prof: bool):
     ctx = (torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ],
         record_shapes=True,
         with_stack=False,
     ) if do_prof else nullcontext())
@@ -334,7 +413,10 @@ class group_profile:
         self.name = name
         self.do_prof = do_prof
         self.profile = torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
             record_shapes=True,
             with_stack=True,
         )
