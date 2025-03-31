@@ -44,6 +44,7 @@ class TT_Distributed_Op<string mnemonic, list<Trait> traits = []> :
 
 def TT_WaitOp : TT_Distributed_Op<"wait", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+  TypesMatchWith<"result matches ptr type", "barrierPtr", "waitValue", "getPointeeType($_self)">,
 ]> {
   let summary = "Wait for a signal to be ready (becomes 1) and produce a token.";
 
@@ -61,7 +62,7 @@ def TT_WaitOp : TT_Distributed_Op<"wait", [
     ins
     TT_PtrLike:$barrierPtr,
     TT_IntLike:$numBarriers,
-
+    TT_Int: $waitValue,
     DefaultValuedAttr<TT_MemSyncScopeAttr, "MemSyncScope::GPU">:$scope,
     DefaultValuedAttr<TT_MemSemanticAttr, "MemSemantic::ACQUIRE">:$semantic
   );
@@ -69,9 +70,9 @@ def TT_WaitOp : TT_Distributed_Op<"wait", [
   let results = (outs TT_IntLike:$token);
 
   let assemblyFormat = [{
-      $barrierPtr `,` $numBarriers `,`
+      $barrierPtr `,` $numBarriers `,` $waitValue `,`
       `scope` `=` $scope `semantic` `=` $semantic
-      attr-dict `:` type($barrierPtr) `,` type($numBarriers) `->` type($token)
+      attr-dict `:` type($barrierPtr) `,` type($numBarriers) `,` type($waitValue) `->` type($token)
     }];
 }
 

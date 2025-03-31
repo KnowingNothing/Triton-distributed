@@ -55,15 +55,19 @@ def _str_to_dist_comm_scopre(comm_scope):
 
 
 @builtin
-def wait(barrierPtrs, numBarriers, scope: str, semantic: str, _builder=None):
+def wait(barrierPtrs, numBarriers, scope: str, semantic: str, waitValue: int = 1, _builder=None):
     if not barrierPtrs.type.scalar.is_ptr():
         raise ValueError(f"Unsupported barrierPtrs type {barrierPtrs.type.__repr__()} in `distributed.language.wait`")
-
+    elem_ty = barrierPtrs.dtype.element_ty
+    require_i64 = False
+    if elem_ty.is_int64() or elem_ty.is_uint64():
+        require_i64 = True
+    waitValue = _convert_elem_to_ir_value(_builder, waitValue, require_i64=require_i64)
     scope = _str_to_scope(scope)
     semantic = _str_to_sem(semantic)
     return tlc.tensor(
         _builder.create_distributed_wait(barrierPtrs.handle,
-                                         to_tensor(numBarriers, _builder).handle, scope, semantic,
+                                         to_tensor(numBarriers, _builder).handle, waitValue, scope, semantic,
                                          tlc.int32.to_ir(_builder)), tlc.int32)
 
 

@@ -26,15 +26,17 @@ import torch
 import triton
 import triton.language as tl
 import triton.distributed.language as dl
+from triton.language.extra import libshmem_device
+from triton.language.extra.cuda.language_extra import tid, __syncthreads
 import pynvshmem
 
 import time
 from typing import Optional, List
-from cuda import cuda
+from cuda import cuda, cudart
 from dataclasses import dataclass
 from triton.distributed.utils import CUDA_CHECK
 
-from triton.distributed.kernels.nvidia.common_ops import barrier_all
+from triton.distributed.kernels.nvidia.common_ops import barrier_all, wait_eq, set_signal
 
 
 def cp_engine_producer_all_gather_full_mesh_pull(
@@ -72,6 +74,174 @@ def cp_engine_producer_all_gather_full_mesh_pull(
 
 
 @triton.jit
+def nvshmem_device_producer_all_gather_2d_put_block_kernel(
+    ag_buffer_ptr,
+    signal_buffer_ptr,
+    elem_per_rank,
+    size_per_elem,
+    signal_target,
+    rank,
+    local_world_size,
+    world_size,
+    DISPATCH_BLOCK_NUM: tl.constexpr,
+    SEND_BLOCK_NUM: tl.constexpr,
+):
+    pid = tl.program_id(axis=0)
+    thread_idx = tid(axis=0)
+
+    n_nodes = world_size // local_world_size
+    n_nodes = world_size // local_world_size
+    local_rank = rank % local_world_size
+    node_rank = rank // local_world_size
+
+    if pid < DISPATCH_BLOCK_NUM:  # intra dispatch block
+        peer = (local_rank + pid + 1) % local_world_size + node_rank * local_world_size
+        for i in range(n_nodes):
+            segment = local_rank + ((node_rank + i) % n_nodes) * local_world_size
+            if thread_idx == 0:
+                libshmem_device.signal_wait_until(
+                    signal_buffer_ptr + segment,
+                    libshmem_device.NVSHMEM_CMP_GE,
+                    signal_target,
+                )
+            __syncthreads()
+            libshmem_device.putmem_signal_block(
+                ag_buffer_ptr + segment * elem_per_rank,
+                ag_buffer_ptr + segment * elem_per_rank,
+                elem_per_rank * size_per_elem,
+                signal_buffer_ptr + segment,
+                signal_target,
+                libshmem_device.NVSHMEM_SIGNAL_SET,
+                peer,
+            )
+    else:  # inter send block
+        if thread_idx == 0:
+            libshmem_device.signal_wait_until(
+                signal_buffer_ptr + rank,
+                libshmem_device.NVSHMEM_CMP_GE,
+                signal_target,
+            )
+        __syncthreads()
+        global_send_pid = pid % SEND_BLOCK_NUM + 1
+        peer = local_rank + (node_rank + global_send_pid) % n_nodes * local_world_size
+        libshmem_device.putmem_signal_block(
+            ag_buffer_ptr + rank * elem_per_rank,
+            ag_buffer_ptr + rank * elem_per_rank,
+            elem_per_rank * size_per_elem,
+            signal_buffer_ptr + rank,
+            signal_target,
+            libshmem_device.NVSHMEM_SIGNAL_SET,
+            peer,
+        )
+
+
+@triton.jit
+def nvshmem_device_producer_p2p_put_block_kernel(
+    ag_buffer_ptr,
+    signal_buffer_ptr,
+    elem_per_rank,
+    size_per_elem,
+    signal_target,
+    rank,
+    local_world_size,
+    world_size,
+):
+    pid = tl.program_id(axis=0)
+    num_pid = tl.num_programs(axis=0)
+
+    n_nodes = world_size // local_world_size
+    local_rank = rank % local_world_size
+    node_rank = rank // local_world_size
+
+    for i in range(pid, n_nodes - 1, num_pid):
+        peer = local_rank + (node_rank + i + 1) % n_nodes * local_world_size
+        libshmem_device.putmem_signal_block(
+            ag_buffer_ptr + rank * elem_per_rank,
+            ag_buffer_ptr + rank * elem_per_rank,
+            elem_per_rank * size_per_elem,
+            signal_buffer_ptr + rank,
+            signal_target,
+            libshmem_device.NVSHMEM_SIGNAL_SET,
+            peer,
+        )
+
+
+def inter_node_allgather(local_tensor: torch.Tensor, ag_buffer: list[torch.Tensor], signal_buffer: list[torch.Tensor],
+                         signal_target, rank, local_world_size, world_size, intranode_ag_stream=None,
+                         internode_ag_stream=None, cpengine_dispatch=False):
+    local_rank = rank % local_world_size
+    n_nodes = world_size // local_world_size
+    node_rank = rank // local_world_size
+    M_per_rank, N = local_tensor.shape
+
+    if not cpengine_dispatch:
+        with torch.cuda.stream(internode_ag_stream):
+            grid = lambda META: (int(local_world_size + n_nodes - 2), )
+            nvshmem_device_producer_all_gather_2d_put_block_kernel[grid](
+                ag_buffer[local_rank],
+                signal_buffer[local_rank],
+                M_per_rank * N,
+                local_tensor.element_size(),
+                signal_target,
+                rank,
+                local_world_size,
+                world_size,
+                tl.constexpr(local_world_size - 1),
+                tl.constexpr(n_nodes - 1),
+                num_warps=32,
+            )
+    else:
+        with torch.cuda.stream(internode_ag_stream):
+            grid = lambda META: (int(n_nodes - 1), )
+            nvshmem_device_producer_p2p_put_block_kernel[grid](
+                ag_buffer[local_rank],
+                signal_buffer[local_rank],
+                M_per_rank * N,
+                local_tensor.element_size(),
+                signal_target,
+                rank,
+                local_world_size,
+                world_size,
+                num_warps=32,
+            )
+
+        with torch.cuda.stream(intranode_ag_stream):
+            for i in range(1, local_world_size):
+                segment = rank * M_per_rank * N
+                local_dst_rank = (local_rank + local_world_size - i) % local_world_size
+                src_ptr = ag_buffer[local_rank].data_ptr() + segment * local_tensor.element_size()
+                dst_ptr = ag_buffer[local_dst_rank].data_ptr() + segment * local_tensor.element_size()
+                (err, ) = cudart.cudaMemcpyAsync(
+                    dst_ptr,
+                    src_ptr,
+                    M_per_rank * N * local_tensor.element_size(),
+                    cudart.cudaMemcpyKind.cudaMemcpyDefault,
+                    intranode_ag_stream.cuda_stream,
+                )
+                set_signal(signal_buffer[local_dst_rank][rank].data_ptr(), signal_target, intranode_ag_stream, True)
+
+            for i in range(1, n_nodes):
+                recv_rank = local_rank + (node_rank + n_nodes - i) % n_nodes * local_world_size
+                recv_segment = recv_rank * M_per_rank * N
+                wait_eq(signal_buffer[local_rank][recv_rank].data_ptr(), signal_target, intranode_ag_stream, True)
+                src_ptr = ag_buffer[local_rank].data_ptr() + recv_segment * local_tensor.element_size()
+                for j in range(1, local_world_size):
+                    local_dst_rank = (local_rank + local_world_size - j) % local_world_size
+                    dst_ptr = ag_buffer[local_dst_rank].data_ptr() + recv_segment * local_tensor.element_size()
+                    (err, ) = cudart.cudaMemcpyAsync(
+                        dst_ptr,
+                        src_ptr,
+                        M_per_rank * N * local_tensor.element_size(),
+                        cudart.cudaMemcpyKind.cudaMemcpyDefault,
+                        intranode_ag_stream.cuda_stream,
+                    )
+                    set_signal(signal_buffer[local_dst_rank][recv_rank].data_ptr(), signal_target, intranode_ag_stream,
+                               True)
+
+        intranode_ag_stream.wait_stream(internode_ag_stream)
+
+
+@triton.jit
 def kernel_local_copy_and_barrier_all(
     rank,
     num_ranks,
@@ -106,22 +276,30 @@ def kernel_local_copy_and_barrier_all(
     tl.store(dst_ptr, data, mask=mask_dst)
 
 
-def local_copy_and_barrier_all(rank, num_ranks, local_data, global_data, comm_buf, barrier_ptr, M_per_rank, N):
-    barrier_all[(1, )](rank, num_ranks, comm_buf)
-    grid = lambda META: (triton.cdiv(M_per_rank, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
-    kernel_local_copy_and_barrier_all[grid](rank, num_ranks, local_data, global_data, barrier_ptr, M_per_rank, N,
-                                            local_data.stride(0), local_data.stride(1), global_data.stride(0),
-                                            global_data.stride(1), 128, 256)
-    barrier_ptr.fill_(0)
-    # global_data[rank * M_per_rank:(rank + 1) * M_per_rank, :].copy_(local_data)
-    (err, ) = cuda.cuStreamWriteValue32(
-        torch.cuda.current_stream().cuda_stream,
-        barrier_ptr[rank].data_ptr(),
-        1,
-        cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
-    )
-    CUDA_CHECK(err)
-    barrier_all[(1, )](rank, num_ranks, comm_buf)
+def local_copy_and_barrier_all(rank, num_ranks, local_data, global_data, comm_buf, barrier_ptr, M_per_rank, N,
+                               is_internode: bool = False):
+    if not is_internode:
+        barrier_all[(1, )](
+            rank,
+            num_ranks,
+            comm_buf,
+        )
+        grid = lambda META: (triton.cdiv(M_per_rank, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
+        kernel_local_copy_and_barrier_all[grid](rank, num_ranks, local_data, global_data, barrier_ptr, M_per_rank, N,
+                                                local_data.stride(0), local_data.stride(1), global_data.stride(0),
+                                                global_data.stride(1), 128, 256)
+        barrier_ptr.fill_(0)
+        # global_data[rank * M_per_rank:(rank + 1) * M_per_rank, :].copy_(local_data)
+        set_signal(barrier_ptr[rank].data_ptr(), 1, torch.cuda.current_stream(), is_internode)
+        barrier_all[(1, )](rank, num_ranks, comm_buf)
+    else:
+        barrier_ptr.fill_(0)
+        pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        grid = lambda META: (triton.cdiv(M_per_rank, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
+        kernel_local_copy_and_barrier_all[grid](rank, num_ranks, local_data, global_data, barrier_ptr, M_per_rank, N,
+                                                local_data.stride(0), local_data.stride(1), global_data.stride(0),
+                                                global_data.stride(1), 128, 256)
+        set_signal(barrier_ptr[rank].data_ptr(), 1, torch.cuda.current_stream(), is_internode)
 
 
 # TMA related test
@@ -139,24 +317,16 @@ def _matmul_launch_metadata(grid, kernel, args):
 
 
 @triton.jit(launch_metadata=_matmul_launch_metadata)
-def kernel_consumer_gemm_persistent(
-    a_ptr,
-    b_ptr,
-    c_ptr,  #
-    M,
-    N,
-    K,  #
-    rank: tl.constexpr,
-    num_ranks: tl.constexpr,
-    ready_ptr,
-    comm_buf_ptr,
-    BLOCK_SIZE_M: tl.constexpr,  #
-    BLOCK_SIZE_N: tl.constexpr,  #
-    BLOCK_SIZE_K: tl.constexpr,  #
-    GROUP_SIZE_M: tl.constexpr,  #
-    EPILOGUE_SUBTILE: tl.constexpr,  #
-    NUM_SMS: tl.constexpr,
-):  #
+def kernel_consumer_gemm_persistent(a_ptr, b_ptr, c_ptr,  #
+                                    M, N, K,  #
+                                    rank: tl.constexpr, num_ranks: tl.constexpr, ready_ptr, comm_buf_ptr,
+                                    BLOCK_SIZE_M: tl.constexpr,  #
+                                    BLOCK_SIZE_N: tl.constexpr,  #
+                                    BLOCK_SIZE_K: tl.constexpr,  #
+                                    GROUP_SIZE_M: tl.constexpr,  #
+                                    EPILOGUE_SUBTILE: tl.constexpr,  #
+                                    NUM_SMS: tl.constexpr, ready_value: tl.constexpr = 1,
+                                    local_world_size: tl.constexpr = 8):  #
     # Matmul using TMA and device-side descriptor creation
     dtype = c_ptr.dtype.element_ty
     start_pid = tl.program_id(axis=0)
@@ -164,6 +334,8 @@ def kernel_consumer_gemm_persistent(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
     num_tiles = num_pid_m * num_pid_n
+    node_id = rank // local_world_size
+    nnodes = num_ranks // local_world_size
 
     a_desc = tl._experimental_make_tensor_descriptor(
         a_ptr,
@@ -217,16 +389,27 @@ def kernel_consumer_gemm_persistent(
             pid_n = (tile_id % num_pid_in_group) // group_size_m
 
             # swizzle m
-            alpha = 0
-            beta = 0
-            pid_m = (pid_m + ((((rank ^ alpha) + beta) % num_ranks) * pid_ms_per_rank)) % num_pid_m
+            if nnodes == 1:
+                alpha = 0
+                beta = 0
+                pid_m = (pid_m + ((((rank ^ alpha) + beta) % num_ranks) * pid_ms_per_rank)) % num_pid_m
+            else:
+                m_rank = pid_m // pid_ms_per_rank
+                pid_m_intra_rank = pid_m - m_rank * pid_ms_per_rank
+                m_node_id = m_rank // local_world_size
+                m_local_rank = m_rank % local_world_size
+                swizzle_m_node_id = (m_node_id + node_id) % nnodes
+                swizzle_m_local_rank = (m_local_rank + rank) % local_world_size
+                swizzle_m_rank = swizzle_m_node_id * local_world_size + swizzle_m_local_rank
+
+                pid_m = swizzle_m_rank * pid_ms_per_rank + pid_m_intra_rank
 
             offs_am = pid_m * BLOCK_SIZE_M
             offs_bn = pid_n * BLOCK_SIZE_N
 
             rank_beg = offs_am // M_per_rank
             rank_end = (min(offs_am + BLOCK_SIZE_M, M) - 1) // M_per_rank
-            token = dl.wait(ready_ptr + rank_beg, rank_end - rank_beg + 1, "gpu", "acquire")
+            token = dl.wait(ready_ptr + rank_beg, rank_end - rank_beg + 1, "gpu", "acquire", waitValue=ready_value)
             a_desc = dl.consume_token(a_desc, token)
 
         # You can also put the barrier here with a minor performance drop
@@ -386,16 +569,124 @@ def ag_gemm_intra_node_persistent_op(a, b, c, rank, num_ranks, workspace_tensors
     return compiled
 
 
+def ag_gemm_inter_node_persistent_op(a, b, c, rank, num_ranks, workspace_tensors, barrier_tensors, comm_buf,
+                                     ag_stream=None, internode_ag_stream=None, gemm_stream=None, BLOCK_M=128,
+                                     BLOCK_N=256, BLOCK_K=64, stages=3, local_world_size=8, signal_target=1,
+                                     autotune=None, copy_engine_dispatch=False):
+    """allgather gemm for inter-node
+    
+    Allgather global matrix A and do matmul with local matrix B, produces local matrix C
+
+    Args:
+        a (torch.Tensor<float>): local matmul A matrix. shape: [M_per_rank, K]
+        b (torch.Tensor<float>): local matmul B matrix. shape: [N_per_rank, K]
+        c (torch.Tensor<float>): local matmul C matrix. shape: [M, N_per_rank]
+        rank (int): current rank
+        num_ranks (int): total number of ranks
+        workspace_tensors (List[torch.Tensor<float>]): A list of symm-tensors used for inter-rank allgather.
+            Each tensor shape: [maxM, K]. Created by `create_ag_gemm_intra_node_context`.
+        barrier_tensors (List[torch.Tensor<int32>]): A list of symm-tensors used for allgather.
+            Each tensor shape: [num_ranks]. Created by `create_ag_gemm_intra_node_context`.
+        comm_buf (torch.Tensor<int32>): A symm-tensor used for global synchronization.
+            Shape: [MAX_NUM_BLOCKS_ON_GPU(65536)*num_ranks]. Created by `create_ag_gemm_intra_node_context`.
+        for_correctness (bool, optional): if only for correctness, communication would sleep some seconds to
+            trigger possible synchronization and dependency bugs. Defaults to False.
+        ag_stream (torch.cuda.streams.Stream, optional): The stream used for allgather, if not provided, create a new one. Defaults to None.
+        gemm_stream (torch.cuda.streams.Stream, optional): The stream used for gemm, if not provided, use current stream. Defaults to None.
+        serial (bool, optional): Make the execution serialized, for debug. Defaults to False.
+        BLOCK_M (int, optional): GEMM tiling factor for M dim. Defaults to 128.
+        BLOCK_N (int, optional): GEMM tiling factor for N dim. Defaults to 256.
+        BLOCK_K (int, optional): GEMM tiling factor for K dim. Defaults to 64.
+        stages (int, optional): GEMM async-copy stages. Defaults to 3.
+        autotune (bool, optional): whether to enable autotune. Defaults to False.
+        copy_engine_dispatch (bool, optional): whether to use copy enginer for intra-node dispatch. Defaults to True.
+
+    Returns:
+        Triton compiled code: used for debug
+    """
+    assert a.shape[1] == b.shape[1], "Incompatible dimensions"
+    assert a.dtype == b.dtype, "Incompatible dtypes"
+
+    M_per_rank, K = a.shape
+    M = M_per_rank * num_ranks
+    N_per_rank, K = b.shape
+
+    local_rank = rank % local_world_size
+    n_nodes = num_ranks // local_world_size
+    num_ag_sms = n_nodes - 1 if copy_engine_dispatch else (local_world_size + n_nodes - 2)
+    num_gemm_sms = torch.cuda.get_device_properties("cuda").multi_processor_count - num_ag_sms
+
+    ag_stream = torch.cuda.Stream() if ag_stream is None else ag_stream
+    gemm_stream = torch.cuda.current_stream() if gemm_stream is None else gemm_stream
+    current_stream = torch.cuda.current_stream()
+    ag_stream.wait_stream(current_stream)
+    gemm_stream.wait_stream(current_stream)
+
+    inter_node_allgather(a, workspace_tensors, barrier_tensors, signal_target, rank, local_world_size, num_ranks,
+                         ag_stream, internode_ag_stream, copy_engine_dispatch)
+
+    compiled = None
+    with torch.cuda.stream(gemm_stream):
+
+        def alloc_fn(size: int, alignment: int, stream: Optional[int]):
+            return torch.empty(size, device="cuda", dtype=torch.int8)
+
+        triton.set_allocator(alloc_fn)
+
+        grid = lambda META: (min(
+            num_gemm_sms,
+            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
+        ), )
+        if not autotune:
+            compiled = kernel_consumer_gemm_persistent[grid](
+                workspace_tensors[local_rank][:M],
+                b,
+                c,  #
+                M,
+                N_per_rank,
+                K,  #
+                rank,
+                num_ranks,
+                barrier_tensors[local_rank],
+                comm_buf,
+                BLOCK_M,
+                BLOCK_N,
+                BLOCK_K,
+                8,
+                False,
+                NUM_SMS=num_gemm_sms,
+                ready_value=signal_target,
+                num_stages=stages,
+                num_warps=8,
+            )
+        else:
+            compiled = kernel_consumer_gemm_persistent_autotune[grid](
+                workspace_tensors[local_rank][:M], b, c,  #
+                M, N_per_rank, K,  #
+                rank, num_ranks, barrier_tensors[local_rank], comm_buf, EPILOGUE_SUBTILE=False, NUM_SMS=num_gemm_sms,
+                ready_value=signal_target  #
+            )
+
+    current_stream.wait_stream(ag_stream)
+    current_stream.wait_stream(gemm_stream)
+
+    return compiled
+
+
 @dataclass
 class AllGatherGEMMTensorParallelContext:
     rank: int
     num_ranks: int
+    num_local_ranks: int
+    local_rank: int
     workspace_tensors: List[torch.Tensor]
     barrier_tensors: List[torch.Tensor]
+    fake_barrier_tensor: torch.Tensor
     comm_buf: torch.Tensor
     for_correctness: bool = False
     ag_stream: Optional[torch.cuda.streams.Stream] = None
     gemm_stream: Optional[torch.cuda.streams.Stream] = None
+    internode_ag_stream: Optional[torch.cuda.streams.Stream] = None
     serial: bool = False
     BLOCK_M: int = 128
     BLOCK_N: int = 256
@@ -403,16 +694,19 @@ class AllGatherGEMMTensorParallelContext:
     stages: int = 3
     autotune: bool = False
 
-    def update(self, rank, num_ranks, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3, for_correctness=False,
-               ag_stream=None, gemm_stream=None, serial=False, autotune=False):
+    def update(self, rank, num_ranks, num_local_ranks=8, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
+               for_correctness=False, ag_stream=None, internode_ag_stream=None, gemm_stream=None, serial=False,
+               autotune=False):
         self.rank = rank
         self.num_ranks = num_ranks
+        self.num_local_ranks = num_local_ranks
         self.BLOCK_M = BLOCK_M
         self.BLOCK_N = BLOCK_N
         self.BLOCK_K = BLOCK_K
         self.stages = stages
         self.for_correctness = for_correctness
         self.ag_stream = ag_stream
+        self.internode_ag_stream = internode_ag_stream
         self.gemm_stream = gemm_stream
         self.serial = serial
         self.autotune = autotune
@@ -449,10 +743,9 @@ def create_ag_gemm_intra_node_context(tensor_A, tensor_B, rank, num_ranks, max_M
         1] == K, f"tensor_B should has shape (col_major) [N_per_rank, {K}], but get [{tensor_B.shape}]"
     assert tensor_A.dtype == tensor_B.dtype
     dtype = tensor_A.dtype
+    fake_barrier = torch.ones([num_ranks], dtype=torch.int32, device=tensor_A.device)
     workspaces = pynvshmem.nvshmem_create_tensor_list_intra_node([max_M, K], dtype)
-
     barriers = pynvshmem.nvshmem_create_tensor_list_intra_node([num_ranks], torch.int32)
-
     comm_buf = pynvshmem.nvshmem_create_tensor([max_blocks * num_ranks], torch.int32)
     comm_buf.fill_(0)
     barriers[rank].fill_(0)
@@ -463,8 +756,11 @@ def create_ag_gemm_intra_node_context(tensor_A, tensor_B, rank, num_ranks, max_M
     ret = AllGatherGEMMTensorParallelContext(
         rank=rank,
         num_ranks=num_ranks,
+        local_rank=rank,
+        num_local_ranks=num_ranks,
         workspace_tensors=workspaces,
         barrier_tensors=barriers,
+        fake_barrier_tensor=fake_barrier,
         comm_buf=comm_buf,
         for_correctness=for_correctness,
         ag_stream=ag_stream,
@@ -520,5 +816,153 @@ def ag_gemm_intra_node(a, b, ctx=None, rank=None, num_ranks=None):
     ag_gemm_intra_node_persistent_op(a, b, C, ctx.rank, ctx.num_ranks, ctx.workspace_tensors, ctx.barrier_tensors,
                                      ctx.comm_buf, for_correctness=ctx.for_correctness, ag_stream=ctx.ag_stream,
                                      gemm_stream=ctx.gemm_stream, serial=ctx.serial, autotune=ctx.autotune)
+
+    return C
+
+
+def create_ag_gemm_inter_node_context(tensor_A, tensor_B, rank, num_ranks, num_local_ranks=8, max_M=2**14,
+                                      max_blocks=65536, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
+                                      for_correctness=False, ag_stream=None, gemm_stream=None, serial=False,
+                                      autotune=False):
+    """create context for allgather gemm inter-node
+
+    Args:
+        tensor_A (torch.Tensor<float>): local matmul A matrix. shape: [M_per_rank, K]
+        tensor_B (torch.Tensor<float>): local matmul B matrix. shape: [N_per_rank, K]
+        rank (int): current rank
+        num_ranks (int): total number of ranks
+        max_M: max number of M shape
+        max_blocks: max number of blocks on GPU
+        BLOCK_M (int, optional): GEMM tiling factor for M dim. Defaults to 128.
+        BLOCK_N (int, optional): GEMM tiling factor for N dim. Defaults to 256.
+        BLOCK_K (int, optional): GEMM tiling factor for K dim. Defaults to 64.
+        stages (int, optional): GEMM async-copy stages. Defaults to 3.
+        ag_stream (torch.cuda.streams.Stream, optional): The stream used for allgather, if not provided, create a new one. Defaults to None.
+        gemm_stream (torch.cuda.streams.Stream, optional): The stream used for gemm, if not provided, use current stream. Defaults to None.
+        serial (bool, optional): Make the execution serialized, for debug. Defaults to False.
+        autotune (bool, optional): whether to enable autotune. Defaults to False.
+
+    Returns:
+        AllGatherGEMMTensorParallelContext
+    """
+    _, K = tensor_A.shape
+    assert tensor_B.shape[
+        1] == K, f"tensor_B should has shape (col_major) [N_per_rank, {K}], but get [{tensor_B.shape}]"
+    assert tensor_A.dtype == tensor_B.dtype
+    dtype = tensor_A.dtype
+
+    local_rank = rank % num_local_ranks
+
+    fake_barrier = torch.ones([num_ranks], dtype=torch.int32, device=tensor_A.device)
+    workspaces = pynvshmem.nvshmem_create_tensor_list_intra_node([max_M, K], dtype)
+    barriers = pynvshmem.nvshmem_create_tensor_list_intra_node([num_ranks], torch.uint64)
+    comm_buf = pynvshmem.nvshmem_create_tensor([max_blocks * num_ranks], torch.int32)
+    comm_buf.fill_(0)
+    barriers[local_rank].fill_(0)
+    current_stream = torch.cuda.current_stream()
+    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+    torch.cuda.synchronize()
+
+    ret = AllGatherGEMMTensorParallelContext(
+        rank=rank,
+        num_ranks=num_ranks,
+        local_rank=local_rank,
+        num_local_ranks=num_local_ranks,
+        workspace_tensors=workspaces,
+        barrier_tensors=barriers,
+        fake_barrier_tensor=fake_barrier,
+        comm_buf=comm_buf,
+        for_correctness=for_correctness,
+        ag_stream=ag_stream,
+        internode_ag_stream=torch.cuda.Stream(),
+        gemm_stream=gemm_stream,
+        serial=serial,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        BLOCK_K=BLOCK_K,
+        stages=stages,
+        autotune=autotune,
+    )
+
+    return ret
+
+
+def ag_gemm_inter_node(a, b, ctx=None, rank=None, num_ranks=None, local_world_size=8, signal_target=1):
+    """allgather gemm for inter-node
+    
+    Allgather global matrix A and do matmul with local matrix B, produces local matrix C
+
+    Args:
+        a (torch.Tensor<float>): local matmul A matrix. shape: [M_per_rank, K]
+        b (torch.Tensor<float>): local matmul B matrix. shape: [N_per_rank, K]
+        ctx: (Optional[AllGatherGEMMTensorParallelContext]): if not provided, created immediately
+
+    Returns:
+        c (torch.Tensor<float>): local matmul C matrix. shape: [M, N_per_rank]
+    """
+    if ctx is None:
+        assert rank is not None and num_ranks is not None
+        ctx = create_ag_gemm_inter_node_context(a, b, rank, num_ranks)
+    M_per_rank, K = a.shape
+    N_per_rank, _ = b.shape
+    C = torch.empty([ctx.num_ranks * M_per_rank, N_per_rank], dtype=a.dtype, device=a.device)
+
+    local_copy_and_barrier_all(ctx.rank, ctx.num_ranks, a, ctx.workspace_tensors[ctx.local_rank], ctx.comm_buf,
+                               ctx.barrier_tensors[ctx.local_rank], M_per_rank, K, is_internode=True)
+
+    ag_gemm_inter_node_persistent_op(a, b, C, ctx.rank, ctx.num_ranks, ctx.workspace_tensors, ctx.barrier_tensors,
+                                     ctx.comm_buf, ag_stream=ctx.ag_stream, internode_ag_stream=ctx.internode_ag_stream,
+                                     gemm_stream=ctx.gemm_stream, autotune=ctx.autotune,
+                                     local_world_size=local_world_size, signal_target=signal_target,
+                                     copy_engine_dispatch=True)
+
+    return C
+
+
+def gemm(a, b, ctx: AllGatherGEMMTensorParallelContext):
+    M, K = a.shape
+    N, _ = b.shape
+    C = torch.empty([M, N], dtype=a.dtype, device=a.device)
+
+    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+
+    def alloc_fn(size: int, alignment: int, stream: Optional[int]):
+        return torch.empty(size, device="cuda", dtype=torch.int8)
+
+    triton.set_allocator(alloc_fn)
+
+    grid = lambda META: (min(
+        NUM_SMS,
+        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+    ), )
+    if not ctx.autotune:
+        kernel_consumer_gemm_persistent[grid](
+            a,
+            b,
+            C,  #
+            M,
+            N,
+            K,  #
+            ctx.rank,
+            ctx.num_ranks,
+            ctx.fake_barrier_tensor,
+            ctx.comm_buf,
+            ctx.BLOCK_M,
+            ctx.BLOCK_N,
+            ctx.BLOCK_K,
+            8,
+            False,
+            NUM_SMS=NUM_SMS,
+            num_stages=ctx.stages,
+            num_warps=8,
+        )
+    else:
+        kernel_consumer_gemm_persistent_autotune[grid](
+            a, b, C,  #
+            M, N, K,  #
+            ctx.rank, ctx.num_ranks, ctx.fake_barrier_tensor, ctx.comm_buf, EPILOGUE_SUBTILE=False, NUM_SMS=NUM_SMS  #
+        )
+
+    pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
 
     return C

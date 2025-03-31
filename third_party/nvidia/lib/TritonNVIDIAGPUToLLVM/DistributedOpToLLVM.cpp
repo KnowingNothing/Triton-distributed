@@ -197,15 +197,17 @@ struct WaitOpConversion
         "@!%p0 bra.uni skipLoop;                                        \n\t"s +
         "waitLoop:                                                      \n\t"s +
         "  "s + ld_ptx + " %tmp0, [%addr0];                             \n\t"s +
-        "  setp.eq.b"s + bit_w + " %p0, %tmp0, 1;                       \n\t"s +
+        "  setp.eq.b"s + bit_w + " %p0, %tmp0, $2;                      \n\t"s +
         "  @!%p0 bra.uni waitLoop;                                      \n\t"s +
         "skipLoop:                                                      \n\t"s +
         "bar.warp.sync 0xffffffff;                                      \n\t"s +
         "}                                                              \n\t"s;
 
+    std::string regTy = barrier_width == 64 ? "l" : "r";
     auto &waitOp = *ptxBuilder.create<>(ptx);
     waitOp({ptxBuilder.newOperand(adaptor.getBarrierPtr(), "l"),
-            ptxBuilder.newOperand(adaptor.getNumBarriers(), "r")},
+            ptxBuilder.newOperand(adaptor.getNumBarriers(), "r"),
+            ptxBuilder.newOperand(adaptor.getWaitValue(), regTy)},
            /*onlyAttachMLIRArgs=*/true);
     auto voidTy = void_ty(op->getContext());
     ptxBuilder.launch(rewriter, loc, voidTy);

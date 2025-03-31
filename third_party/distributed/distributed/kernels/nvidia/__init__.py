@@ -22,7 +22,7 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-from .allgather_gemm import ag_gemm_intra_node, create_ag_gemm_intra_node_context
+from .allgather_gemm import ag_gemm_intra_node, create_ag_gemm_intra_node_context, ag_gemm_inter_node, create_ag_gemm_inter_node_context, gemm
 from .low_latency_allgather import fast_allgather, create_fast_allgather_context, _forward_pull_kernel, _forward_push_2d_kernel, _forward_push_2d_ll_kernel
 from .allgather_group_gemm import (
     ag_group_gemm_intra_node,
@@ -39,6 +39,9 @@ from .low_latency_all_to_all import create_all_to_all_context, fast_all_to_all, 
 __all__ = [
     "ag_gemm_intra_node",
     "create_ag_gemm_intra_node_context",
+    "ag_gemm_inter_node",
+    "create_ag_gemm_inter_node_context",
+    "gemm",
     "ag_group_gemm_intra_node",
     "create_ag_group_gemm_intra_node_context",
     "gqa_fwd_batch_decode_persistent",

@@ -1757,9 +1757,10 @@ void init_triton_ir(py::module &&m) {
       // Distributed Ops
       .def("create_distributed_wait",
            [](TritonOpBuilder &self, Value &barrierPtrs, Value &numBarriers,
-              MemSyncScope scope, MemSemantic semantic, Type &type) -> Value {
+              Value &waitValue, MemSyncScope scope, MemSemantic semantic,
+              Type &type) -> Value {
              return self.create<mlir::triton::distributed::WaitOp>(
-                 type, barrierPtrs, numBarriers, scope, semantic);
+                 type, barrierPtrs, numBarriers, waitValue, scope, semantic);
            })
       .def("create_distributed_consume_token",
            [](TritonOpBuilder &self, Value &input, Value &token) -> Value {
