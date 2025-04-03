@@ -60,3 +60,20 @@ def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
 
     unique_id = unique_id.numpy().tobytes()
     nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)  # noqa: F405
+
+
+NVSHMEM_TEAM_INVALID = -1
+NVSHMEM_TEAM_WORLD = 0
+NVSHMEM_TEAM_WORLD_INDEX = 0
+NVSHMEM_TEAM_SHARED = 1
+NVSHMEM_TEAM_SHARED_INDEX = 1
+NVSHMEMX_TEAM_NODE = 2
+NVSHMEM_TEAM_NODE_INDEX = 2
+NVSHMEMX_TEAM_SAME_MYPE_NODE = 3
+NVSHMEM_TEAM_SAME_MYPE_NODE_INDEX = 3
+NVSHMEMI_TEAM_SAME_GPU = 4
+NVSHMEM_TEAM_SAME_GPU_INDEX = 4
+NVSHMEMI_TEAM_GPU_LEADERS = 5
+NVSHMEM_TEAM_GPU_LEADERS_INDEX = 5
+NVSHMEM_TEAMS_MIN = 6
+NVSHMEM_TEAM_INDEX_MAX = sys.maxsize

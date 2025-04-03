@@ -448,7 +448,7 @@ class group_profile:
                 trace_content = f.read()
             trace_content_list = [None for _ in range(self.group.size())]
             torch.distributed.gather_object(trace_content, trace_content_list if self.group.rank() == 0 else None,
-                                            group_dst=0, group=self.group)
+                                            dst=0, group=self.group)
             torch.cuda.synchronize()  # wait for all ranks export
             return trace_content_list if self.group.rank() == 0 else None
 

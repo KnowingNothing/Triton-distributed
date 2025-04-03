@@ -25,12 +25,12 @@
 import pynvshmem
 import torch
 import torch.distributed
-from triton.distributed.kernels.nvidia import _forward_push_2d_ll_kernel, _forward_push_2d_kernel, _forward_pull_kernel
+from triton.distributed.kernels.nvidia import _forward_push_2d_ll_kernel, _forward_push_2d_kernel, _forward_pull_kernel, _forward_push_2d_ll_multimem_kernel
 
 
 class AllGatherLayer:
 
-    def __init__(self, nnodes, world_size, rank, max_buffer_size: int = 2 * 32 * 128 * 128, stages=10):
+    def __init__(self, nnodes, world_size, rank, max_buffer_size: int = 2 * 32 * 128 * 128, stages=2):
         self.rank = rank
         self.size = world_size
         self.signal = pynvshmem.nvshmem_create_tensor((
@@ -71,7 +71,6 @@ class AllGatherLayer:
             symm_buffer,
             symm_buffer.nbytes // self.size,
             self.signal,
-            self.signal_bar,
             self.nnodes,
             self.size,
             self.rank,
@@ -83,16 +82,12 @@ class AllGatherLayer:
 
     def forward_push_2d_ll(self, symm_buffer: torch.Tensor):
         assert symm_buffer.nbytes * 2 < self.max_buffer_size
-        if self.signal_target % self.stages == 0:
-            pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
         signal = self.signal[self.signal_target % self.stages]
-        signal_bar = self.signal_bar[self.signal_target % self.stages]
         ll_buffer = self.ll_buffers[self.signal_target % self.stages]
         _forward_push_2d_ll_kernel[(self.size, )](
             symm_buffer,
             symm_buffer.nbytes // self.size,
             signal,
-            signal_bar,
             ll_buffer,
             self.nnodes,
             self.size,
@@ -101,4 +96,21 @@ class AllGatherLayer:
             num_warps=32,
         )
         self.signal_target += 1
+        return symm_buffer
+
+    def forward_push_2d_ll_multimem(self, symm_buffer: torch.Tensor):
+        assert symm_buffer.nbytes * 2 < self.max_buffer_size
+        ll_buffer = self.ll_buffers[self.signal_target % self.stages]
+        _forward_push_2d_ll_multimem_kernel[(self.size, )](
+            symm_buffer,
+            symm_buffer.nbytes // self.size,
+            ll_buffer,
+            self.nnodes,
+            self.size,
+            self.rank,
+            self.signal_target,
+            num_warps=32,
+        )
+        self.signal_target += 1
+
         return symm_buffer

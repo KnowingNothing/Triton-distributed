@@ -62,6 +62,25 @@ NVSHMEMI_AMO_SWAP = 18
 NVSHMEMI_AMO_COMPARE_SWAP = 19
 NVSHMEMI_AMO_OP_SENTINEL = sys.maxsize
 
+# team node
+NVSHMEM_TEAM_INVALID = -1
+NVSHMEM_TEAM_WORLD = 0
+NVSHMEM_TEAM_WORLD_INDEX = 0
+NVSHMEM_TEAM_SHARED = 1
+NVSHMEM_TEAM_SHARED_INDEX = 1
+NVSHMEMX_TEAM_NODE = 2
+NVSHMEM_TEAM_NODE_INDEX = 2
+NVSHMEMX_TEAM_SAME_MYPE_NODE = 3
+NVSHMEM_TEAM_SAME_MYPE_NODE_INDEX = 3
+NVSHMEMI_TEAM_SAME_GPU = 4
+NVSHMEM_TEAM_SAME_GPU_INDEX = 4
+NVSHMEMI_TEAM_GPU_LEADERS = 5
+NVSHMEM_TEAM_GPU_LEADERS_INDEX = 5
+NVSHMEM_TEAMS_MIN = 6
+NVSHMEM_TEAM_INDEX_MAX = sys.maxsize
+
+void_ptr = core.pointer_type(core.void)
+
 
 @core.extern
 def my_pe(_builder=None):
@@ -116,12 +135,27 @@ def remote_ptr(local_ptr, pe, _builder=None):
         "",
         [local_ptr, pe],
         {(core.pointer_type(core.dtype(core_dtype)), core.dtype(pe_dtype)): (
-             "nvshmem_ptr",
-             core.pointer_type(core.dtype("int8")),
+             "nvshmem_ptr", core.pointer_type(core.dtype(core_dtype)),  # of the same dtype
          )
          for core_dtype in core.dtype.SINT_TYPES + core.dtype.UINT_TYPES + core.dtype.FP_TYPES + core.dtype.OTHER_TYPES
          for pe_dtype in ["int32", "uint32"]},
         is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def remote_mc_ptr(team, ptr, _builder=None):
+    tl.static_assert(ptr.type.is_ptr(), "remote_mc_ptr(team, ptr) should be a pointer", _builder=_builder)
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [tl.cast(team, tl.int32, _builder=_builder),
+         tl.cast(ptr, void_ptr, _builder=_builder)],
+        {(tl.int32, void_ptr): (
+             "nvshmemx_mc_ptr", (ptr.type),  # of the same pointer type like ptr
+         )},
+        is_pure=True,
         _builder=_builder,
     )
 
@@ -689,6 +723,244 @@ def signal_wait_until(sig_addr, cmp_, cmp_val, _builder=None):
                 "nvshmem_signal_wait_until",
                 tl.int32,
             ),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def broadcast(team, dest, source, nelems, pe_root, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder), pe_root],  # no cast
+        {
+            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64, tl.int32):
+            ("nvshmem_int8_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64, tl.int32):
+            ("nvshmem_int16_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64, tl.int32):
+            ("nvshmem_int32_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64, tl.int32):
+            ("nvshmem_int64_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64, tl.int32):
+            ("nvshmem_uint8_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64, tl.int32):
+            ("nvshmem_uint16_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64, tl.int32):
+            ("nvshmem_uint32_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64, tl.int32):
+            ("nvshmem_uint64_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64, tl.int32):
+            ("nvshmem_half_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
+            ("nvshmem_bfloat16_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64, tl.int32):
+            ("nvshmem_float_broadcast", ()),
+            (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64, tl.int32):
+            ("nvshmem_double_broadcast", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def broadcast_warp(team, dest, source, nelems, pe_root, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder), pe_root],  # no cast
+        {
+            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64, tl.int32):
+            ("nvshmemx_int8_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64, tl.int32):
+            ("nvshmemx_int16_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64, tl.int32):
+            ("nvshmemx_int32_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64, tl.int32):
+            ("nvshmemx_int64_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64, tl.int32):
+            ("nvshmemx_uint8_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64, tl.int32):
+            ("nvshmemx_uint16_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64, tl.int32):
+            ("nvshmemx_uint32_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64, tl.int32):
+            ("nvshmemx_uint64_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64, tl.int32):
+            ("nvshmemx_half_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
+            ("nvshmemx_bfloat16_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64, tl.int32):
+            ("nvshmemx_float_broadcast_warp", ()),
+            (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64, tl.int32):
+            ("nvshmemx_double_broadcast_warp", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def broadcast_block(team, dest, source, nelems, pe_root, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder), pe_root],  # no cast
+        {
+            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64, tl.int32):
+            ("nvshmemx_int8_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64, tl.int32):
+            ("nvshmemx_int16_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64, tl.int32):
+            ("nvshmemx_int32_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64, tl.int32):
+            ("nvshmemx_int64_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64, tl.int32):
+            ("nvshmemx_uint8_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64, tl.int32):
+            ("nvshmemx_uint16_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64, tl.int32):
+            ("nvshmemx_uint32_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64, tl.int32):
+            ("nvshmemx_uint64_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64, tl.int32):
+            ("nvshmemx_half_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
+            ("nvshmemx_bfloat16_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64, tl.int32):
+            ("nvshmemx_float_broadcast_block", ()),
+            (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64, tl.int32):
+            ("nvshmemx_double_broadcast_block", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def broadcastmem_block(team, dest, source, nelems, pe_root, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [
+            team,
+            tl.cast(dest, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(source, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(nelems, tl.uint64, _builder=_builder),
+            pe_root,
+        ],  # no cast
+        {
+            (tl.int32, tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32):
+            ("nvshmemx_broadcastmem_block", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def fcollect(team, dest, source, nelems, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder)],  # no cast
+        {
+            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64): ("nvshmem_int8_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64): ("nvshmem_int16_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64): ("nvshmem_int32_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64): ("nvshmem_int64_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64): ("nvshmem_uint8_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64):
+            ("nvshmem_uint16_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64):
+            ("nvshmem_uint32_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64):
+            ("nvshmem_uint64_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64): ("nvshmem_half_fcollect",
+                                                                                              ()),
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64):
+            ("nvshmem_bfloat16_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64): ("nvshmem_float_fcollect",
+                                                                                              ()),
+            (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64): ("nvshmem_double_fcollect",
+                                                                                              ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def fcollect_warp(team, dest, source, nelems, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder)],  # no cast
+        {
+            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64): ("nvshmemx_int8_fcollect_warp",
+                                                                                        ()),
+            (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64):
+            ("nvshmemx_int16_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64):
+            ("nvshmemx_int32_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64):
+            ("nvshmemx_int64_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64):
+            ("nvshmemx_uint8_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64):
+            ("nvshmemx_uint16_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64):
+            ("nvshmemx_uint32_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64):
+            ("nvshmemx_uint64_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64):
+            ("nvshmemx_half_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64):
+            ("nvshmemx_bfloat16_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64):
+            ("nvshmemx_float_fcollect_warp", ()),
+            (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64):
+            ("nvshmemx_double_fcollect_warp", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def fcollect_block(team, dest, source, nelems, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder)],  # no cast
+        {
+            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64): ("nvshmemx_int8_fcollect_block",
+                                                                                        ()),
+            (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64):
+            ("nvshmemx_int16_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64):
+            ("nvshmemx_int32_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64):
+            ("nvshmemx_int64_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64):
+            ("nvshmemx_uint8_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64):
+            ("nvshmemx_uint16_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64):
+            ("nvshmemx_uint32_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64):
+            ("nvshmemx_uint64_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64):
+            ("nvshmemx_half_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64):
+            ("nvshmemx_bfloat16_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64):
+            ("nvshmemx_float_fcollect_block", ()),
+            (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64):
+            ("nvshmemx_double_fcollect_block", ()),
         },
         is_pure=False,
         _builder=_builder,

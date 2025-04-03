@@ -113,9 +113,10 @@ inline torch::Tensor create_tensor(const std::vector<int64_t> &shape,
   auto size =
       torch::elementSize(dtype) *
       std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<>());
+  void *ptr = nvshmem_malloc(size);
+  CHECK(ptr != nullptr) << " nvshmem_malloc failed for malloc " << size;
   return at::from_blob(
-      nvshmem_malloc(size), shape, [](void *ptr) { nvshmem_free(ptr); },
-      option_gpu);
+      ptr, shape, [](void *ptr) { nvshmem_free(ptr); }, option_gpu);
 }
 
 std::vector<torch::Tensor>
@@ -187,6 +188,12 @@ PYBIND11_MODULE(_pynvshmem, m) {
       throw std::runtime_error("nvshmem_malloc failed");
     }
     return (intptr_t)ptr;
+  });
+  m.def("nvshmem_ptr", [](intptr_t ptr, int peer) {
+    return (intptr_t)nvshmem_ptr((void *)ptr, peer);
+  });
+  m.def("nvshmemx_mc_ptr", [](nvshmemx_team_t team, intptr_t ptr) {
+    return (intptr_t)nvshmemx_mc_ptr(team, (void *)ptr);
   });
   m.def("nvshmemx_get_uniqueid", []() {
     nvshmemx_uniqueid_t id;

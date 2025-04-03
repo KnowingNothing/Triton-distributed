@@ -80,6 +80,21 @@ def load_v4_u32(ptr, _builder=None):
 
 
 @tl.core.extern
+def load_v2_b64(ptr, _builder=None):
+    return tl.inline_asm_elementwise(
+        asm="""
+        ld.volatile.global.v2.b64 {$0,$1}, [$2];
+        """,
+        constraints=("=l,=l,l"),  # no use output, which is threadId.x
+        args=[ptr],
+        dtype=(tl.int64, tl.int64),
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
+@tl.core.extern
 def store_v2_u32(ptr, val0, val1, _builder=None):
     return tl.inline_asm_elementwise(
         asm="""
@@ -93,6 +108,75 @@ def store_v2_u32(ptr, val0, val1, _builder=None):
         pack=1,
         _builder=_builder,
     )
+
+
+@tl.core.extern
+def multimem_st_b64(ptr, val0, _builder=None):
+    return tl.inline_asm_elementwise(
+        asm="""
+        multimem.st.global.b64 [$1], $2;
+        mov.u32 $0, 0;
+        """,
+        constraints=("=r,l,l"),  # no use output
+        args=[ptr, val0],
+        dtype=tl.int32,
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
+@tl.core.extern
+def multimem_st_b32(ptr, val0, _builder=None):
+    return tl.inline_asm_elementwise(
+        asm="""
+        multimem.st.global.b32 [$1], $2;
+        mov.u32 $0, 0;
+        """,
+        constraints=("=r,l,r"),  # no use output
+        args=[ptr, val0],
+        dtype=tl.int32,
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
+@tl.core.extern
+def multimem_st_v2_b32(ptr, val0, val1, _builder=None):
+    return tl.inline_asm_elementwise(
+        asm="""{
+        .reg .b64 r_combined;
+        mov.b64 r_combined, {$2, $3};
+        multimem.st.global.b64 [$1], r_combined;
+        mov.u32 $0, 0;
+        }""",
+        constraints=("=r,l,r,r"),  # no use output
+        args=[ptr, val0, val1],
+        dtype=tl.int32,
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
+# TODO(houqi.1993) this is for reduce_scatter
+@tl.core.extern
+def multimem_ld_reduce(ptr, op, _builder=None):
+    tl.static_assert(ptr.is_ptr(), "multimem_ld_reduce(ptr) expect ptr is a pointer_type")
+    if ptr.dtype == tl.int32:
+        return tl.inline_asm_elementwise(
+            asm="""
+            multimem.ld_reduce.global.b32 [$1], $2;
+            mov.u32 $0, 0;
+            """,
+            constraints=("=r,l,r"),  # no use output
+            args=[ptr],
+            dtype=tl.int32,
+            is_pure=False,
+            pack=1,
+            _builder=_builder,
+        )
 
 
 @triton.jit

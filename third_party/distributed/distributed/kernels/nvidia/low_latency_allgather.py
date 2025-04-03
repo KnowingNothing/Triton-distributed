@@ -37,10 +37,13 @@ from triton.language.extra.cuda.language_extra import (
     tid,
     ntid,
     load_v4_u32,
+    load_v2_b64,
     store_v2_u32,
     atomic_add,
     atomic_store,
     ld_u32_acquire,
+    multimem_st_b64,
+    multimem_st_v2_b32,
 )
 
 
@@ -165,6 +168,45 @@ def _pack_ll_block(dest_ptr, src_ptr, num_ints, ll_flag, BLOCK_SIZE: tl.constexp
 
 
 @triton.jit
+def _recv_ll_and_multimem_st_block(dest_ptr, src_ptr, num_ints, ll_flag):
+    """split src/dest outside of _recv_ll. this function is designed for a threadblock
+
+    num_ints: of the pre-LL-packed num_ints.
+    """
+    thread_idx = tid(0)
+    block_size = ntid(0)
+    src_ptr = tl.cast(src_ptr, tl.pointer_type(tl.int32))
+    dest_ptr = tl.cast(dest_ptr, tl.pointer_type(tl.int32))
+    dest_mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, dest_ptr)
+    # manual load per vec
+    for n in range(thread_idx, num_ints // 2, block_size):
+        data1, flag1, data2, flag2 = load_v4_u32(src_ptr + n * 4)
+        while flag1 != ll_flag or flag2 != ll_flag:
+            data1, flag1, data2, flag2 = load_v4_u32(src_ptr + n * 4)
+        multimem_st_v2_b32(dest_mc_ptr + n * 2, data1, data2)
+
+
+@triton.jit
+def _recv_ll_and_multimem_st_ll_block(dest_ptr, src_ptr, num_ints, ll_flag):
+    """split src/dest outside of _recv_ll. this function is designed for a threadblock
+
+    num_ints: of the pre-LL-packed num_ints.
+    """
+    thread_idx = tid(0)
+    block_size = ntid(0)
+    src_ptr = tl.cast(src_ptr, tl.pointer_type(tl.int32))
+    dest_ptr = tl.cast(dest_ptr, tl.pointer_type(tl.int32))
+    dest_mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, dest_ptr)
+    # manual load per vec
+    for n in range(thread_idx, num_ints // 2, block_size):
+        data1, flag1, data2, flag2 = load_v4_u32(src_ptr + n * 4)
+        while flag1 != ll_flag or flag2 != ll_flag:
+            data1, flag1, data2, flag2 = load_v4_u32(src_ptr + n * 4)
+        multimem_st_v2_b32(dest_mc_ptr + n * 4, data1, flag1)
+        multimem_st_v2_b32(dest_mc_ptr + n * 4 + 2, data2, flag2)
+
+
+@triton.jit
 def _is_cta_master():
     thread_idx_x = tid(0)
     thread_idx_y = tid(1)
@@ -206,14 +248,104 @@ def barrier_on_this_grid(ptr):
 
 
 @triton.jit
+def broadcast_naive_block(dst_ptr, src_ptr, nbytes):
+    thread_idx = tid(axis=0)
+    block_dim = ntid(axis=0)
+    src_ptr = tl.cast(src_ptr, tl.pointer_type(tl.int8))
+    dst_ptr = tl.cast(dst_ptr, tl.pointer_type(tl.int8))
+    dst_mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, dst_ptr)
+    num_int4 = nbytes // 16
+    for n in range(thread_idx, num_int4, block_dim):
+        val0, val1 = load_v2_b64(src_ptr + 16 * n)
+        multimem_st_b64(dst_mc_ptr + n * 16, val0)
+        multimem_st_b64(dst_mc_ptr + n * 16 + 8, val1)
+
+
+@triton.jit
+def _forward_push_2d_ll_multimem_kernel(
+    symm_ptr,
+    bytes_per_rank,
+    symm_ll_buffer,
+    nnodes: tl.constexpr,
+    world_size: tl.constexpr,
+    rank,
+    signal_target,
+):
+    """
+    pack_ll and nvshmem_putmem_nbi, then recv_ll and multimem.st
+    """
+    local_world_size = world_size // nnodes
+    local_rank = rank % local_world_size
+    nid = rank // local_world_size
+
+    pid = tl.program_id(0)
+    peer_nid = pid // local_world_size
+    peer_local_rank = pid % local_world_size
+    num_ints = bytes_per_rank // 4
+    thread_idx = tid(axis=0)
+
+    ll_buffer_int8 = tl.cast(symm_ll_buffer, tl.pointer_type(tl.int8))
+    symm_ptr = tl.cast(symm_ptr, tl.pointer_type(tl.int8))
+
+    if peer_local_rank == local_rank:
+        if nid != peer_nid:
+            segment = peer_nid * local_world_size + local_rank
+            _recv_ll_and_multimem_st_ll_block(
+                ll_buffer_int8 + segment * bytes_per_rank * 2,
+                ll_buffer_int8 + segment * bytes_per_rank * 2,
+                num_ints,
+                signal_target,
+            )  # magic number here
+            _recv_ll_block(
+                symm_ptr + segment * bytes_per_rank,
+                ll_buffer_int8 + segment * bytes_per_rank * 2,
+                num_ints,
+                signal_target,
+            )  # magic number here
+        else:  # already has data. pack only
+            _pack_ll_block(
+                ll_buffer_int8 + rank * bytes_per_rank * 2,
+                symm_ptr + rank * bytes_per_rank,
+                num_ints,
+                signal_target,
+                2048,
+            )  # magic number here
+            __syncthreads()
+            wid = thread_idx // 32
+            # send
+            if wid < nnodes and wid != nid:
+                peer_to = wid * local_world_size + local_rank
+                libshmem_device.putmem_nbi_warp(
+                    ll_buffer_int8 + rank * bytes_per_rank * 2,
+                    ll_buffer_int8 + rank * bytes_per_rank * 2,
+                    bytes_per_rank * 2,
+                    peer_to,
+                )  # write and tell peer remote that remote copy is done
+
+            segment = peer_nid * local_world_size + local_rank
+            broadcast_naive_block(
+                ll_buffer_int8 + segment * bytes_per_rank * 2,
+                ll_buffer_int8 + segment * bytes_per_rank * 2,
+                bytes_per_rank * 2,
+            )
+    else:
+        segment_recv_local = peer_nid * local_world_size + peer_local_rank
+        _recv_ll_block(
+            symm_ptr + segment_recv_local * bytes_per_rank,
+            ll_buffer_int8 + segment_recv_local * bytes_per_rank * 2,
+            num_ints,
+            signal_target,
+        )  # magic number here
+
+
+@triton.jit
 def _forward_push_2d_ll_kernel(
     symm_ptr,
     bytes_per_rank,
     symm_flag,
-    symm_bar,
     symm_ll_buffer,
-    nnodes,
-    world_size,
+    nnodes: tl.constexpr,
+    world_size: tl.constexpr,
     rank,
     signal_target,
 ):
@@ -250,6 +382,7 @@ def _forward_push_2d_ll_kernel(
                 signal_target,
                 2048,
             )  # magic number here
+            __syncthreads()
             wid = thread_idx // 32
             if wid < nnodes and wid != nid:  # wid -> peer node id
                 peer_to = wid * local_world_size + local_rank
@@ -357,7 +490,7 @@ def create_fast_allgather_context(rank, node, num_ranks, num_nodes, max_buffer_s
     return ctx
 
 
-def fast_allgather_pull(ctx, symm_buffer: torch.Tensor):
+def fast_allgather_pull(ctx: FastAllGatherContext, symm_buffer: torch.Tensor):
     ctx.signal_target += 1
     return _forward_pull_kernel[(ctx.num_ranks, )](
         symm_buffer,
@@ -370,7 +503,7 @@ def fast_allgather_pull(ctx, symm_buffer: torch.Tensor):
     )
 
 
-def fast_allgather_push_2d(ctx, symm_buffer: torch.Tensor):
+def fast_allgather_push_2d(ctx: FastAllGatherContext, symm_buffer: torch.Tensor):
     ctx.signal_target += 1
     _forward_push_2d_kernel[(ctx.num_ranks // ctx.num_nodes, )](
         symm_buffer,
@@ -385,7 +518,7 @@ def fast_allgather_push_2d(ctx, symm_buffer: torch.Tensor):
     return symm_buffer
 
 
-def fast_allgather_push_2d_ll(ctx, symm_buffer: torch.Tensor):
+def fast_allgather_push_2d_ll(ctx: FastAllGatherContext, symm_buffer: torch.Tensor):
     assert symm_buffer.nbytes * 2 < ctx.max_buffer_size
     ctx.signal_target += 1
     ll_buffer = ctx.ll_buffers[ctx.signal_target % 2]
@@ -404,7 +537,26 @@ def fast_allgather_push_2d_ll(ctx, symm_buffer: torch.Tensor):
     return symm_buffer
 
 
-def fast_allgather_push_2d_ll_perf_only(ctx, symm_buffer: torch.Tensor, iters=10):
+def fast_allgather_push_2d_ll_multimem(ctx: FastAllGatherContext, symm_buffer: torch.Tensor):
+    assert symm_buffer.nbytes * 2 < ctx.max_buffer_size
+    ctx.signal_target += 1
+    ll_buffer = ctx.ll_buffers[ctx.signal_target % 2]
+    _forward_push_2d_ll_multimem_kernel[(ctx.num_ranks, )](
+        symm_buffer,
+        symm_buffer.nbytes // ctx.num_ranks,
+        ctx.signal_tensor,
+        ll_buffer,
+        ctx.num_nodes,
+        ctx.num_ranks,
+        ctx.rank,
+        ctx.signal_target,
+        num_warps=32,
+    )
+
+    return symm_buffer
+
+
+def fast_allgather_push_2d_ll_perf_only(ctx: FastAllGatherContext, symm_buffer: torch.Tensor, iters=10):
     assert symm_buffer.nbytes * 2 < ctx.max_buffer_size
     _forward_push_2d_ll_perf_only_kernel[(ctx.num_ranks // ctx.num_nodes, )](
         symm_buffer,
@@ -435,7 +587,7 @@ FAST_ALLGATHER_FUNC_DISPATCH = {
 
 def fast_allgather(
     symm_buffer: torch.Tensor,
-    ctx=None,
+    ctx: FastAllGatherContext = None,
     rank=None,
     node=None,
     num_ranks=None,

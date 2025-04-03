@@ -13,7 +13,7 @@ THIRD_PARTY_DIR=$(dirname -- "$SCRIPT_DIR")
 NVSHMEM_ROOT=${THIRD_PARTY_DIR}/nvshmem/build/install
 
 export LD_LIBRARY_PATH=${NVSHMEM_ROOT}/lib:$LD_LIBRARY_PATH
-export NVSHMEM_DISABLE_CUDA_VMM=1 # moving from cpp to shell
+export NVSHMEM_DISABLE_CUDA_VMM=${NVSHMEM_DISABLE_CUDA_VMM:-1} # moving from cpp to shell
 export NVSHMEM_BOOTSTRAP=UID
 export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=eth0
 

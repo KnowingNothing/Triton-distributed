@@ -41,6 +41,10 @@ def remote_ptr(local_ptr, pe):
     ...
 
 
+def remote_mc_ptr(team, ptr):
+    ...
+
+
 def barrier_all():
     ...
 
@@ -153,6 +157,56 @@ def signal_wait_until(sig_addr, cmp_, cmp_val):
     ...
 
 
+# DON'T USE THIS. NVSHMEM 3.2.5 does not implement this
+def broadcastmem(team, dest, source, nelems, pe_root):
+    ...
+
+
+def broadcastmem_warp(team, dest, source, nelems, pe_root):
+    ...
+
+
+def broadcastmem_block(team, dest, source, nelems, pe_root):
+    ...
+
+
+def broadcast(team, dest, source, nelems, pe_root):
+    ...
+
+
+def broadcast_warp(team, dest, source, nelems, pe_root):
+    ...
+
+
+def broadcast_block(team, dest, source, nelems, pe_root):
+    ...
+
+
+# DON'T USE THIS. NVSHMEM 3.2.5 does not implement this
+def fcollectmem(team, dest, source, nelems):
+    ...
+
+
+def fcollectmem_warp(team, dest, source, nelems):
+    ...
+
+
+def fcollectmem_block(team, dest, source, nelems):
+    ...
+
+
+def fcollect(team, dest, source, nelems):
+    ...
+
+
+def fcollect_warp(team, dest, source, nelems):
+    ...
+
+
+def fcollect_block(team, dest, source, nelems):
+    ...
+
+
 # class nvshmemi_cmp_type(Enum):
 NVSHMEM_CMP_EQ = 0
 NVSHMEM_CMP_NE = 1
@@ -185,3 +239,20 @@ NVSHMEMI_AMO_FETCH_XOR = 17
 NVSHMEMI_AMO_SWAP = 18
 NVSHMEMI_AMO_COMPARE_SWAP = 19
 NVSHMEMI_AMO_OP_SENTINEL = sys.maxsize
+
+# team node
+NVSHMEM_TEAM_INVALID = -1
+NVSHMEM_TEAM_WORLD = 0
+NVSHMEM_TEAM_WORLD_INDEX = 0
+NVSHMEM_TEAM_SHARED = 1
+NVSHMEM_TEAM_SHARED_INDEX = 1
+NVSHMEMX_TEAM_NODE = 2
+NVSHMEM_TEAM_NODE_INDEX = 2
+NVSHMEMX_TEAM_SAME_MYPE_NODE = 3
+NVSHMEM_TEAM_SAME_MYPE_NODE_INDEX = 3
+NVSHMEMI_TEAM_SAME_GPU = 4
+NVSHMEM_TEAM_SAME_GPU_INDEX = 4
+NVSHMEMI_TEAM_GPU_LEADERS = 5
+NVSHMEM_TEAM_GPU_LEADERS_INDEX = 5
+NVSHMEM_TEAMS_MIN = 6
+NVSHMEM_TEAM_INDEX_MAX = sys.maxsize

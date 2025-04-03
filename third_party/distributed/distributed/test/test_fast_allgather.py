@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument(
         "--mode",
         default="pull_1d",
-        choices=["push_2d_ll", "push_2d", "pull_1d", "push_2d_ll_perf_only"],
+        choices=["push_2d_ll_multimem", "push_2d_ll", "push_2d", "pull_1d", "push_2d_ll_perf_only"],
     )
     args = parser.parse_args()
     return args
@@ -64,6 +64,8 @@ def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int):
             return ag_op.forward_push_2d(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
         elif args.mode == "push_2d_ll":
             return ag_op.forward_push_2d_ll(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
+        elif args.mode == "push_2d_ll_multimem":
+            return ag_op.forward_push_2d_ll_multimem(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
         elif args.mode == "pull_1d":
             return ag_op.forward_pull(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
         elif args.mode == "push_2d_ll_perf_only":
@@ -91,7 +93,7 @@ def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int):
     pynvshmem.nvshmem_barrier_all()
     from triton.distributed.utils import perf_func, group_profile
 
-    with group_profile(f"all_gather_op_KB{nbytes//1024}", do_prof=args.profile, group=TP_GROUP):
+    with group_profile(f"all_gather_op_{nbytes//1024}KB", do_prof=args.profile, group=TP_GROUP):
         torch.cuda._sleep(1000000000)  # in case CPU bound
         _, ag_time_ms = perf_func(
             _run_with_ag_op,
@@ -131,7 +133,7 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
 
-    stages = 20
+    stages = 2
 
     ag_buffer = pynvshmem.nvshmem_create_tensor((stages, args.maxbytes), dtype)
 
