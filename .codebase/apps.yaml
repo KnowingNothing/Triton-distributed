@@ -1,4 +1,7 @@
 CommitLint:
+  commit_lint_name: regex
+  commit_regex: "^(.+)$"
+  
   mr_title_lint_name: regex
   # Example: [megatron] feat: add tensor parallel memory efficient allgather option
   mr_title_regex: "^(WIP:|)( |)(feat|fix|perf|chore|test|docs|refactor|ci): (.+)$"

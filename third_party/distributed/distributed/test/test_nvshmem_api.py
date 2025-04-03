@@ -595,3 +595,4 @@ if __name__ == "__main__":
 
     torch.distributed.barrier(TP_GROUP)
     torch.cuda.synchronize()
+    torch.distributed.destroy_process_group()

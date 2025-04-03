@@ -61,3 +61,4 @@ if __name__ == "__main__":
 
     pynvshmem.nvshmem_barrier_all()
     print(f"RANK {RANK}: {t}")
+    torch.distributed.destroy_process_group()

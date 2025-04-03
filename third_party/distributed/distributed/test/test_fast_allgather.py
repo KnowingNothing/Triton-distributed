@@ -146,3 +146,4 @@ if __name__ == "__main__":
     while nbytes < maxbytes:
         perf_ag(ag_op, ag_buffer, nbytes)
         nbytes = args.stepfactor * nbytes
+    torch.distributed.destroy_process_group()

@@ -75,8 +75,8 @@ def wait(barrierPtrs, numBarriers, scope: str, semantic: str, waitValue: int = 1
 def consume_token(value, token, _builder=None):
     assert token.type.scalar.is_int(), "token must be of int type"
     handle = _builder.create_distributed_consume_token(value.handle, token.handle)
-    if isinstance(value, tlc._experimental_tensor_descriptor):
-        return tlc._experimental_tensor_descriptor(handle, value.shape, value.strides, value.type)
+    if isinstance(value, tlc.tensor_descriptor):
+        return tlc.tensor_descriptor(handle, value.shape, value.strides, value.block_type)
     else:
         return tlc.tensor(handle, value.type)
 

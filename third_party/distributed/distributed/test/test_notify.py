@@ -77,3 +77,4 @@ if __name__ == "__main__":
     assert t[0].item() == ref
 
     print(f"RANK {RANK}: pass.")
+    torch.distributed.destroy_process_group()

@@ -126,3 +126,4 @@ if __name__ == "__main__":
 
     gbps = lambda ms: ag_buffer.numel() * ag_buffer.element_size() * 1e-9 / (ms * 1e-3) * (WORLD_SIZE - 1) / WORLD_SIZE
     print(f"RANK = {RANK}, Bandwith = {gbps(ag_time_ms)} GB/S")
+    torch.distributed.destroy_process_group()

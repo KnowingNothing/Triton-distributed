@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <numeric>
 
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -100,10 +101,10 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                scf::ReduceReturnOp>();
 
-  addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
-                             triton::TritonDialect, cf::ControlFlowDialect,
-                             scf::SCFDialect,
-                             triton::distributed::DistributedDialect>(
+  addDynamicallyLegalDialect<
+      arith::ArithDialect, math::MathDialect, triton::TritonDialect,
+      cf::ControlFlowDialect, scf::SCFDialect,
+      triton::distributed::DistributedDialect, ub::UBDialect>(
       [&](Operation *op) {
         bool hasLegalRegions = true;
         for (auto &region : op->getRegions()) {
