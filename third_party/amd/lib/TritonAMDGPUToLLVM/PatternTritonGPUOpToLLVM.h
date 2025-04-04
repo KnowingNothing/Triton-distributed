@@ -43,6 +43,13 @@ void populateUpcastMXFPToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                       const TargetInfo &targetInfo,
                                       PatternBenefit benefit);
 
+void populateDistributedOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                         RewritePatternSet &patterns,
+                                         PatternBenefit benefit,
+                                         const TargetInfo &targetInfo,
+                                         std::string ROCSHMEMLibname = "",
+                                         std::string ROCSHMEMLibpath = "");
+
 } // namespace mlir::triton::AMD
 
 #endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_PATTERNTRITONGPUOPTOLLVM_H_

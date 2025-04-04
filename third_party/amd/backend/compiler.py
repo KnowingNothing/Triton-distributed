@@ -1,3 +1,7 @@
+################################################################################
+# Modification Copyright 2025 ByteDance Ltd. and/or its affiliates.
+################################################################################
+## TODO: add rocshmem support
 from triton.backends.compiler import BaseBackend, GPUTarget
 from triton._C.libtriton import ir, passes, llvm, amd
 from dataclasses import dataclass
@@ -77,6 +81,7 @@ class HIPOptions:
         # Only kpack=1 is supported on gfx950
         kpack = 1 if self.arch == 'gfx950' else self.kpack
         object.__setattr__(self, 'kpack', kpack)
+        ## TODO: put generated .bc located at lib/ here
         libs = ["ocml", "ockl"]
         for lib in libs:
             extern_libs[lib] = str(default_libdir / f'{lib}.bc')
@@ -361,6 +366,11 @@ class HIPBackend(BaseBackend):
         # to user SGPRs so that the kernel does not need to s_load its arguments
         # from memory.
         amd.set_all_fn_arg_inreg(fns[0])
+        metadata['use_rocshmem'] = False
+        for k in llvm_mod.get_functions():
+            if "rocshmem" in k.name and k.is_declaration():
+                metadata['use_rocshmem'] = True
+                break
 
         if os.environ.get("TRITON_ENABLE_ASAN", "0") == "1":
             default_libdir = Path(__file__).parent / 'lib'
@@ -385,6 +395,7 @@ class HIPBackend(BaseBackend):
         amd.disable_print_inline(llvm_mod)
         return str(llvm_mod)
 
+    ## TODO: [AMD] integrate with rocshmem
     @staticmethod
     def make_amdgcn(src, metadata, options):
         # Find kernel names (there should only be one)

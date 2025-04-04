@@ -420,9 +420,8 @@ class CompiledKernel:
         elif hasattr(self.metadata, 'use_rocshmem'):
             if self.metadata.use_rocshmem:
                 pass
-                ## TODO
+                ## TODO: add pyrocshmem init
                 # import pyrocshmem
-                # pynvshmem.nvshmemx_cumodule_init(self.module)
         else:
             print("Warning: No nvshmem/rocshmem imported.")
 

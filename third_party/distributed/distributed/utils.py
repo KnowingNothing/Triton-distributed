@@ -31,7 +31,6 @@ import numpy as np
 import torch
 from typing import Callable, List, Tuple, Union, Sequence, Optional, Any, Dict
 from contextlib import contextmanager, nullcontext
-from cuda import cuda, cudart
 from pathlib import Path
 import json
 import logging
@@ -41,7 +40,25 @@ from multiprocessing import Pool, cpu_count
 import re
 import string
 
-import pynvshmem
+
+def is_cuda():
+    if torch.cuda.is_available() and (torch.version.hip is None):
+        return True
+
+
+def is_hip():
+    if torch.cuda.is_available() and (torch.version.hip is not None):
+        return True
+
+
+if is_cuda():
+    from cuda import cuda, cudart
+
+    import pynvshmem
+elif is_hip():
+    from hip import hip
+else:
+    pass
 
 # Some code from python/flux/util.py in flux project
 
@@ -238,6 +255,16 @@ def CUDA_CHECK(err):
             raise RuntimeError(f"Cuda Error: {err}: {cudart.cudaGetErrorString(err)}")
     else:
         raise RuntimeError(f"Unknown error type: {err}")
+
+
+def HIP_CHECK(call_result):
+    err = call_result[0]
+    result = call_result[1:]
+    if len(result) == 1:
+        result = result[0]
+    if isinstance(err, hip.hipError_t) and err != hip.hipError_t.hipSuccess:
+        raise RuntimeError(str(err))
+    return result
 
 
 def load_json(json_file):

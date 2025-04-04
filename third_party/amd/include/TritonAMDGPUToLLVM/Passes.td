@@ -26,7 +26,8 @@ def ConvertTritonAMDGPUToLLVM : Pass<"convert-triton-amdgpu-to-llvm", "mlir::Mod
                              "mlir::LLVM::LLVMDialect",
                              "mlir::triton::TritonDialect",
                              "mlir::triton::gpu::TritonGPUDialect",
-                             "mlir::ROCDL::ROCDLDialect"];
+                             "mlir::ROCDL::ROCDLDialect",
+                             "triton::distributed::DistributedDialect"];
 
     let options = [
         Option<"arch", "arch", "std::string", /*default*/"\"\"",

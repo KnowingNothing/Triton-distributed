@@ -422,12 +422,24 @@ class CMakeBuild(build_ext):
         extra_args = ["--arch", CUDA_ARCH] if CUDA_ARCH != "" else []
         subprocess.check_call(["bash", f"{nvshmem_dir}/build.sh"] + extra_args)
 
+    def build_rocshmem(self, cap):
+        rocshmem_dir = os.path.join(get_base_dir(), "third_party", "rocshmem_bind")
+        if not os.path.exists(rocshmem_dir):
+            raise RuntimeError("ROCSHMEM source directory not found")
+
+        ROCM_ARCH = "gfx942"  # hard-code for now
+        extra_args = ["--arch", ROCM_ARCH] if ROCM_ARCH != "" else []
+        subprocess.check_call(["bash", f"{rocshmem_dir}/build.sh"] + extra_args)
+
     def run(self):
         try:
             import torch
 
             if torch.cuda.is_available():
-                self.build_nvshmem(torch.cuda.get_device_capability())
+                if torch.version.hip is None:
+                    self.build_nvshmem(torch.cuda.get_device_capability())
+                else:
+                    self.build_rocshmem(torch.cuda.get_device_capability())  # (9, 4)
         except Exception:
             print("Cannot import torch.")
             pass

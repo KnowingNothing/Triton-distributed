@@ -1,5 +1,32 @@
 cmake_minimum_required(VERSION 3.17 FATAL_ERROR)
-project(Distributed LANGUAGES C CXX CUDA)
+
+project(DynamicGPUDetection)
+#project(Distributed LANGUAGES C CXX CUDA)
+
+# Detect if NVCC (NVIDIA CUDA compiler) is available
+execute_process(
+    COMMAND nvcc --version
+    RESULT_VARIABLE CUDA_FOUND
+    OUTPUT_QUIET ERROR_QUIET
+)
+
+# Detect if HIPCC (AMD ROCm compiler) is available
+execute_process(
+    COMMAND hipcc --version
+    RESULT_VARIABLE HIP_FOUND
+    OUTPUT_QUIET ERROR_QUIET
+)
+
+# Set project language dynamically
+if (CUDA_FOUND EQUAL 0)
+    message(STATUS "CUDA compiler detected, setting project language to CUDA.")
+    project(DynamicGPUDetection LANGUAGES C CXX CUDA)
+elseif (HIP_FOUND EQUAL 0)
+    message(STATUS "HIP compiler detected, setting project language to HIP.")
+    project(DynamicGPUDetection LANGUAGES C CXX)
+else()
+    message(FATAL_ERROR "Neither CUDA nor HIP compiler found. Please install CUDA or ROCm.")
+endif()
 
 set(DISTRIBUTED_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/csrc")
 
@@ -51,7 +78,9 @@ if(USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "on" OR USE_TRITON_DISTRIBUTED_AOT_
 endif()
 
 # ============ Add subdirectory with actual code that calls add_distributed_library ============
-add_subdirectory("${DISTRIBUTED_SRC_DIR}")
+if (CUDA_FOUND EQUAL 0)
+  add_subdirectory("${DISTRIBUTED_SRC_DIR}")
+endif()
 
 # ============ Collect all object libraries from property and build final shared lib ============
 get_property(_distributed_obj_libs GLOBAL PROPERTY DISTRIBUTED_LIBS)

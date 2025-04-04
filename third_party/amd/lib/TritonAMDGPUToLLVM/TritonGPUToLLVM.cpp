@@ -15,6 +15,7 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/Pass.h"
 #include "third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
+#include "third_party/distributed/dialect/include/Dialect/Distributed/IR/Dialect.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Membar.h"
@@ -219,6 +220,10 @@ struct ConvertTritonAMDGPUToLLVM
         typeConverter, patterns, targetInfo, commonBenefit);
 
     mlir::ub::populateUBToLLVMConversionPatterns(typeConverter, patterns);
+
+    // Distributed ops
+    mlir::triton::AMD::populateDistributedOpToLLVMPatterns(
+        typeConverter, patterns, commonBenefit, targetInfo);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns)))) {
       return signalPassFailure();

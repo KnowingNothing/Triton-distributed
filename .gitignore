@@ -96,6 +96,10 @@ prof
 # distributed
 python/triton/distributed
 triton_aot_generated
-third_party/nvshmem
 rank-*.log
 python/*.egg-info
+third_party/nvshmem
+third_party/rocshmem_bind/runtime/*.o
+third_party/rocshmem_bind/rocshmem_build
+third_party/rocshmem_bind/ompi_build
+third_party/rocshmem_bind/pyrocshmem/build/
