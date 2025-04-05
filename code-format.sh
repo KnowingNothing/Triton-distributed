@@ -53,12 +53,13 @@ else
   files_to_check=($(git diff $base $target --name-only --diff-filter=ACMRT))
 fi
 
+current_dir="$PWD"
 files_to_check_cpp=$(find "${files_to_check[@]}" -type f \
   -regextype posix-extended \
   -regex ".*\.(c|cpp|cc|h|hpp|cu|cuh)$" \
-  ! -path "third_party/amd/backend/include/hip/*" \
-  ! -path "third_party/amd/backend/include/*" \
-  ! -path "third_party/f2reduce/*")
+  ! -path "${current_dir}/third_party/amd/backend/include/hip/*" \
+  ! -path "${current_dir}/third_party/amd/backend/include/*" \
+  ! -path "${current_dir}/third_party/f2reduce/*")
 files_to_check_py=$(printf "%s\n" "${files_to_check[@]}" | grep "\.\(py\)$")
 files_to_check_pyi=$(printf "%s\n" "${files_to_check[@]}" | grep "\.\(pyi\)$")
 
