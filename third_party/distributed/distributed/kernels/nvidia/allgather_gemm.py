@@ -461,7 +461,6 @@ def ag_gemm_intra_node_persistent_op(a, b, c, rank, num_ranks, workspace_tensors
                                      for_correctness=False, ag_stream=None, gemm_stream=None, serial=False, BLOCK_M=128,
                                      BLOCK_N=256, BLOCK_K=64, stages=3, autotune=False):
     """allgather gemm for intra-node
-    
     Allgather global matrix A and do matmul with local matrix B, produces local matrix C
 
     Args:
@@ -574,7 +573,6 @@ def ag_gemm_inter_node_persistent_op(a, b, c, rank, num_ranks, workspace_tensors
                                      BLOCK_N=256, BLOCK_K=64, stages=3, local_world_size=8, signal_target=1,
                                      autotune=None, copy_engine_dispatch=False):
     """allgather gemm for inter-node
-    
     Allgather global matrix A and do matmul with local matrix B, produces local matrix C
 
     Args:
@@ -778,7 +776,6 @@ def create_ag_gemm_intra_node_context(tensor_A, tensor_B, rank, num_ranks, max_M
 
 def ag_gemm_intra_node(a, b, ctx=None, rank=None, num_ranks=None):
     """allgather gemm for intra-node
-    
     Allgather global matrix A and do matmul with local matrix B, produces local matrix C
 
     Args:
@@ -889,7 +886,6 @@ def create_ag_gemm_inter_node_context(tensor_A, tensor_B, rank, num_ranks, num_l
 
 def ag_gemm_inter_node(a, b, ctx=None, rank=None, num_ranks=None, local_world_size=8, signal_target=1):
     """allgather gemm for inter-node
-    
     Allgather global matrix A and do matmul with local matrix B, produces local matrix C
 
     Args:

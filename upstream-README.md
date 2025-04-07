@@ -4,7 +4,7 @@
 
 | **`Documentation`** | **`Nightly Wheels`** |
 |-------------------- | -------------------- |
-| [![Documentation](https://github.com/triton-lang/triton/actions/workflows/documentation.yml/badge.svg)](https://triton-lang.org/) | [![Wheels](https://github.com/triton-lang/triton/actions/workflows/wheels.yml/badge.svg?branch=release/2.0.x)](https://github.com/triton-lang/triton/actions/workflows/wheels.yml) |
+| [![Documentation](https://github.com/triton-lang/triton/actions/workflows/documentation.yml/badge.svg)](https://triton-lang.org/) | [![Wheels](https://github.com/triton-lang/triton/actions/workflows/wheels.yml/badge.svg)](https://github.com/triton-lang/triton/actions/workflows/wheels.yml) |
 
 # Triton
 
@@ -110,7 +110,7 @@ arbitrary LLVM version.
        $ cd $HOME/llvm-project  # your clone of LLVM.
        $ mkdir build
        $ cd build
-       $ cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_ASSERTIONS=ON ../llvm -DLLVM_ENABLE_PROJECTS="mlir;llvm" -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU"
+       $ cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_ASSERTIONS=ON ../llvm -DLLVM_ENABLE_PROJECTS="mlir;llvm;lld" -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU"
        $ ninja
 
 4. Grab a snack, this will take a while.
@@ -137,6 +137,10 @@ arbitrary LLVM version.
   directory where Triton's cache is located and downloads are stored
   during the build. By default, this is the user's home directory. It
   can be changed anytime.
+
+- If you're running out of memory when building Triton, specify the `MAX_JOBS`
+  environment variable (to the `pip install -e python` command) to limit the
+  number of jobs.
 
 - Pass `--no-build-isolation` to `pip install` to make nop builds faster.
   Without this, every invocation of `pip install` uses a different symlink to
@@ -244,6 +248,8 @@ For detailed instructions on how to debug Triton's frontend, please refer to thi
 - `TRITON_DUMP_DIR` specifies the directory to save the dumped IR and ptx/amdgcn when `TRITON_KERNEL_DUMP` is set to 1.
 - `TRITON_KERNEL_OVERRIDE` enables the override of the compiled kernel with a user-specified IR/ptx/amdgcn at the beginning of each compilation stage.
 - `TRITON_OVERRIDE_DIR` specifies the directory from which to load the IR/ptx/amdgcn files when `TRITON_KERNEL_OVERRIDE` is set to 1.
+- `TRITON_F32_DEFAULT` sets the default input precision of `tl.dot` when using 32-bit floats, which can be either `ieee`, `tf32`, or `tf32x3`.
+- `TRITON_FRONT_END_DEBUGGING=1` disables exception wrapping when an error occurs in the compiler frontend, allowing the full stack trace to be seen.
 
 **Kernel Override Steps**
 
@@ -284,3 +290,21 @@ Supported Hardware:
 - NVIDIA GPUs (Compute Capability 8.0+)
 - AMD GPUs (ROCm 6.2+)
 - Under development: CPUs
+
+# Development Container (Dev Container)
+
+**Dev Containers** for the Triton project are available from
+the [triton-dev-containers repository](https://github.com/redhat-et/triton-dev-containers)
+
+### Key Benefits:
+- **Consistency**: All developers can work with the same development
+  environment, ensuring uniform behavior across different systems.
+- **Isolation**: The container prevents potential conflicts with software
+  installed on your local machine.
+- **Portability**: Easily share the development environment with team members,
+  minimizing onboarding time and setup issues.
+
+### How to Use the Dev Container:
+
+For detailed instructions on how to use the dev containers please see
+the [dev container user guide](https://github.com/redhat-et/triton-dev-containers/blob/main/.devcontainer/devcontainer.md)

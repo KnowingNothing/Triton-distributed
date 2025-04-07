@@ -1,4 +1,37 @@
+<div align="center">
+ 👋 大家好!
+    <br>
+    我们是 <b>ByteDance Seed team.</b>
+</div>
+
+<p align="center">
+  欢迎通过以下方式以更好的了解我们👇
+  <br>
+  <a href="https://team.doubao.com/">
+    <img src="https://img.shields.io/badge/Website-%231e37ff?style=for-the-badge&logo=bytedance&logoColor=white"></a>
+  <a href="https://github.com/user-attachments/assets/93481cda-a7f3-47f3-b333-fe6b3da86b78">
+    <img src="https://img.shields.io/badge/WeChat-07C160?style=for-the-badge&logo=wechat&logoColor=white"></a>
+ <a href="https://www.xiaohongshu.com/user/profile/668e7e15000000000303157d?xsec_token=ABl2-aqekpytY6A8TuxjrwnZskU-6BsMRE_ufQQaSAvjc%3D&xsec_source=pc_search">
+    <img src="https://img.shields.io/badge/Xiaohongshu-%23FF2442?style=for-the-badge&logo=xiaohongshu&logoColor=white"></a>
+  <a href="https://www.zhihu.com/org/dou-bao-da-mo-xing-tuan-dui/">
+    <img src="https://img.shields.io/badge/zhihu-%230084FF?style=for-the-badge&logo=zhihu&logoColor=white"></a>
+</p>
+
+![seed logo](https://github.com/user-attachments/assets/c42e675e-497c-4508-8bb9-093ad4d1f216)
+
 # Triton-distributed
+<!-- 
+<p align="center">
+  <a href="https://github.com/bytedance/flux">
+    <img src="https://img.shields.io/badge/Triton-distributed-Project Page-yellow"></a>
+  <a href="https://arxiv.org/pdf/xxxx.xxxx">
+    <img src="https://img.shields.io/badge/Triton-distributed-Tech Report-red"></a>
+  <br>
+  <a href="https://github.com/user-attachments/assets/d3fcb3bf-466b-4efe-8c3f-5f85258202ae">
+    <img src="https://img.shields.io/badge/Triton-distributed-Wechat Communication Group-07C160"></a>
+  <a href="XXX">
+    <img src="https://img.shields.io/badge/License-MIT-blue"></a>
+</p> -->
 
 [原始Triton README](upstream-README.md) | [英文README](README.md)
 
@@ -8,125 +41,125 @@ Triton-distributed是基于OpenAI Triton构建的分布式编译器，专为计�
 
 ## 快速入门
 ### 源码安装
-#### 推荐环境：
-- Python 3.9（建议使用虚拟环境）
-- CUDA 12.4
-- PyTorch 2.4
 
-*注：其他版本依赖可能兼容，但不做保证。如遇安装问题请在GitHub Issues反馈*
+[安装指导](docs/distributed/build.md)
 
-#### 安装步骤：
-1. 克隆仓库：
-   ```sh
-   git clone https://github.com/your-org/Triton-distributed /path/to/Triton-distributed
-   ```
-2. 初始化子模块：
-   ```sh
-   cd /path/to/Triton-distributed
-   git submodule update --init --recursive
-   ```
-3. 安装依赖：
-   ```sh
-   pip3 install torch==2.4 ninja cmake wheel pybind11 cuda-python==12.4 numpy
-   ```
-4. 构建安装：
-   ```sh
-   pip3 install -e python --verbose --no-build-isolation
-   ```
-5. 配置环境（每次使用前执行）：
-   ```sh
-   source scripts/setenv.sh
-   ```
+### 如何使用 Triton-distributed
+Triton-distributed 提供了一套易于使用的原语，用于支持开发计算-通信融合的分布式kernel。这些原语分为低层次原语和高层次原语。目前，我们已经发布了低层次原语，并计划在未来发布高层次原语。
 
-### 验证安装
-#### 单节点AllGather GEMM
-需要8块H800 GPU：
-```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_intra_node.py --case correctness_tma
-```
+[Triton-distributed 原语](docs/distributed/primitives.md)
 
-#### 单节点ReduceScatter GEMM
-需要8块H800 GPU：
-```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_intra_node.py 8192 8192 29568 --check
-```
-
-#### NVSHMEM功能验证：
-```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_nvshmem_api.py
-```
-
-## 使用指南
-Triton-distributed提供两个抽象层用于开发计算-通信重叠的分布式Kernel：
-- **底层原语**（已开放）
-- **高层原语**（即将开发）
-
-请见`triton.distributed.language`。此外，所有NVSHMEM设备侧操作通过`triton.language.extra.libshmem_device`暴露：
-
-### 底层原语
-#### 上下文管理
-```python
-rank(axis=-1, _builder=None)
-num_ranks(axis=-1, _builder=None)
-symm_at(ptr, rank, _builder=None)
-```
-
-#### 同步控制
-```python
-wait(barrierPtrs, numBarriers, scope: str, semantic: str, _builder=None)
-consume_token(value, token, _builder=None)
-notify(ptr, rank, signal=1, sig_op="set", comm_scope="inter_node", _builder=None)
-```
-
-#### NVSHMEM原语
-
-```python
-my_pe()
-n_pes()
-int_p(dest, value, pe)
-remote_ptr(local_ptr, pe)
-barrier_all()
-barrier_all_block()
-barrier_all_warp()
-sync_all()
-sync_all_block()
-sync_all_warp()
-quiet()
-fence()
-getmem_nbi_block(dest, source, bytes, pe)
-getmem_block(dest, source, bytes, pe)
-getmem_nbi_warp(dest, source, bytes, pe)
-getmem_warp(dest, source, bytes, pe)
-getmem_nbi(dest, source, bytes, pe)
-getmem(dest, source, bytes, pe)
-putmem_block(dest, source, bytes, pe)
-putmem_nbi_block(dest, source, bytes, pe)
-putmem_warp(dest, source, bytes, pe)
-putmem_nbi_warp(dest, source, bytes, pe)
-putmem(dest, source, bytes, pe)
-putmem_nbi(dest, source, bytes, pe)
-putmem_signal_nbi(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal_nbi_block(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal_block(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal_nbi_warp(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal_warp(dest, source, bytes, sig_addr, signal, sig_op, pe)
-signal_op(sig_addr, signal, sig_op, pe)
-signal_wait_until(sig_addr, cmp_, cmp_val)
-```
-
-*示例：环形通信*
-```python
+使用这些原语，用户可以轻松编写通信kernel。例如，以下展示了一个低延迟的AllToAll通信操作（在推理场景下，其延迟表现优于[DeepEP](https://github.com/deepseek-ai/DeepEP)）。
+```py
 @triton.jit
-def ring_put(ptr):
-    mype = libshmem_device.my_pe()
-    npes = libshmem_device.n_pes()
-    peer = (mype + 1) % npes
-    libshmem_device.int_p(ptr, mype, peer)
+def all_to_all_kernel(
+    data_src,
+    data_dst,
+    splits_src,
+    splits_dst,
+    signal,
+    splits_cumsum,
+    scale_src,
+    scale_dst,
+    rank: int,
+    call_count: int,
+    WITH_SCALE: tl.constexpr,
+    WORLD_SIZE: tl.constexpr,
+    HIDDEN: tl.constexpr,
+    MAX_M: tl.constexpr,
+    EXPERTS_PER_RANK: tl.constexpr,
+    NUM_TOT_EXPERTS: tl.constexpr,
+    ELEMENT_SIZE: tl.constexpr = 2,
+    SCALE_ELEMENT_SIZE: tl.constexpr = 4,
+):
+    pid = tl.program_id(0)
+    threadidx = tid(axis=0)
+
+    exp_st = pid * EXPERTS_PER_RANK
+    exp_ed = exp_st + EXPERTS_PER_RANK
+
+    m_st = tl.load(splits_cumsum + exp_st)
+    m_ed = tl.load(splits_cumsum + exp_ed)
+    num_rows_cur_block = m_ed - m_st
+
+    src_off = m_st
+    dst_off = rank * MAX_M
+
+    split_src_ptr = splits_src + exp_st
+    off0 = exp_st + tl.arange(0, EXPERTS_PER_RANK)
+    off1 = exp_st + tl.arange(0, EXPERTS_PER_RANK) + 1
+    cumsum_sts = tl.load(splits_cumsum + off0)
+    cumsum_eds = tl.load(splits_cumsum + off1)
+    tl.store(split_src_ptr + tl.arange(0, EXPERTS_PER_RANK), cumsum_eds - cumsum_sts)
+
+    act_pos = call_count % 2
+    data_dst_ptr = data_dst + act_pos * WORLD_SIZE * MAX_M * HIDDEN + dst_off * HIDDEN
+    split_dst_ptr = splits_dst + act_pos * NUM_TOT_EXPERTS + rank * EXPERTS_PER_RANK
+    signal_ptr = signal + act_pos * WORLD_SIZE + rank
+
+    libshmem_device.putmem_nbi_block(
+        data_dst_ptr,
+        data_src + src_off * HIDDEN,
+        num_rows_cur_block * HIDDEN * ELEMENT_SIZE,
+        pid,
+    )
+    libshmem_device.putmem_nbi_block(
+        split_dst_ptr,
+        split_src_ptr,
+        EXPERTS_PER_RANK * 4,  # now we use `int32` for splits
+        pid,
+    )
+    if WITH_SCALE:
+        scale_dst_ptr = scale_dst + act_pos * WORLD_SIZE * MAX_M + dst_off
+        libshmem_device.putmem_signal_nbi_block(
+            scale_dst_ptr,
+            scale_src + src_off,
+            num_rows_cur_block * SCALE_ELEMENT_SIZE,
+            signal_ptr,
+            call_count,
+            libshmem_device.NVSHMEM_SIGNAL_SET,
+            pid,
+        )
+
+    libshmem_device.fence()
+    if threadidx == 0:
+        if not WITH_SCALE:
+            libshmem_device.signal_op(
+                signal_ptr,
+                call_count,
+                libshmem_device.NVSHMEM_SIGNAL_SET,
+                pid,
+            )
+        libshmem_device.signal_wait_until(
+            signal + act_pos * WORLD_SIZE + pid,
+            libshmem_device.NVSHMEM_CMP_EQ,
+            call_count,
+        )
 ```
 
-### 高层原语（即将发布）
-基于分块设计理念的高层抽象（详见[MLSys 2025论文](https://mlsys.org/virtual/2025/poster/2969)）将在会议后发布，进一步简化分布式Kernel开发。
+此外，用户可以将通信部分与计算部分结合，设计计算-通信融合的kernel。我们在`third_party/distributed/distributed/kernels`目录下提供了示例实现。
+
+## Performance
+Triton-distributed 可以达到和手写分布式算子库接近的性能，有时候还能更好。
+
+
+### AllGather GEMM 单机H800
+![Ag-GEMM-inter-node](asset/ag-gemm-intra-node.png)
+
+### GEMM ReduceScatter 单机H800
+![Ag-GEMM-inter-node](asset/gemm-rs-intranode-perf.png)
+
+### AllGather GEMM 双机H800
+![Ag-GEMM-inter-node](asset/ag-inter-node-gemm.png)
+
+### GEMM ReduceScatter 双机H800
+![GEMM-Rs-inter-node](asset/gemm-rs-inter-node.png)
+
+### 分布式Flash-Decode从单机到四机扩展情况
+![flash-decode-inter-node](asset/flash-decode-scaling.png)
+
+### 其他平台性能
+[AMD GPUs](docs/distributed/amd-perf.md)
 
 ## Roadmap
 ### 功能
@@ -134,26 +167,39 @@ def ring_put(ptr):
 - [ ] Release high-level primitives
 ### Kernels
 - [x] Release single-node GEMM TP overlapping kernels
-- [ ] Release single-node MoE TP overlapping kernels
-- [ ] Release single-node distributed Flash-Decoding kernels
+- [x] Release single-node MoE TP overlapping kernels
+- [x] Release single-node distributed Flash-Decoding kernels
 - [ ] Release single-node MoE EP overlapping kernels
-- [ ] Release cross-node GEMM TP overlapping kernels
-- [ ] Release cross-node MoE TP overlapping kernels
-- [ ] Release cross-node distributed Flash-Decoding kernels
-- [ ] Release cross-node EP all-to-all kernels (similar to [DeepEP](https://github.com/deepseek-ai/DeepEP))
+- [x] Release cross-node GEMM TP overlapping kernels
+- [x] Release cross-node MoE TP overlapping kernels
+- [x] Release cross-node distributed Flash-Decoding kernels
+- [x] Release cross-node EP all-to-all kernels (similar to [DeepEP](https://github.com/deepseek-ai/DeepEP))
+- [ ] Provide tutorials for kernel implementation
+
 ### 后端
 - [x] Nvidia SM90a support
 - [x] Nvidia SM80 support
 - [ ] Nvidia SM89 support
-- [ ] AMD support
+- [x] AMD CDNA3 support
 ### 性能
 - [ ] Performance report
+
+## 许可协议
+Triton-distributed 主体是 MIT license.
+我们的代码中有一些是 Apache-2.0 License的:
+- `third_party/distributed/distributed/kernels/flash_decode.py`
+
+Triton原本又些代码也是 Apache-2.0 License的:
+- `include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
+- `lib/Dialect/TritonGPU/Transforms/Pipeliner/PipelineExpander.cpp`
+- `python/triton/_C/include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
+- `utils/generate-test-checks.py`
 
 ## 引用
 如在学术研究中使用Triton-distributed，请引用：
 ```bibtex
 @misc{zheng2025tilelink,
-      title={TileLink: Generating Efficient Compute-Communication Overlapping Kernels using Tile-Centric Primitives}, 
+      title={TileLink: Generating Efficient Compute-Communication Overlapping Kernels using Tile-Centric Primitives},
       author={Size Zheng and Jin Fang and Xuegui Zheng and Qi Hou and Wenlei Bao and Ningxin Zheng and Ziheng Jiang and Dongyang Wang and Jianxi Ye and Haibin Lin and Li-Wen Chang and Xin Liu},
       year={2025},
       eprint={TBD},
@@ -161,7 +207,11 @@ def ring_put(ptr):
 }
 ```
 
-## 许可协议
-MIT License
+# 关于 [ByteDance Seed Team](https://team.doubao.com/)
+
+字节跳动Seed团队成立于 2023 年，致力于打造行业内最先进的人工智能基础模型。该团队立志成为世界一流的研究团队，并为科学进步和社会发展做出重大贡献。
 
 ---
+
+# 交流与讨论
+<img src="asset/wechat-group-temporal.png" width="200" height="200" alt="微信讨论群">

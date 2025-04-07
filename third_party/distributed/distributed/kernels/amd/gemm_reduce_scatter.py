@@ -29,36 +29,9 @@ import triton.language as tl
 from triton.language.extra.hip import libdevice
 from typing import List
 import pyrocshmem
-from triton.distributed.kernels.amd.common_ops import barrier_all_ipc
+from triton.distributed.kernels.amd.common_ops import barrier_all_on_stream
 
 SIGNAL_DTYPE = torch.int32
-
-
-def create_tensor_ipc_intra_node(shape, dtype, local_rank, local_world_size, tp_group):
-    """
-    torch.cuda.synchronize()
-    torch.distributed.barrier()
-    input_buffer = torch.zeros(shape, dtype=dtype, device=torch.cuda.current_device(), requires_grad=False)
-    input_buffer_offset = input_buffer.storage_offset()
-    shm_handle = input_buffer._typed_storage()._share_cuda_()[1]  # cudaIpcMemHandle_t
-    shm_handle = shm_handle[2:]  # skip first two bytes for rocm backend
-    shm_offset = input_buffer._typed_storage()._share_cuda_()[3]
-    shm_handle_ts_cuda = torch.ByteTensor(torch.ByteStorage._from_buffer(shm_handle)).cuda()
-    shm_handles = [torch.empty_like(shm_handle_ts_cuda) for _ in range(local_world_size)]
-    torch.distributed.all_gather(shm_handles, shm_handle_ts_cuda, group=tp_group)
-    offset_value = shm_offset + input_buffer_offset
-    offset_list = [None for _ in range(local_world_size)]
-    torch.distributed.all_gather_object(offset_list, offset_value, group=tp_group)
-    shm_buffers = pyrocshmem.rocshmem_get_tensors_from_ipchandle(local_rank, local_world_size, shm_handles, offset_list,
-                                                                 input_buffer.shape, dtype)
-    torch.cuda.synchronize()
-    torch.distributed.barrier()
-    shm_buffers.insert(local_rank, input_buffer)
-    return shm_buffers
-    """
-
-    return pyrocshmem.hipipc_create_tensor_list(tp_group, shape, dtype)
-
 
 ################# triton kernel ###################
 
@@ -313,16 +286,6 @@ def ring_reduce_after_scatter(
     return output
 
 
-def barrier_all_on_stream(
-    rank,
-    num_ranks,
-    sync_bufs_ptr,
-    stream,
-):
-    with torch.cuda.stream(stream):
-        barrier_all_ipc[(1, )](rank, num_ranks, sync_bufs_ptr)
-
-
 def matmul_fuse_scatter(a, b, scatter_bufs_ptr, rank, num_ranks, transpose_weight):
     # Check constraints.
     if transpose_weight:
@@ -341,13 +304,14 @@ def matmul_fuse_scatter(a, b, scatter_bufs_ptr, rank, num_ranks, transpose_weigh
 
     # Allocates output.
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
-    compiled = kernel_gemm_rs_producer_fuse_scatter[grid](  # noqa: F841
+    compiled = kernel_gemm_rs_producer_fuse_scatter[grid](
         a, b, scatter_bufs_ptr,  #
         rank, num_ranks, M, N, K,  #
         a.stride(0), a.stride(1),  #
         stride_bk, stride_bn,  #
         N, 1,  #
     )
+    return compiled
 
 
 def gemm_rs_intra_node_op(a, b, output_dtype, rank, num_ranks, scatter_bufs, scatter_bufs_ptr, sync_bufs_ptr,
@@ -435,12 +399,12 @@ def create_gemm_rs_intra_node_context(max_M, N, output_dtype, rank, num_ranks, t
     if transpose_weight:
         raise NotImplementedError()
 
-    sync_bufs = create_tensor_ipc_intra_node([num_ranks], torch.int32, rank, num_ranks, tp_group)
+    sync_bufs = pyrocshmem.hipipc_create_tensor_list(tp_group, [num_ranks], torch.int32)
     sync_bufs[rank].fill_(0)
     sync_bufs_ptr = torch.tensor([t.data_ptr() for t in sync_bufs], device=torch.cuda.current_device(),
                                  requires_grad=False)
 
-    scatter_bufs = create_tensor_ipc_intra_node([max_M, N], output_dtype, rank, num_ranks, tp_group)
+    scatter_bufs = pyrocshmem.hipipc_create_tensor_list(tp_group, [max_M, N], output_dtype)
     scatter_bufs_ptr = torch.tensor([t.data_ptr() for t in scatter_bufs], device=torch.cuda.current_device(),
                                     requires_grad=False)
 
@@ -463,17 +427,17 @@ def create_gemm_rs_intra_node_context(max_M, N, output_dtype, rank, num_ranks, t
 
 
 def gemm_rs_intra_node(a, b, ctx):
-    """allgather gemm for intra-node
+    """GEMM Reduce-Scatter for Intra-Node
 
-    Allgather global matrix A and do matmul with local matrix B, produces local matrix C
+    computes local GEMM (a x b) to generate partial results, followed by `reduce_scatter` to produce c
 
     Args:
-        a (torch.Tensor<float>): local matmul A matrix. shape: [M, K_per_rank]
-        b (torch.Tensor<float>): local matmul B matrix. shape: [N, K_per_rank]
-        ctx: AllGatherGEMMTensorParallelContext
+        a (torch.Tensor<bfloat16/float16>): local matmul A matrix. shape: [M, local_K]
+        b (torch.Tensor<bfloat16/float16>): local matmul B matrix. shape: [N, local_K]
+        ctx(GEMMReduceScatterTensorParallelContext): context
 
     Returns:
-        c (torch.Tensor<float>): local matmul C matrix. shape: [M, N_per_rank]
+        c (torch.Tensor<bfloat16/float16>): local matmul C matrix. shape: [M // world_size, N]
     """
 
     C = gemm_rs_intra_node_op(a, b, ctx.output_dtype, ctx.rank, ctx.num_ranks, ctx.scatter_bufs, ctx.scatter_bufs_ptr,

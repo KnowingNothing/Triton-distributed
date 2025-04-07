@@ -25,6 +25,8 @@
 import torch
 import random
 
+from triton.distributed.kernels.nvidia import create_gemm_rs_context, gemm_rs_multi_node
+
 import argparse
 import os
 from typing import Optional
@@ -33,43 +35,33 @@ import numpy as np
 
 from functools import partial
 
+import pynvshmem
+
 from triton.distributed.utils import (
     generate_data,
     get_torch_prof_ctx,
     perf_func,
     dist_print,
 )
-from triton.distributed.kernels.amd import ag_gemm_intra_node, create_ag_gemm_intra_node_context
 
 
-def torch_ag_gemm(
-    input: torch.Tensor,  # [local_M, k]
-    weight: torch.Tensor,  # [local_N, K]
-    transed_weight: bool,
+def torch_gemm_rs(
+    input: torch.Tensor,  # [M, local_k]
+    weight: torch.Tensor,  # [N, local_K]
     bias: Optional[torch.Tensor],
     TP_GROUP,
 ):
-    local_M, K = input.shape
-    world_size = TP_GROUP.size()
-    if transed_weight:
-        assert K == weight.shape[0]
-    else:
-        assert K == weight.shape[1]
-        weight = weight.T
-    assert input.device == weight.device
-    # AG
-    full_input = torch.empty((local_M * world_size, K), dtype=input.dtype, device=input.device)
-    torch.distributed.all_gather_into_tensor(full_input, input, group=TP_GROUP)
-    # Gemm
-    output = torch.matmul(full_input, weight)
-
+    M, local_K = input.shape
+    N = weight.shape[0]
+    output = torch.matmul(input, weight.T)
     if bias:
         output = output + bias
+    rs_output = torch.empty((M // WORLD_SIZE, N), dtype=output.dtype, device=input.device)
+    torch.distributed.reduce_scatter_tensor(rs_output, output, group=TP_GROUP)
+    return rs_output
 
-    return output
 
-
-class AGGemmIntraNode(torch.nn.Module):
+class GemmRSMultiNode(torch.nn.Module):
 
     def __init__(
         self,
@@ -77,49 +69,37 @@ class AGGemmIntraNode(torch.nn.Module):
         max_M: int,
         N: int,
         K: int,
-        M_PER_CHUNK: int,
         input_dtype: torch.dtype,
         output_dtype: torch.dtype,
+        local_world_size: int = -1,
     ):
+        super().__init__()
         self.tp_group = tp_group
         self.rank: int = tp_group.rank()
         self.world_size = tp_group.size()
+        self.local_world_size = local_world_size if local_world_size != -1 else self.world_size
+        self.local_rank = self.rank % self.local_world_size
+
         self.max_M: int = max_M
         self.N = N
         self.K = K
-        self.M_PER_CHUNK = M_PER_CHUNK
         self.input_dtype = input_dtype
         self.output_dtype = output_dtype
 
-        # NOTE: use the default size of `M_PER_CHUNK`.
-        self.ctx = create_ag_gemm_intra_node_context(
-            self.max_M,
-            self.N,
-            self.K,
-            self.input_dtype,
-            self.output_dtype,
-            self.rank,
-            self.world_size,
-            self.tp_group,
-            M_PER_CHUNK=M_PER_CHUNK,
-        )
+        self.rs_stream: torch.cuda.Stream = torch.cuda.Stream(priority=-1)
 
-    def forward(self, input: torch.Tensor,  # [local_M, K]
-                weight: torch.Tensor,  # [local_N, K]
-                transed_weight: bool,  # indicates whether weight already transposed
-                ):
+        self.ctx = create_gemm_rs_context(max_M, N, self.rank, self.world_size, self.local_world_size, output_dtype,
+                                          self.rs_stream)
 
-        _, K = input.shape
+    def forward(
+        self,
+        input: torch.Tensor,  # [M, local_K]
+        weight: torch.Tensor,  # [N, local_K]
+        bias: Optional[torch.Tensor],
+    ):
+        assert input.shape[0] <= self.max_M and weight.shape[0] == self.N
 
-        assert K == self.K
-        assert self.max_M % self.world_size == 0
-        if transed_weight:
-            assert weight.shape[0] == K
-        else:
-            assert weight.shape[1] == K
-        output = ag_gemm_intra_node(input, weight, transed_weight, ctx=self.ctx)
-
-        return output
+        return gemm_rs_multi_node(input, weight, self.ctx)
 
 
 DTYPE_MAP = {
@@ -133,7 +113,7 @@ DTYPE_MAP = {
 
 THRESHOLD_MAP = {
     torch.float16: 1e-2,
-    torch.bfloat16: 1e-2,
+    torch.bfloat16: 6e-2,
     torch.float8_e4m3fn: 1e-2,
     torch.float8_e5m2: 1e-2,
 }
@@ -144,10 +124,9 @@ def parse_args():
     parser.add_argument("M", type=int)
     parser.add_argument("N", type=int)
     parser.add_argument("K", type=int)
-    parser.add_argument("--chunk_m", default=256, type=int, help="chunk size at dim m")
     parser.add_argument("--warmup", default=5, type=int, help="warmup iterations")
     parser.add_argument("--iters", default=10, type=int, help="perf iterations")
-    parser.add_argument("--dtype", default="float16", type=str, help="data type")
+    parser.add_argument("--dtype", default="bfloat16", type=str, help="data type")
 
     parser.add_argument("--profile", default=False, action="store_true", help="dump torch.profiler.profile")
     parser.add_argument("--check", default=False, action="store_true", help="correctness check")
@@ -157,8 +136,8 @@ def parse_args():
         "--transpose_weight",
         dest="transpose_weight",
         action=argparse.BooleanOptionalAction,
-        help="transpose weight, default shape is [N, K]",
-        default=False,
+        help="transpose weight",
+        default=True,
     )
     parser.add_argument("--has_bias", default=False, action="store_true", help="whether have bias")
     parser.add_argument("--seed", type=int, default=42)
@@ -173,6 +152,8 @@ if __name__ == "__main__":
     RANK = int(os.environ.get("RANK", 0))
     LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
     WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
+    LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
+
     torch.cuda.set_device(LOCAL_RANK)
     torch.distributed.init_process_group(
         backend="nccl",
@@ -185,7 +166,7 @@ if __name__ == "__main__":
     torch.distributed.barrier(TP_GROUP)
 
     torch.use_deterministic_algorithms(False, warn_only=True)
-    torch.set_printoptions(precision=5)
+    torch.set_printoptions(precision=2)
     torch.manual_seed(3 + RANK)
     torch.cuda.manual_seed_all(3 + RANK)
     torch.backends.cudnn.deterministic = True
@@ -196,54 +177,83 @@ if __name__ == "__main__":
     np.random.seed(3 + RANK)
     random.seed(args.seed)
 
+    current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    torch.distributed.barrier()
+    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
+    pynvshmem.nvshmem_barrier_all()
+    torch.cuda.synchronize()
 
     input_dtype = DTYPE_MAP[args.dtype]
     output_dtype = input_dtype
     atol = THRESHOLD_MAP[output_dtype]
     rtol = THRESHOLD_MAP[output_dtype]
 
-    assert args.M % WORLD_SIZE == 0
-    assert args.N % WORLD_SIZE == 0
-    assert args.K % WORLD_SIZE == 0
-    local_M = args.M // WORLD_SIZE
-    local_N = args.N // WORLD_SIZE
+    assert args.M % TP_GROUP.size() == 0
+    assert args.K % TP_GROUP.size() == 0
+    local_K = args.K // TP_GROUP.size()
 
     scale = TP_GROUP.rank() + 1
 
-    def _make_data():
+    def _make_data(M):
         data_config = [
-            ((local_M, args.K), input_dtype, (0.01 * scale, 0)),  # A
-            ((local_N, args.K), input_dtype, (0.01 * scale, 0)),  # B
+            ((M, local_K), input_dtype, (0.01 * scale, 0)),  # A
+            ((args.N, local_K), input_dtype, (0.01 * scale, 0)),  # B
             (  # bias
-                None if not args.has_bias else ((args.M, local_N), input_dtype, (1, 0))),
+                None if not args.has_bias else ((M, args.N), input_dtype, (1, 0))),
         ]
         generator = generate_data(data_config)
         input, weight, bias = next(generator)
-        if args.transpose_weight:
-            weight = weight.T.contiguous()  # from N,K to K,N
         return input, weight, bias
 
-    dist_ag_gemm_op = AGGemmIntraNode(TP_GROUP, args.M, args.N, args.K, args.chunk_m, input_dtype, output_dtype)
+    dist_gemm_rs_op = GemmRSMultiNode(TP_GROUP, args.M, args.N, args.K, input_dtype, output_dtype, LOCAL_WORLD_SIZE)
+
+    if args.check:
+        for n in range(args.iters):
+            torch.cuda.empty_cache()
+            input_list = [
+                _make_data(random.randint(1, args.M // WORLD_SIZE) * WORLD_SIZE) for _ in range(args.verify_iters)
+            ]
+            dist_out_list, torch_out_list = [], []
+
+            # torch impl
+            for input, weight, bias in input_list:
+                torch_out = torch_gemm_rs(
+                    input,
+                    weight,
+                    bias,
+                    TP_GROUP,
+                )
+                torch_out_list.append(torch_out)
+
+            # dist triton impl
+            for input, weight, bias in input_list:
+                dist_out = dist_gemm_rs_op.forward(input, weight, bias)
+                dist_out_list.append(dist_out)
+            # torch.cuda.synchronize()
+            # verify
+            for idx, (torch_out, dist_out) in enumerate(zip(torch_out_list, dist_out_list)):
+                # if RANK == 0:
+                #     print(f"shape = {torch_out.shape}, {torch_out[0]} {dist_out[0]}")
+                try:
+                    torch.testing.assert_close(torch_out, dist_out, atol=atol, rtol=rtol)
+                except Exception as e:
+                    raise e
+        print(f"RANK[{RANK}]: pass.")
+        exit(0)
 
     ctx = get_torch_prof_ctx(args.profile)
-    input, weight, bias = _make_data()
-
+    input, weight, bias = _make_data(args.M)
     with ctx:
-        torch_output, torch_perf = perf_func(
-            partial(torch_ag_gemm, input, weight, args.transpose_weight, bias, TP_GROUP), iters=args.iters,
-            warmup_iters=args.warmup)
+        torch_output, torch_perf = perf_func(partial(torch_gemm_rs, input, weight, bias, TP_GROUP), iters=100,
+                                             warmup_iters=20)
 
+        pynvshmem.nvshmem_barrier_all()
         torch.cuda.synchronize()
-        torch.distributed.barrier()
 
-        dist_triton_output, dist_triton_perf = perf_func(
-            partial(dist_ag_gemm_op.forward, input, weight, args.transpose_weight), iters=args.iters,
-            warmup_iters=args.warmup)
+        dist_triton_output, dist_triton_perf = perf_func(partial(dist_gemm_rs_op.forward, input, weight, bias),
+                                                         iters=100, warmup_iters=20)
 
-    torch.cuda.synchronize()
-    torch.distributed.barrier()
+    pynvshmem.nvshmem_barrier_all()
     torch.cuda.synchronize()
 
     if args.profile:
@@ -253,15 +263,7 @@ if __name__ == "__main__":
         ctx.export_chrome_trace(f"{prof_dir}/trace_rank{TP_GROUP.rank()}.json.gz")
 
     atol, rtol = THRESHOLD_MAP[input_dtype], THRESHOLD_MAP[input_dtype]
-
-    if torch.allclose(dist_triton_output, torch_output, atol=atol, rtol=rtol):
-        dist_print("✅ Triton and Torch match")
-    else:
-        dist_print(
-            f"The maximum difference between torch and triton is {torch.max(torch.abs(dist_triton_output - torch_output))}"
-        )
-        dist_print("❌ Triton and Torch differ")
-
+    torch.testing.assert_close(torch_output, dist_triton_output, atol=atol, rtol=rtol)
     torch.cuda.synchronize()
 
     dist_print(f"dist-triton #{RANK}", dist_triton_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))

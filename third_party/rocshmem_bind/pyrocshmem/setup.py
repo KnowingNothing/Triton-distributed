@@ -69,8 +69,6 @@ def hip_deps():
 
 @pathlib_wrapper
 def mpi_deps():
-    # ompi_build/install/ompi/lib/libmpi.so
-    #mpi_home = Path(os.environ.get("MPI_HOME", root_path / "../ompi_build/install/ompi/"))
     mpi_home = root_path / "../ompi_build/install/ompi/"
     include_dirs = [mpi_home / "include"]
     library_dirs = [mpi_home / "lib"]
@@ -82,7 +80,6 @@ def setup_pytorch_extension() -> setuptools.Extension:
     """Setup CppExtension for PyTorch support"""
     include_dirs, library_dirs, libraries = [], [], []
 
-    # deps = [rocshmem_deps(), hip_deps(), mpi_deps()]
     deps = [hip_deps(), mpi_deps(), rocshmem_deps()]
 
     for include_dir, library_dir, library in deps:
@@ -101,7 +98,6 @@ def setup_pytorch_extension() -> setuptools.Extension:
         "-Wno-deprecated-declarations",
         "-fdiagnostics-color=always",
     ]
-    #ld_flags = ['-Wl,-rpath,$ORIGIN', '-lrocshmem']
     ld_flags = ["--hip-link", "-fgpu-rdc", "-lrocshmem"]
 
     from torch.utils.cpp_extension import CppExtension

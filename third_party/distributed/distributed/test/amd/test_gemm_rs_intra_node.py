@@ -226,7 +226,6 @@ if __name__ == "__main__":
             for input, weight, bias in input_list:
                 dist_out = dist_gemm_rs_op.forward(input, weight)
                 dist_out_list.append(dist_out)
-            # torch.cuda.synchronize()
             # verify
             for idx, (torch_out, dist_out) in enumerate(zip(torch_out_list, dist_out_list)):
                 try:
@@ -260,9 +259,6 @@ if __name__ == "__main__":
         ctx.export_chrome_trace(f"{prof_dir}/trace_rank{TP_GROUP.rank()}.json.gz")
 
     atol, rtol = THRESHOLD_MAP[input_dtype], THRESHOLD_MAP[input_dtype]
-    # if RANK == 0:
-    #     print(torch_output)
-    #     print(dist_triton_output)
     torch.testing.assert_close(torch_output, dist_triton_output, atol=atol, rtol=rtol)
     torch.cuda.synchronize()
 

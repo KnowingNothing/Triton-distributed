@@ -91,7 +91,7 @@ private:
     }                                                                          \
   } while (0)
 
-// TODO: not found rocshmem init state related API or returns.
+// TODO: found rocshmem init state related API or returns.
 
 #define ENABLE_ROCSHMEM 1
 
@@ -136,13 +136,10 @@ std::vector<torch::Tensor> rocshmem_get_tensors_from_ipchandle(
       tensors.emplace_back(at::from_blob(
           memPtr, shape,
           [=](void *ptr) {
-            // std::cerr << "entry hipIpcCloseMemHandle\n";
             at::hip::HIPGuard guard(current_device);
             at::hip::device_synchronize();
-            // std::cerr << "do hipIpcCloseMemHandle\n";
             hipIpcCloseMemHandle(ptr);
             at::hip::device_synchronize();
-            // std::cerr << "exit hipIpcCloseMemHandle\n";
           },
           option_gpu));
     } else {
@@ -289,8 +286,6 @@ void test_ipc_handle_impl(c10d::ProcessGroup *group,
   torch::Tensor target_tensor = at::from_blob(
       target_ptr, shape, [](void *ptr) { hipIpcCloseMemHandle(ptr); },
       option_gpu);
-  // std::cerr << "rank[" << cur_rank << "] get remote_rank[" << target_rank
-  //           << "] buffer:" << target_tensor << "\n";
   std::cerr << "rank[" << cur_rank << "] get remote_rank[" << target_rank
             << "]\n";
 }
@@ -360,7 +355,7 @@ PYBIND11_MODULE(_pyrocshmem, m) {
     return (intptr_t)ptr;
   });
 #endif
-  // TODO: maybe need to find the related rocshmem Host side API.
+  // TODO: find the related rocshmem Host side API.
   /*m.def("rocshmemx_get_uniqueid", []() {
     rocshmemx_uniqueid_t id;
     CHECK_ROCSHMEMX(rocshmemx_get_uniqueid(&id));
@@ -390,10 +385,6 @@ PYBIND11_MODULE(_pyrocshmem, m) {
         });
   m.def("rocshmem_barrier_all", []() { rocshmem_barrier_all(); });
 #endif
-  // rocshmem_wg_barrier_all ?
-  /*m.def("nvshmem_barrier_all_on_stream", [](intptr_t stream) {
-    nvshmemx_barrier_all_on_stream((cudaStream_t)stream);
-  });*/
 #if ENABLE_ROCSHMEM
   m.def(
       "rocshmem_create_tensor_list_intra_node",

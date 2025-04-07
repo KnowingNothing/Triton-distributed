@@ -705,7 +705,7 @@ def ring_reduce(
 
 def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
     """
-    A hierarchical reduce-scatter implementation that overlaps the intra-node scatter 
+    A hierarchical reduce-scatter implementation that overlaps the intra-node scatter
     with the local reduce and the inter-node p2p(after reduce). It also provides a rank-wise
     signal and supports overlap with gemm.
     """

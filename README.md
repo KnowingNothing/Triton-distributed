@@ -1,4 +1,37 @@
+<div align="center">
+ 👋 Hi, everyone!
+    <br>
+    We are <b>ByteDance Seed team.</b>
+</div>
+
+<p align="center">
+  You can get to know us better through the following channels👇
+  <br>
+  <a href="https://team.doubao.com/">
+    <img src="https://img.shields.io/badge/Website-%231e37ff?style=for-the-badge&logo=bytedance&logoColor=white"></a>
+  <a href="https://github.com/user-attachments/assets/93481cda-a7f3-47f3-b333-fe6b3da86b78">
+    <img src="https://img.shields.io/badge/WeChat-07C160?style=for-the-badge&logo=wechat&logoColor=white"></a>
+ <a href="https://www.xiaohongshu.com/user/profile/668e7e15000000000303157d?xsec_token=ABl2-aqekpytY6A8TuxjrwnZskU-6BsMRE_ufQQaSAvjc%3D&xsec_source=pc_search">
+    <img src="https://img.shields.io/badge/Xiaohongshu-%23FF2442?style=for-the-badge&logo=xiaohongshu&logoColor=white"></a>
+  <a href="https://www.zhihu.com/org/dou-bao-da-mo-xing-tuan-dui/">
+    <img src="https://img.shields.io/badge/zhihu-%230084FF?style=for-the-badge&logo=zhihu&logoColor=white"></a>
+</p>
+
+![seed logo](https://github.com/user-attachments/assets/c42e675e-497c-4508-8bb9-093ad4d1f216)
+
 # Triton-distributed
+
+<!-- <p align="center">
+  <a href="https://github.com/bytedance/flux">
+    <img src="https://img.shields.io/badge/Triton-distributed-Project Page-yellow"></a>
+  <a href="https://arxiv.org/pdf/xxxx.xxxx">
+    <img src="https://img.shields.io/badge/Triton-distributed-Tech Report-red"></a>
+  <br>
+  <a href="https://github.com/user-attachments/assets/d3fcb3bf-466b-4efe-8c3f-5f85258202ae">
+    <img src="https://img.shields.io/badge/Triton-distributed-Wechat Communication Group-07C160"></a>
+  <a href="XXX">
+    <img src="https://img.shields.io/badge/License-MIT-blue"></a>
+</p> -->
 
 [Original Triton README](upstream-README.md) | [README in Chinese](README-cn.md)
 
@@ -35,7 +68,7 @@ Dependencies with other versions may also work well, but this is not guaranteed.
     export USE_TRITON_DISTRIBUTED_AOT=0
     pip3 install -e python --verbose --no-build-isolation
     ```
-    
+
     If you want to use AOT, then
     ```sh
     export USE_TRITON_DISTRIBUTED_AOT=1
@@ -52,16 +85,16 @@ Dependencies with other versions may also work well, but this is not guaranteed.
 #### AllGather GEMM example on single node
 This example runs on a single node with 8 H800 GPUs.
 ```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_intra_node.py --case correctness_tma
+bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma
 ```
 #### GEMM ReduceScatter example on single node
 This example runs on a single node with 8 H800 GPUs.
 ```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_intra_node.py 8192 8192 29568 --check
+bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568
 ```
 #### NVSHMEM example in Triton-distributed
 ```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_nvshmem_api.py
+bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_nvshmem_api.py
 ```
 
 ### How to use Triton-distributed
@@ -152,12 +185,22 @@ To provide better programming experience, we also provide a set of high-level pr
 - [x] Nvidia SM90a support
 - [x] Nvidia SM80 support
 - [ ] Nvidia SM89 support
-- [ ] AMD support
+- [x] AMD CDNA3 support
 ### Performance
 - [ ] Performance report
 
+## License
+The Triton-distributed project is under MIT license.
+Part of our code is under Apache-2.0 License:
+- `third_party/distributed/distributed/kernels/flash_decode.py`
+Triton's original code is partially under Apache-2.0 Linces, these files include:
+- `include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
+- `lib/Dialect/TritonGPU/Transforms/Pipeliner/PipelineExpander.cpp`
+- `python/triton/_C/include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
+- `utils/generate-test-checks.py`
 
-## Citations
+
+## Citation
 If you use Triton-distributed in a scientific publication, we encourage you to add the following reference to the related papers:
 ```bibtex
 @misc{zheng2025tilelink,
@@ -167,5 +210,10 @@ If you use Triton-distributed in a scientific publication, we encourage you to a
 }
 ```
 
-## License
-The Triton-distributed project is under MIT license.
+# About [ByteDance Seed Team](https://team.doubao.com/)
+
+Founded in 2023, ByteDance Seed Team is dedicated to crafting the industry's most advanced AI foundation models. The team aspires to become a world-class research team and make significant contributions to the advancement of science and society.
+
+# Join the Discussion Group
+
+![discussion-group](asset/wechat-group-temporal.png)

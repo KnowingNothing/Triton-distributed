@@ -56,7 +56,7 @@ export NVSHMEM_SRC=${PROJECT_ROOT}/../nvshmem
 pushd ${NVSHMEM_SRC}
 mkdir -p build
 cd build
-if [ ${NVSHmem_BUILD_BITCODE_LIBRARY} -eq "1" ]; then
+if [ ${NVSHMEM_BUILD_BITCODE_LIBRARY} -eq "1" ]; then
   echo "libclang-19-dev or higher is required."
   mkdir -p src/llvm_lib
 fi
@@ -68,7 +68,7 @@ if [ ! -f CMakeCache.txt ]; then
         -DNVSHMEM_BUILD_TESTS=OFF \
         -DNVSHMEM_BUILD_EXAMPLES=OFF \
         -DNVSHMEM_BUILD_PACKAGES=OFF \
-        -DNVSHMEM_BUILD_BITCODE_LIBRARY=${NVSHmem_BUILD_BITCODE_LIBRARY} \
+        -DNVSHMEM_BUILD_BITCODE_LIBRARY=${NVSHMEM_BUILD_BITCODE_LIBRARY} \
         -DCMAKE_INSTALL_PREFIX=${NVSHMEM_SRC}/build/install
 fi
 make VERBOSE=1 -j${JOBS}
