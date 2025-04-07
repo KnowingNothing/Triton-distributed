@@ -58,47 +58,47 @@ jobs:
           # ad-hoc test
           #############
           # basic
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_distributed_wait.py --case correctness
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_distributed_wait.py --case correctness_tma
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_distributed_wait.py --case correctness_tma_multi_barrier
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_distributed_wait.py --case correctness
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_distributed_wait.py --case correctness_tma
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_distributed_wait.py --case correctness_tma_multi_barrier
           # ag gemm
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_intra_node.py --case correctness_tma
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_intra_node.py --case correctness_tma_autotune
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma_autotune
 
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_inter_node.py --M 8192
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_inter_node.py --M 8192
           # gemm rs
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_multi_node.py 8192 8192 29568
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_multi_node.py 8192 8192 29568 --check
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568 --check
           # allgather
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_small_msg.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_gather.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_fast_allgather.py   --iters 10   --warmup_iters 20   --mode push_2d_ll   --minbytes 4096   --maxbytes 8192
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_small_msg.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_all_gather.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_fast_allgather.py   --iters 10   --warmup_iters 20   --mode push_2d_ll   --minbytes 4096   --maxbytes 8192
           # all-to-all
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_to_all.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ep_moe_inference.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_all_to_all.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ep_moe_inference.py
           # nvshmem related
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_nvshmem_api.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ring_put.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_nvshmem_api.py
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ring_put.py
           # flash decoding
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_persistent
-          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_persistent_aot
-          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_aot
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case perf
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case correctness
-          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case correctness
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py --case perf_8k
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py --case perf_8k_persistent
+          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py --case perf_8k_persistent_aot
+          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py --case perf_8k_aot
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_sp_decode_attn.py --case perf
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_sp_decode_attn.py --case correctness
+          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_sp_decode_attn.py --case correctness
           # ag moe
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 2048
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 4096
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 8192
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 16384
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 2048
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 4096
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 8192
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 16384
           # moe rs
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2 --check
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2 --check
           #############
           # pytest (disabled)
           #############
           # flash decoding
-          # - pytest ./third_party/distributed/distributed/test/test_decode_attn.py::test_triton_decode_with_paged_kv
-          # - pytest ./third_party/distributed/distributed/test/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent
-          # - USE_TRITON_DISTRIBUTED_AOT=1 pytest ./third_party/distributed/distributed/test/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent_aot
+          # - pytest ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv
+          # - pytest ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent
+          # - USE_TRITON_DISTRIBUTED_AOT=1 pytest ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent_aot
