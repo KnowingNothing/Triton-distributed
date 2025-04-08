@@ -147,7 +147,7 @@ Triton-distributed can achieve comparable or better performance than hand-tuned 
 
 
 ### AllGather GEMM on single node of H800x8
-![Ag-GEMM-inter-node](asset/ag-gemm-intranode-perf.png)
+![Ag-GEMM-inter-node](asset/ag-gemm-intra-node.png)
 
 ### GEMM ReduceScatter on single node of H800x8
 ![Ag-GEMM-inter-node](asset/gemm-rs-intranode-perf.png)
@@ -192,7 +192,7 @@ Computation
 Communication
 - [x] NVLink
 - [x] IB
-- [ ] PCIe
+- [ ] PCIe 
 ### Performance
 - [ ] Performance report
 

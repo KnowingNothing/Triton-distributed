@@ -56,4 +56,4 @@ signal_wait_until(sig_addr, cmp_, cmp_val)
 ```
 
 #### High-level primitives
-To provide better programming experience, we also provide a set of high-level primitives for communication and signal control. These primitives, as decribed in our [MLSys 2025 paper](https://mlsys.org/virtual/2025/poster/2969), use a tile-centric design philosophy. These high-level primitives will be released soon after MLSys 2025.
+To provide better programming experience, we also provide a set of high-level primitives for communication and signal control. These primitives, as decribed in our [MLSys 2025 paper](https://mlsys.org/virtual/2025/poster/3248), use a tile-centric design philosophy. These high-level primitives will be released soon after MLSys 2025.
