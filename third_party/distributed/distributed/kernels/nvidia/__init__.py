@@ -33,8 +33,8 @@ from .flash_decode import (gqa_fwd_batch_decode_persistent, kernel_gqa_fwd_batch
                            gqa_fwd_batch_decode_intra_rank_aot, get_triton_combine_kv_algo_info,
                            gqa_fwd_batch_decode_intra_rank, kernel_inter_rank_gqa_fwd_batch_decode_combine_kv)
 from .gemm_reduce_scatter import create_gemm_rs_context, gemm_rs_multi_node
-from .moe_reduce_rs import create_moe_rs_context, get_dataflowconfig, moe_reduce_rs_intra_node
 from .low_latency_all_to_all import create_all_to_all_context, fast_all_to_all, all_to_all_post_process
+from .moe_reduce_rs import create_moe_rs_context, select_experts, moe_reduce_rs
 
 __all__ = [
     "ag_gemm_intra_node",
@@ -77,10 +77,10 @@ __all__ = [
     "_forward_pull_kernel",
     "_forward_push_2d_kernel",
     "_forward_push_2d_ll_kernel",
-    "create_moe_rs_context",
-    "get_dataflowconfig",
-    "moe_reduce_rs_intra_node",
     "create_all_to_all_context",
     "fast_all_to_all",
     "all_to_all_post_process",
+    "create_moe_rs_context",
+    "select_experts",
+    "moe_reduce_rs",
 ]

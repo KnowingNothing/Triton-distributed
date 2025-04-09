@@ -93,8 +93,8 @@ jobs:
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 8192
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 16384
           # moe rs
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2 --check
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check
           #############
           # pytest (disabled)
           #############

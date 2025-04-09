@@ -30,13 +30,11 @@ import os
 import datetime
 import numpy as np
 
-from typing import List
-
 from functools import partial
 
 import pynvshmem
 
-from triton.distributed.kernels.nvidia import create_moe_rs_context, get_dataflowconfig, moe_reduce_rs_intra_node
+from triton.distributed.kernels.nvidia import create_moe_rs_context, select_experts, moe_reduce_rs
 
 from triton.distributed.utils import (
     get_torch_prof_ctx,
@@ -94,8 +92,7 @@ class TorchGroupGemmReduceRS(torch.nn.Module):
         intermediate_size: int,
         num_experts: int,
         topk: int,
-        full_topk_ids: torch.Tensor,
-        full_topk_weight: torch.Tensor,
+        router_logits: torch.Tensor,
         max_token_num: int = 16 * 1024,
         input_dtype=torch.float16,
         output_dtype=torch.float16,
@@ -104,30 +101,32 @@ class TorchGroupGemmReduceRS(torch.nn.Module):
         super(TorchGroupGemmReduceRS, self).__init__()
         self.pg = pg
         self.rank = pg.rank()
-        self.num_ranks = pg.size()
+        self.world_size = pg.size()
         self.max_token_num = max_token_num
         assert (
             max_token_num %
-            self.num_ranks == 0), f"max_token_num({max_token_num}) should be multiple of num_ranks({self.num_ranks})"
+            self.world_size == 0), f"max_token_num({max_token_num}) should be multiple of world_size({self.world_size})"
         self.hidden_dim = hidden_dim
         self.intermediate_size = intermediate_size
         self.num_experts = num_experts
         self.topk = topk
 
-        assert (intermediate_size % self.num_ranks == 0
-                ), f"intermediate_size({intermediate_size}) should be multiple of num_ranks({self.num_ranks})"
-        self.intermediate_size_per_rank = intermediate_size // self.num_ranks
+        assert (intermediate_size % self.world_size == 0
+                ), f"intermediate_size({intermediate_size}) should be multiple of world_size({self.world_size})"
+        self.intermediate_size_per_rank = intermediate_size // self.world_size
 
         self.input_dtype = input_dtype
         self.output_dtype = output_dtype
         assert self.input_dtype == self.output_dtype
         self.device = device
 
-        self.full_topk_ids = full_topk_ids.clone()
-        self.full_topk_weight = full_topk_weight.clone()
+        self.router_logits = router_logits
+
+        self.full_topk_ids, self.full_topk_weight = select_experts(self.pg, self.world_size, self.topk,
+                                                                   self.input_dtype, self.device, self.router_logits)
 
         self.rs_buffer: torch.Tensor = torch.zeros(
-            [self.max_token_num // self.num_ranks, self.hidden_dim],
+            [self.max_token_num // self.world_size, self.hidden_dim],
             dtype=self.output_dtype,
             device=self.device,
         )
@@ -153,50 +152,50 @@ class TorchGroupGemmReduceRS(torch.nn.Module):
             keepdim=False,
         )
         torch.distributed.reduce_scatter_tensor(
-            self.rs_buffer[:num_tokens_topk // self.topk // self.num_ranks, :],
+            self.rs_buffer[:num_tokens_topk // self.topk // self.world_size, :],
             output,
             group=self.pg,
         )
 
-        return self.rs_buffer[:num_tokens_topk // self.topk // self.num_ranks, :]
+        return self.rs_buffer[:num_tokens_topk // self.topk // self.world_size, :]
 
 
-class MoEReduceRSTensorParallelIntraNode(torch.nn.Module):
+class MoEReduceRSTensorParallel(torch.nn.Module):
 
     def __init__(
         self,
         pg: torch.distributed.ProcessGroup,
+        local_world_size: int,
         hidden_dim: int,
         intermediate_size: int,
         num_experts: int,
         topk: int,
-        ctx,
-        full_topk_ids: torch.Tensor,
-        full_topk_weight: torch.Tensor,
+        router_logits: torch.Tensor,
         max_token_num: int = 16 * 1024,
         input_dtype=torch.float16,
         output_dtype=torch.float16,
         device="cuda",
         moe_block_size=128,
-        no_intermediate_scatter=False,
         debug_sync=False,
     ):
-        super(MoEReduceRSTensorParallelIntraNode, self).__init__()
+        super(MoEReduceRSTensorParallel, self).__init__()
         self.pg = pg
         self.rank = pg.rank()
-        self.num_ranks = pg.size()
+        self.world_size = pg.size()
+        self.local_world_size = local_world_size
+        self.local_rank = self.rank % self.local_world_size
         self.max_token_num = max_token_num
         assert (
             max_token_num %
-            self.num_ranks == 0), f"max_token_num({max_token_num}) should be multiple of num_ranks({self.num_ranks})"
+            self.world_size == 0), f"max_token_num({max_token_num}) should be multiple of world_size({self.world_size})"
         self.hidden_dim = hidden_dim
         self.intermediate_size = intermediate_size
         self.num_experts = num_experts
         self.topk = topk
 
-        assert (intermediate_size % self.num_ranks == 0
-                ), f"intermediate_size({intermediate_size}) should be multiple of num_ranks({self.num_ranks})"
-        self.intermediate_size_per_rank = intermediate_size // self.num_ranks
+        assert (intermediate_size % self.world_size == 0
+                ), f"intermediate_size({intermediate_size}) should be multiple of world_size({self.world_size})"
+        self.intermediate_size_per_rank = intermediate_size // self.world_size
 
         self.input_dtype = input_dtype
         self.output_dtype = output_dtype
@@ -204,120 +203,45 @@ class MoEReduceRSTensorParallelIntraNode(torch.nn.Module):
         self.device = device
 
         self.moe_block_size = moe_block_size
-        self.no_intermediate_scatter = no_intermediate_scatter
         self.debug_sync = debug_sync
 
-        self.ctx = ctx
-        self.full_topk_ids = full_topk_ids.clone()
-        self.full_topk_weight = full_topk_weight.clone()
+        self.router_logits = router_logits
 
-        # From prepare_kernels
-
-        self.rs_buffers: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-            [self.max_token_num, self.hidden_dim], self.input_dtype)
-        self.rs_buffer_ptrs: torch.Tensor = torch.tensor([t.data_ptr() for t in self.rs_buffers], device=self.device)
-
-        self.max_blocks = 65536
-        self.sync_buf = pynvshmem.nvshmem_create_tensor([self.max_blocks * self.num_ranks], torch.int32)
-        self.sync_buf.fill_(0)
-
-        # stream
-        self.scatter_stream = torch.cuda.Stream()
-        self.reduce_stream = torch.cuda.Stream()
-
-        # Setup metadata for kernel launch
-        RS_BLOCK_M = self.max_token_num // self.num_ranks
-        RS_BLOCK_N = self.hidden_dim
-        GEMM_BLOCK_M = self.moe_block_size
-        GEMM_BLOCK_N = 128
-        GEMM_BLOCK_K = 32
-
-        self.dataflow_config = get_dataflowconfig(GEMM_BLOCK_M, GEMM_BLOCK_N, GEMM_BLOCK_K, 8, 4, 4, RS_BLOCK_M,
-                                                  RS_BLOCK_N)
-
-        # initialize barriers
-        with torch.device(torch.cuda.current_device()):
-
-            # gemm_scatter
-
-            self.barriers_gemm_scatter_counter: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-                [self.num_ranks, 1], torch.int32)
-
-            self.barriers_gemm_scatter_counter_ptrs = torch.tensor(
-                [ptr.data_ptr() for ptr in self.barriers_gemm_scatter_counter]).cuda()
-
-            self.barriers_gemm_scatter_ready: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-                [self.num_ranks, 1], torch.uint64)
-
-            self.barriers_gemm_scatter_ready_ptrs = torch.tensor(
-                [ptr.data_ptr() for ptr in self.barriers_gemm_scatter_ready]).cuda()
-
-            self.barrier_gemm_scatter_counter = self.barriers_gemm_scatter_counter[self.rank]
-            self.barrier_gemm_scatter_ready = self.barriers_gemm_scatter_ready[self.rank]
-
-            self.barrier_gemm_scatter_counter.zero_()
-            self.barrier_gemm_scatter_ready.zero_()
-
-            # scatter_reduce
-
-            self.barriers_scatter_reduce_counter: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-                [self.num_ranks, 1], torch.int32)
-
-            self.barriers_scatter_reduce_counter_ptrs = torch.tensor(
-                [ptr.data_ptr() for ptr in self.barriers_scatter_reduce_counter]).cuda()
-
-            self.barriers_scatter_reduce_ready: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-                [self.num_ranks, 1], torch.uint64)
-
-            self.barriers_scatter_reduce_ready_ptrs = torch.tensor(
-                [ptr.data_ptr() for ptr in self.barriers_scatter_reduce_ready]).cuda()
-
-            self.barrier_scatter_reduce_counter = self.barriers_scatter_reduce_counter[self.rank]
-            self.barrier_scatter_reduce_ready = self.barriers_scatter_reduce_ready[self.rank]
-
-            self.barrier_scatter_reduce_counter.zero_()
-            self.barrier_scatter_reduce_ready.zero_()
+        self.ctx = create_moe_rs_context(
+            self.pg,
+            self.local_rank,
+            self.world_size,
+            self.local_world_size,
+            self.max_token_num,
+            self.hidden_dim,
+            self.num_experts,
+            self.topk,
+            self.input_dtype,
+            self.output_dtype,
+            self.device,
+            self.moe_block_size,
+            self.router_logits,
+        )
 
     def forward(self, intermediate_states, w):
-        final_output_buffer = torch.zeros(
-            (self.max_token_num * self.topk, self.hidden_dim),
-            dtype=self.output_dtype,
-            device=self.device,
-        )
         assert hasattr(self, "ctx") and self.ctx is not None
-        num_tokens_per_rank = self.ctx.num_tokens_per_rank
-        num_tokens = num_tokens_per_rank * self.num_ranks
+        num_tokens_per_rank = self.ctx.precompute_ctx.num_tokens_per_rank
+        num_tokens = num_tokens_per_rank * self.world_size
 
-        self.dataflow_config.RS_BLOCK_M = num_tokens // self.num_ranks
+        self.ctx.dataflow_config.RS_BLOCK_M = num_tokens // self.world_size
 
-        moe_reduce_rs_intra_node(
+        output = moe_reduce_rs(
             self.rank,
-            self.num_ranks,
+            self.world_size,
+            self.local_world_size,
             intermediate_states,
-            self.full_topk_ids,
-            self.full_topk_weight,
             w,
-            final_output_buffer,
-            self.rs_buffers,
-            self.rs_buffer_ptrs,
-            self.scatter_stream,
-            self.reduce_stream,
-            self.barrier_gemm_scatter_counter,
-            self.barriers_gemm_scatter_ready_ptrs,
-            self.barrier_gemm_scatter_ready,
-            self.barrier_scatter_reduce_counter,
-            self.barriers_scatter_reduce_ready_ptrs,
-            self.barrier_scatter_reduce_ready,
-            self.sync_buf,
-            self.dataflow_config,
             self.ctx,
             dump_ir=False,
             debug_sync=self.debug_sync,
-            bypass_comm=False,
-            no_input_scatter=self.no_intermediate_scatter,
         )
-        # barrier_all_on_stream(self.rank, self.num_ranks, self.sync_buf, torch.cuda.current_stream())
-        return final_output_buffer[self.rank * num_tokens_per_rank:(self.rank + 1) * num_tokens_per_rank, :]
+
+        return output
 
 
 def parse_args():
@@ -333,7 +257,6 @@ def parse_args():
     parser.add_argument("--profile", default=False, action="store_true", help="dump torch.profiler.profile")
     parser.add_argument("--check", default=False, action="store_true", help="correctness check")
     parser.add_argument("--debug_sync", default=False, action="store_true", help="sync between compute and comm")
-    parser.add_argument("--no_intermediate_scatter", default=False, action="store_true")
 
     parser.add_argument("--seed", type=int, default=42)
 
@@ -380,7 +303,6 @@ if __name__ == "__main__":
     pynvshmem.nvshmem_barrier_all()
     torch.cuda.synchronize()
 
-    # bench_moe_reduce_rs_tensor_parallel(TP_GROUP, args.M // WORLD_SIZE, args.N, args.K, args.E, args.TOPK, args)
     num_tokens_per_rank = args.M // WORLD_SIZE
     hidden_size = args.N
     intermediate_size = args.K
@@ -398,7 +320,6 @@ if __name__ == "__main__":
     rank = TP_GROUP.rank()
     world_size = TP_GROUP.size()
 
-    no_intermediate_scatter = args.no_intermediate_scatter
     debug_sync = args.debug_sync
     check = args.check
 
@@ -412,31 +333,18 @@ if __name__ == "__main__":
 
         moe_block_size = 128
 
-        ctx = create_moe_rs_context(
+        module = MoEReduceRSTensorParallel(
             TP_GROUP,
-            world_size,
-            num_experts,
-            topk,
-            input_dtype,
-            device,
-            moe_block_size,
-            router_logits,
-        )
-
-        module = MoEReduceRSTensorParallelIntraNode(
-            TP_GROUP,
+            LOCAL_WORLD_SIZE,
             hidden_size,
             intermediate_size,
             num_experts,
             topk,
-            ctx,
-            ctx.full_topk_ids,
-            ctx.full_topk_weight,
+            router_logits,
             max_token_num,
             input_dtype=input_dtype,
             output_dtype=output_dtype,
             device=device,
-            no_intermediate_scatter=no_intermediate_scatter,
             debug_sync=debug_sync,
         )
 
@@ -446,8 +354,7 @@ if __name__ == "__main__":
             intermediate_size,
             num_experts,
             topk,
-            ctx.full_topk_ids,
-            ctx.full_topk_weight,
+            router_logits,
             max_token_num,
             input_dtype=input_dtype,
             output_dtype=output_dtype,
