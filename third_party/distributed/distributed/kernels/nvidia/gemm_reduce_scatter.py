@@ -162,6 +162,8 @@ def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dt
     sync_buf = pynvshmem.nvshmem_create_tensor([
         local_world_size,
     ], torch.int32)
+    sync_buf.fill_(0)
+    barrier_all_on_stream(torch.cuda.current_stream())
 
     p2p_stream: torch.cuda.Stream = torch.cuda.Stream(priority=-1)
     reduction_stream: torch.cuda.Stream = torch.cuda.Stream(priority=-1)
