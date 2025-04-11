@@ -30,7 +30,7 @@ import triton.distributed.language as dl
 
 from typing import Optional, List
 import pynvshmem
-from triton.distributed.kernels.nvidia.common_ops import wait_eq, set_signal
+from triton.distributed.kernels.nvidia.common_ops import wait_eq
 from triton.language.extra.cuda.language_extra import __syncthreads, tid, atomic_cas
 from triton.distributed.utils import CUDA_CHECK
 from triton.language.extra import libshmem_device
@@ -136,14 +136,13 @@ class ReduceScatter2DContext:
 
 
 def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dtype, overlap_with_gemm=True,
-                                num_reduction_sms=16) -> ReduceScatter2DContext:
+                                num_reduction_sms=15) -> ReduceScatter2DContext:
     """
         for num_reduction_sms: tunable param, 16 are enough for H800
             For H800, we overlap local reduce and inter-node p2p with intra-node scatter.
             The reduction kernel bandwidth is not a bottleneck if it exceeds 450GB, so only a few SMs are needed.
             For machines with higher intra_node bandwidth(e.g. H100), we may need to increase the number of SMs or redesign overlapping.
     """
-    nnodes = world_size // local_world_size
     assert world_size % local_world_size == 0
     assert max_M % world_size == 0
 
@@ -169,7 +168,7 @@ def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dt
     reduction_stream: torch.cuda.Stream = torch.cuda.Stream(priority=-1)
 
     num_sync_sms = 0
-    num_p2p_sms = nnodes - 1
+    num_p2p_sms = 1
     ctx = ReduceScatter2DContext(max_M=max_M, N=N, rank=rank, world_size=world_size, local_world_size=local_world_size,
                                  dtype=dtype, overlap_with_gemm=overlap_with_gemm, scatter_bufs=scatter_bufs,
                                  rs_per_node_bufs=rs_per_node_bufs, p2p_bufs=p2p_bufs, signal_bufs=signal_bufs,
@@ -232,37 +231,29 @@ def create_gemm_rs_context(max_M, N, rank, world_size, local_world_size, output_
 ################### triton kernel ###################
 @triton.jit
 def kernel_inter_node_p2p_for_same_local_rank(
+    offset,
     local_world_size,
     M_per_rank,
     N,
     input,  # [M, N]
     output,  # [M, N]
-    rs_per_node_signal,
     elem_size: tl.constexpr,
 ):
-    pid = tl.program_id(axis=0)
     rank = dl.rank()
     world_size = dl.num_ranks()
     node_id = rank // local_world_size
     nnodes = world_size // local_world_size
     local_rank = rank % local_world_size
-    num_pid = tl.num_programs(axis=0)
     nelem_per_rank = M_per_rank * N
 
-    for i in range(pid, nnodes - 1, num_pid):
-        remote_node_id = (i + 1 + node_id) % nnodes
-        remote_rank = local_rank + remote_node_id * local_world_size
-        libshmem_device.signal_wait_until(
-            rs_per_node_signal + remote_node_id,
-            libshmem_device.NVSHMEM_CMP_EQ,
-            1,
-        )
-        libshmem_device.putmem_block(
-            output + node_id * nelem_per_rank,
-            input + remote_node_id * nelem_per_rank,
-            nelem_per_rank * elem_size,
-            remote_rank,
-        )
+    remote_node_id = (offset + 1 + node_id) % nnodes
+    remote_rank = local_rank + remote_node_id * local_world_size
+    libshmem_device.putmem_block(
+        output + node_id * nelem_per_rank,
+        input + remote_node_id * nelem_per_rank,
+        nelem_per_rank * elem_size,
+        remote_rank,
+    )
 
 
 @triton.jit
@@ -593,13 +584,13 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
     local_rank = ctx.local_rank
     reduction_stream = ctx.reduction_stream
     num_reduction_sms = ctx.num_reduction_sms
-    M, _ = input.shape
+    M, N = input.shape
     M_per_rank = M // world_size
     M_per_node = M_per_rank * local_world_size
     nnodes = ctx.nnodes
     node_id = ctx.node_id
     rs_per_node_buf = ctx.rs_per_node_buf
-    rs_per_node_signal_buf = ctx.rs_per_node_signal_buf
+    p2p_buf = ctx.p2p_buf
     with torch.cuda.stream(stream):
         for n in range(0, nnodes):
             cur_node_id = (node_id + n + 1) % nnodes
@@ -616,48 +607,29 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
             reduction_stream.wait_stream(stream)
             ring_reduce(scatter_bufs_intra_node[local_rank], rs_buf_cur_node, local_rank, local_world_size,
                         reduction_stream, num_sms=-1 if n == nnodes - 1 else num_reduction_sms)
-            set_signal(rs_per_node_signal_buf[cur_node_id].data_ptr(), 1, reduction_stream, require_i64=True)
 
-    return rs_per_node_buf[:M_per_rank * nnodes]
+            # inter node p2p
+            if nnodes > 1:
+                with torch.cuda.stream(reduction_stream):
+                    if n == nnodes - 1:
+                        p2p_buf[M_per_rank * node_id:M_per_rank * (node_id + 1)].copy_(
+                            rs_per_node_buf[M_per_rank * node_id:M_per_rank * (node_id + 1)])
+                    else:
+                        grid = lambda META: (ctx.num_p2p_sms, )
+                        kernel_inter_node_p2p_for_same_local_rank[grid](
+                            n,
+                            local_world_size,
+                            M_per_rank,
+                            N,
+                            rs_per_node_buf,
+                            p2p_buf,
+                            input.dtype.itemsize,
+                            num_warps=16,
+                        )
 
-
-def p2p_inter_node(input, stream, ctx: ReduceScatter2DContext):
-    nnodes = ctx.nnodes
-    node_id = ctx.node_id
-    num_p2p_sms = ctx.num_p2p_sms
-    local_world_size = ctx.local_world_size
-    rs_per_node_signal_buf = ctx.rs_per_node_signal_buf
-    p2p_buf = ctx.p2p_buf
+    stream.wait_stream(reduction_stream)
     if nnodes == 1:
-        wait_eq(
-            rs_per_node_signal_buf[node_id].data_ptr(),
-            1,
-            stream,
-            require_i64=True,
-        )
-        return input
-    M, N = input.shape
-    M_per_rank = M // nnodes
-    with torch.cuda.stream(stream):
-        grid = lambda META: (num_p2p_sms, )
-        kernel_inter_node_p2p_for_same_local_rank[grid](
-            local_world_size,
-            M_per_rank,
-            N,
-            input,
-            p2p_buf,
-            rs_per_node_signal_buf,
-            input.dtype.itemsize,
-            num_warps=16,
-        )
-        wait_eq(
-            rs_per_node_signal_buf[node_id].data_ptr(),
-            1,
-            stream,
-            require_i64=True,
-        )
-        p2p_buf[M_per_rank * node_id:M_per_rank * (node_id + 1)].copy_(input[M_per_rank * node_id:M_per_rank *
-                                                                             (node_id + 1)])
+        return rs_per_node_buf[:M_per_rank * nnodes]
     return p2p_buf[:M_per_rank * nnodes]
 
 
@@ -715,11 +687,9 @@ def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
     M_per_rank = M // ctx.world_size
     ctx.p2p_stream.wait_stream(stream)
     rs_resutl_per_node = reducer_scatter_for_each_node(input, stream, ctx)
-    after_p2p = p2p_inter_node(rs_resutl_per_node, ctx.p2p_stream, ctx)
-    stream.wait_stream(ctx.p2p_stream)
     barrier_all_on_stream(stream)
     output = torch.empty((M_per_rank, N), dtype=input.dtype, device=input.device)
-    ring_reduce(after_p2p, output, ctx.node_id, ctx.nnodes, stream)
+    ring_reduce(rs_resutl_per_node, output, ctx.node_id, ctx.nnodes, stream)
     return output
 
 
