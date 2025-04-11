@@ -50,6 +50,21 @@ def __syncthreads(_builder=None):
     )
 
 
+@core.extern
+def __fence(scope: core.constexpr = core.constexpr("gpu"), _builder=None):
+    return core.inline_asm_elementwise(
+        asm=f"""
+        fence.sc.{scope.value};
+        """,
+        constraints="=r",  # force have a return value, even not used.
+        args=[],
+        dtype=tl.uint32,
+        is_pure=False,  # no optimize this!
+        pack=1,
+        _builder=_builder,
+    )
+
+
 # @patch_triton_module
 @tl.core.extern
 def __tid__(axis: core.constexpr, _builder=None):
@@ -95,6 +110,21 @@ def load_v2_b64(ptr, _builder=None):
 
 
 @tl.core.extern
+def load_u32(ptr, _builder=None):
+    return tl.inline_asm_elementwise(
+        asm="""
+        ld.volatile.global.u32 $0, [$1];
+        """,
+        constraints=("=r,l"),  # no use output, which is threadId.x
+        args=[ptr],
+        dtype=(tl.int32),
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
+@tl.core.extern
 def store_v2_u32(ptr, val0, val1, _builder=None):
     return tl.inline_asm_elementwise(
         asm="""
@@ -131,6 +161,22 @@ def multimem_st_b32(ptr, val0, _builder=None):
     return tl.inline_asm_elementwise(
         asm="""
         multimem.st.global.b32 [$1], $2;
+        mov.u32 $0, 0;
+        """,
+        constraints=("=r,l,r"),  # no use output
+        args=[ptr, val0],
+        dtype=tl.int32,
+        is_pure=False,
+        pack=1,
+        _builder=_builder,
+    )
+
+
+@tl.core.extern
+def store_u32(ptr, val0, _builder=None):
+    return tl.inline_asm_elementwise(
+        asm="""
+        st.volatile.global.u32 [$1], $2;
         mov.u32 $0, 0;
         """,
         constraints=("=r,l,r"),  # no use output
@@ -398,6 +444,155 @@ def atomic_add(barrier_ptr, value, scope: core.constexpr, semantic: core.constex
 
 # @patch_triton_module
 @tl.core.extern
+def __atomic_add_per_warp(
+    ptr,
+    value,
+    scope: core.constexpr = "gpu",
+    semantic: core.constexpr = "relaxed",
+    _builder=None,
+):
+    if ptr.dtype.element_ty == tl.int32:
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.int32,
+                "value must be of the same dtype with ptr: int32",
+                _builder=_builder,
+            )
+        return tl.inline_asm_elementwise(
+            asm=f"""{{
+                    .reg .b32 %tmp_reg<3>;
+                    .reg .pred %tmp_p<2>;  
+                    mov.u32         %tmp_reg0, %laneid;
+                    setp.ne.s32     %tmp_p0, %tmp_reg0, 0;
+                    @%tmp_p0 bra        L__BB0_2;
+                    atom.{semantic.value}.{scope.value}.global.add.s32 %tmp_reg1, [$1], $2;
+                    
+                    L__BB0_2:
+
+                    shfl.sync.idx.b32       %tmp_reg2|%tmp_p1, %tmp_reg1, 0, 31, -1;
+                    mov.u32    $0, %tmp_reg2;
+                }}""",
+            constraints=("=r,l,r"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.int32,
+            _builder=_builder,
+        )
+    if ptr.dtype.element_ty == tl.uint32:
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.uint32,
+                "value must be of the same dtype with ptr: uint32",
+                _builder=_builder,
+            )
+        return tl.inline_asm_elementwise(
+            asm=f"""{{
+                    .reg .b32 %tmp_reg<3>;
+                    .reg .pred %tmp_p<2>;  
+                    mov.u32         %tmp_reg0, %tid.x;
+                    setp.ne.s32     %tmp_p0, %tmp_reg0, 0;
+                    @%tmp_p0 bra        L__BB0_2;
+                    atom.{semantic.value}.{scope.value}.global.add.u32 $0, [$1], $2;
+                    
+                    L__BB0_2:
+
+                    shfl.sync.idx.b32       %tmp_reg2|%tmp_p1, %tmp_reg1, 0, 31, -1;
+                    mov.u32    $0, %tmp_reg2;
+                }}""",
+            constraints=("=r,l,r"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.uint32,
+            _builder=_builder,
+        )
+    elif ptr.dtype.element_ty == tl.int64:
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.int64,
+                "value must be of the same dtype with ptr: int64",
+                _builder=_builder,
+            )
+        return tl.inline_asm_elementwise(
+            asm=f"""{{
+                    .reg .b32 %tmp_reg<3>;
+                    .reg .pred %tmp_p<2>;  
+                    mov.u32         %tmp_reg0, %tid.x;
+                    setp.ne.s32     %tmp_p0, %tmp_reg0, 0;
+                    @%tmp_p0 bra        L__BB0_2;
+                    atom.{semantic.value}.{scope.value}.global.add.s64 $0, [$1], $2;
+                    
+                    L__BB0_2:
+
+                    shfl.sync.idx.b32       %tmp_reg2|%tmp_p1, %tmp_reg1, 0, 31, -1;
+                    mov.u32    $0, %tmp_reg2;
+                }}""",
+            constraints=("=l,l,l"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.int64,
+            _builder=_builder,
+        )
+    elif ptr.dtype.element_ty == tl.uint64:
+        if not isinstance(value, tl.constexpr):
+            tl.static_assert(
+                value.dtype == tl.uint64,
+                "value must be of the same dtype with ptr: uint64",
+                _builder=_builder,
+            )
+        return tl.inline_asm_elementwise(
+            asm=f"""{{
+                    .reg .b32 %tmp_reg<3>;
+                    .reg .pred %tmp_p<2>;  
+                    mov.u32         %tmp_reg0, %tid.x;
+                    setp.ne.s32     %tmp_p0, %tmp_reg0, 0;
+                    @%tmp_p0 bra        L__BB0_2;
+                    atom.{semantic.value}.{scope.value}.global.add.u64 $0, [$1], $2;
+                    
+                    L__BB0_2:
+
+                    shfl.sync.idx.b32       %tmp_reg2|%tmp_p1, %tmp_reg1, 0, 31, -1;
+                    mov.u32    $0, %tmp_reg2;
+                }}""",
+            constraints=("=l,l,l"),
+            args=[
+                ptr,
+                value,
+            ],
+            is_pure=False,
+            pack=1,
+            dtype=core.uint64,
+            _builder=_builder,
+        )
+    else:
+        raise ValueError("unsupported dtype")
+
+
+@triton.jit
+def atomic_add_per_warp(barrier_ptr, value, scope: core.constexpr, semantic: core.constexpr):
+    """custom atomic_add implementation using extern_elementwise
+
+    :param scope: one of "gpu", "sys". default to "gpu"
+    :param semantic: one of "release", "acquire", "relaxed", "acq_rel". default to "relaxed"
+    :returns: the result of atomic_add
+    :rtype: int
+    """
+    return __atomic_add_per_warp(barrier_ptr, value, scope, semantic)
+
+
+# @patch_triton_module
+@tl.core.extern
 def __atomic_store(
     ptr,
     value,
@@ -611,6 +806,7 @@ def atomic_cas(
 
 __all__ = [
     "__syncthreads",
+    "__fence",
     "tid",
     "ntid",
     "wait_eq",
@@ -619,6 +815,7 @@ __all__ = [
     "ld_acquire",
     "ld_u32_acquire",
     "atomic_add",
+    "atomic_add_per_warp",
     "atomic_store",
     "__shfl_sync_i32",
     "__shfl_up_sync_i32",
@@ -627,4 +824,6 @@ __all__ = [
     "ld",
     "ffs",
     "atomic_cas",
+    "load_u32",
+    "store_u32",
 ]

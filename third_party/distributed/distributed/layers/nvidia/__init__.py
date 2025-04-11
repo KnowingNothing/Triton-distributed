@@ -24,5 +24,6 @@
 ################################################################################
 from .sp_flash_decode_layer import SpGQAFlashDecodeAttention
 from .low_latency_allgather_layer import AllGatherLayer
+from .ep_a2a_layer import EPAll2AllLayer
 
-__all__ = ["SpGQAFlashDecodeAttention", "AllGatherLayer"]
+__all__ = ["SpGQAFlashDecodeAttention", "AllGatherLayer", "EPAll2AllLayer"]
