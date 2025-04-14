@@ -36,18 +36,7 @@ from triton.language.extra.cuda.libdevice import ffs
 # @patch_triton_module
 @core.extern
 def __syncthreads(_builder=None):
-    return core.inline_asm_elementwise(
-        asm="""
-        bar.sync 0;
-        mov.u32 $0, 0;
-        """,
-        constraints="=r",  # force have a return value, even not used.
-        args=[],
-        dtype=tl.uint32,
-        is_pure=False,  # no optimize this!
-        pack=1,
-        _builder=_builder,
-    )
+    return tl.tensor(_builder.create_barrier(), tl.void)
 
 
 @core.extern
