@@ -22,34 +22,41 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
+"""
+Low Latency All-to-All Communication
+====================================
+In this tutorial, we demonstrate how to implement the All-to-All communication
+paradigm in Expert Parallelism (EP) for MoE models using Triton-distributed.
 
-# In this tutorial, we demonstrate how to implement the All-to-All communication
-# paradigm in Expert Parallelism (EP) for MoE models using Triton-distributed.
-#
-# First, let’s quickly review the EP workflow:
-# In MoE, the `E` experts are distributed across `N` devices (EP ranks).
-# For simplicity, we assume that `N` divides `E` evenly, so experts are distributed
-# uniformly. For example, when `E = 128` and `N = 32`, each device will handle 4 experts.
-#
-# During inference with EP, each device is assigned a subset of tokens, as determined
-# by the MoE router module. The router on each device generates a tensor of
-# shape `[num_tokens, topk]`, containing the indices of the top `k` experts selected
-# for each token. The experts chosen for a token may reside on other devices,
-# necessitating communication to send the tokens to the appropriate devices.
-# Similarly, if other devices have tokens that select experts located on the current device,
-# those tokens need to be sent to the current device as well. This process is called Dispatch.
-#
-# After the tokens are processed by their corresponding experts, they need to be
-# returned to their original devices. This operation mirrors Dispatch and is referred
-# to as Combine. From a communication perspective, both Dispatch and Combine are
-# essentially All-to-All collective communication operations.
-#
-# Next, we demonstrate how to implement an efficient All-to-All operation in Triton-distributed with minimal code.
-#
-# Triton-distributed provides a programming model that allows fine-grained control
-# over data movement between devices, optimizing hardware utilization.
-# At the core of our implementation are low-level primitives that manage the communication logic.
+First, let's quickly review the EP workflow:
+In MoE, the `E` experts are distributed across `N` devices (EP ranks).
+For simplicity, we assume that `N` divides `E` evenly, so experts are distributed
+uniformly. For example, when `E = 128` and `N = 32`, each device will handle 4 experts.
 
+During inference with EP, each device is assigned a subset of tokens, as determined
+by the MoE router module. The router on each device generates a tensor of
+shape `[num_tokens, topk]`, containing the indices of the top `k` experts selected
+for each token. The experts chosen for a token may reside on other devices,
+necessitating communication to send the tokens to the appropriate devices.
+Similarly, if other devices have tokens that select experts located on the current device,
+those tokens need to be sent to the current device as well. This process is called Dispatch.
+
+After the tokens are processed by their corresponding experts, they need to be
+returned to their original devices. This operation mirrors Dispatch and is referred
+to as Combine. From a communication perspective, both Dispatch and Combine are
+essentially All-to-All collective communication operations.
+
+Next, we demonstrate how to implement an efficient All-to-All operation in Triton-distributed with minimal code.
+
+Triton-distributed provides a programming model that allows fine-grained control
+over data movement between devices, optimizing hardware utilization.
+At the core of our implementation are low-level primitives that manage the communication logic.
+
+.. code-block:: bash
+
+    ./third_party/distributed/launch.sh  ./third_party/distributed/tutorials/07-low-latency-all-to-all.py
+
+"""
 import torch
 import torch.distributed
 import triton
@@ -113,7 +120,7 @@ def all_to_all_kernel(
 ):
     """
     All-to-All kernel for the Dispatch and Combine phases.
-    
+
     - MODE: Determines whether the operation is Dispatch (0) or Combine (1).
     - ONLINE_QUANT_FP8: A flag indicating whether FP8 quantization is used.
     - FP8_GSIZE: The group size for FP8 quantization.
@@ -288,14 +295,14 @@ class AllToAllContext:
             - max_m: max number of tokens per rank
 
 
-        - In this context, we pre-define the max number of tokens that can be sent from 
-            one device `max_m`, which is typically 128 or 256, and reserve corresponding send/receive buffer size. 
+        - In this context, we pre-define the max number of tokens that can be sent from
+            one device `max_m`, which is typically 128 or 256, and reserve corresponding send/receive buffer size.
 
-        - We also need to allocate split_buffer and send splits information to record 
+        - We also need to allocate split_buffer and send splits information to record
             the number of tokens received by each expert for subsequent calculations and communication.
 
         - The signal buffer is used to notify the target rank that the data is already ready.
-            `pynvshmem.nvshmem_create_tensor` is the low-level API to create shared memory 
+            `pynvshmem.nvshmem_create_tensor` is the low-level API to create shared memory
             between different devices (see [nvshmem](https://docs.nvidia.com/nvshmem/api/gen/mem-model.html#memory-model)).
 
         - We record `call_count` of the kernel as the unique signal to notify target rank.

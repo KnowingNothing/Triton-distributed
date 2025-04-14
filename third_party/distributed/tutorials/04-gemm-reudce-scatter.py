@@ -1,6 +1,30 @@
+################################################################################
+#
+# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+################################################################################
 """
 Gemm reduce-scatter
-=====================
+===================
 In this tutorial, you will write a Multi Node Gemm reduce-scatter operation that is significantly faster
 than PyTorch's native op.
 
@@ -78,7 +102,7 @@ class ReduceScatter2DContext:
     num_p2p_sms: int
     num_reduction_sms: int
 
-    # preprocess to redeuce cpu overhead
+    # preprocess to reduce cpu overhead
     # comm barriers
     scatter_signal_bufs: List[torch.Tensor] = dataclasses.field(init=False)
     rs_per_node_signal_bufs: List[torch.Tensor] = dataclasses.field(init=False)
@@ -237,7 +261,7 @@ def create_gemm_rs_context(max_M, N, rank, world_size, local_world_size, output_
 
 ################### triton kernel ###################
 """
-This kernel performs P2P communication, sending corresponding data 
+This kernel performs P2P communication, sending corresponding data
 to the GPU with the same local rank on node `cur_node_id + offset + 1`.
 """
 
@@ -270,8 +294,8 @@ def kernel_inter_node_p2p_for_same_local_rank(
 
 
 """
-The difference between this kernel and a normal reduction operation lies in the accumulation order. 
-In a normal reduction, the accumulation starts from the 0th row. 
+The difference between this kernel and a normal reduction operation lies in the accumulation order.
+In a normal reduction, the accumulation starts from the 0th row.
 This kernel starts the accumulation from the `offset`.
 """
 
@@ -322,8 +346,8 @@ def kernel_ring_reduce(
 
 
 """
-This function is used for intra-node barrier synchronization. 
-It is based on the Compare-And-Swap(CAS) operation to ensure that 
+This function is used for intra-node barrier synchronization.
+It is based on the Compare-And-Swap(CAS) operation to ensure that
 all GPUs within the current node reach the barrier.
 """
 
@@ -477,9 +501,9 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
         for n in range(0, nnodes):
             """
             Node-level swizzle: Each node perform intra-node reduce-scatter start from the next node of the current.
-            In this way, the P2P communication volume of each node is balanced, and the last intra-node reduce-scatter operation 
+            In this way, the P2P communication volume of each node is balanced, and the last intra-node reduce-scatter operation
             is performed on the current node without the need for inter-node communication.
-            
+
             For time start from 0 to nnode - 1, the communication order between nodes:
                 time 0: 0->1, 1->2, 2->3, 3->0
                 time 1: 0->2, 1->3, 2->0, 3->1
@@ -540,9 +564,9 @@ def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
     ctx.p2p_stream.wait_stream(stream)
     """
     step1:
-        Leveraging the characteristics of reduce-scatter, we first partition the input data according to the target nodes for communication. 
-        For the data send to each node, we perform an intra-node reduce-scatter operation within the current node. 
-        Finally, we use P2P communication to send the data to the same local rank on the target node. 
+        Leveraging the characteristics of reduce-scatter, we first partition the input data according to the target nodes for communication.
+        For the data send to each node, we perform an intra-node reduce-scatter operation within the current node.
+        Finally, we use P2P communication to send the data to the same local rank on the target node.
         This can reduce the inter-node communication volume by a factor of local_world_size.
     """
     rs_resutl_per_node = reducer_scatter_for_each_node(input, stream, ctx)
@@ -666,9 +690,9 @@ def kernel_gemm_rs_producer_persistent(
             m_rank = pid_m // num_pid_m_per_rank
             pid_m_intra_rank = pid_m - m_rank * num_pid_m_per_rank
             """
-            Difference 1: Based on the m dimension, calculate the target rank where the output data will be scattered to. 
-            Then, perform a swizzle operation according to the local rank and the node_id of the current GPU. 
-            This ensures that during communication, the data sent and received by each rank is balanced, maximizing the utilization of all communication bandwidth.            
+            Difference 1: Based on the m dimension, calculate the target rank where the output data will be scattered to.
+            Then, perform a swizzle operation according to the local rank and the node_id of the current GPU.
+            This ensures that during communication, the data sent and received by each rank is balanced, maximizing the utilization of all communication bandwidth.
             """
             # original rank and node_id
             m_node_id = m_rank // local_world_size
@@ -703,7 +727,7 @@ def kernel_gemm_rs_producer_persistent(
                 c_desc.store([offs_am, offs_bn], c)
             """
             Difference 2: # Compute the rank that the current tile will be sent
-            If the current tile is the last one to complete for that rank, set its barrier to 1 (indicating the ready state). 
+            If the current tile is the last one to complete for that rank, set its barrier to 1 (indicating the ready state).
             the reduce-scatter on another stream waits for the barrier to be ready and then performs the scatter operation.
             """
             counter_start = offs_am // M_per_rank
@@ -790,8 +814,8 @@ def gemm_rs_multi_node_persistent_op(input, weight, ctx: GEMMReduceScatterTensor
     orig_M = input.shape[0]
     orig_M_per_rank = orig_M // world_size
     """
-        Pad the `input` tensor so that all data within a output tile is associated with a single rank. 
-        It enables the scatter operation to wait and send data to only one rank at a time, 
+        Pad the `input` tensor so that all data within a output tile is associated with a single rank.
+        It enables the scatter operation to wait and send data to only one rank at a time,
         which significantly enhances communication efficiency and simplifies control logic.
     """
     input = padded_to_BLOCK_M(input, world_size, ctx.BLOCK_M)
@@ -810,7 +834,7 @@ def gemm_rs_multi_node_persistent_op(input, weight, ctx: GEMMReduceScatterTensor
     gemm_out = ctx.get_gemm_out_buf(input)
     scatter_signal = ctx.rs_ctx.scatter_signal_buf
     """
-    Perform the GEMM operation. The output tiles sent to different ranks each correspond to a barrier. 
+    Perform the GEMM operation. The output tiles sent to different ranks each correspond to a barrier.
     If the computation of the corresponding tiles is completed, set the barrier to 1.
     """
     gemm_rs_producer_persistent(input, weight, gemm_out, scatter_signal, workspace, world_size, local_world_size,
@@ -818,7 +842,7 @@ def gemm_rs_multi_node_persistent_op(input, weight, ctx: GEMMReduceScatterTensor
                                 BLOCK_SIZE_K=ctx.BLOCK_K, GROUP_SIZE_M=ctx.GROUP_M, STAGES=ctx.stages)
     """
     Perform reduce-scatter on the rs_stream, overlapping with the gemm operation.
-    This implementation is based on tile level barriers, enabling the overlap of 
+    This implementation is based on tile level barriers, enabling the overlap of
     communication and computation. Once the data corresponding to each barrier is
     computed(barrier[wait_rank] = 1), the corresponding reduce-scatterwill be perform.
     """
