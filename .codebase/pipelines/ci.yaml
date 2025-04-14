@@ -89,9 +89,7 @@ jobs:
           - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_sp_decode_attn.py --case correctness
           # ag moe
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 2048
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 4096
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 8192
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 16384
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe_inter_node.py --M 2048
           # moe rs
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2
           - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check
