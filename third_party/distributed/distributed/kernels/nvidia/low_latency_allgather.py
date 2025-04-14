@@ -47,7 +47,7 @@ from triton.language.extra.cuda.language_extra import (
 )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["rank", "signal_target"])
 def _forward_pull_kernel(symm_ptr, bytes_per_rank, symm_flag, world_size, rank, signal_target):
     pid = tl.program_id(0)
     thread_idx = tid(0)
@@ -73,7 +73,7 @@ def _forward_pull_kernel(symm_ptr, bytes_per_rank, symm_flag, world_size, rank, 
         )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["rank", "signal_target"])
 def _forward_push_2d_kernel(symm_ptr, bytes_per_rank, symm_flag, symm_bar, nnodes, world_size, rank, signal_target):
     local_world_size = world_size // nnodes
     local_rank = rank % local_world_size
@@ -146,7 +146,7 @@ def _recv_ll_block(dest_ptr, src_ptr, num_ints, ll_flag):
         store_v2_u32(dest_ptr + n * 2, data1, data2)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["ll_flag"])
 def _pack_ll_block(dest_ptr, src_ptr, num_ints, ll_flag, BLOCK_SIZE: tl.constexpr):
     """split src/dest outside of _recv_ll. this function is designed for a threadblock
 
@@ -186,7 +186,7 @@ def _recv_ll_and_multimem_st_block(dest_ptr, src_ptr, num_ints, ll_flag):
         multimem_st_v2_b32(dest_mc_ptr + n * 2, data1, data2)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["ll_flag"])
 def _recv_ll_and_multimem_st_ll_block(dest_ptr, src_ptr, num_ints, ll_flag):
     """split src/dest outside of _recv_ll. this function is designed for a threadblock
 
@@ -261,7 +261,7 @@ def broadcast_naive_block(dst_ptr, src_ptr, nbytes):
         multimem_st_b64(dst_mc_ptr + n * 16 + 8, val1)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["rank", "signal_target"])
 def _forward_push_2d_ll_multimem_kernel(
     symm_ptr,
     bytes_per_rank,
@@ -338,7 +338,7 @@ def _forward_push_2d_ll_multimem_kernel(
         )  # magic number here
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["rank", "signal_target"])
 def _forward_push_2d_ll_kernel(
     symm_ptr,
     bytes_per_rank,
