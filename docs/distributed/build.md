@@ -6,6 +6,12 @@
 - Torch 2.4.1
 - Clang 19
 
+#### if for AMD GPU:
+- ROCM 6.3.0
+- Torch 2.4.1 with ROCM support
+
+
+
 Dependencies with other versions may also work well, but this is not guaranteed. If you find any problem in installing, please tell us in Issues.
 
 #### Steps:
@@ -19,6 +25,10 @@ Dependencies with other versions may also work well, but this is not guaranteed.
     pip3 install torch==2.4.1
     pip3 install black "clang-format==19.1.2" pre-commit ruff yapf==0.43
     pip3 install ninja cmake wheel pybind11 cuda-python==12.4 numpy chardet pytest
+    ```
+    for AMD GPU, use torch with rocm support and hip-python
+    ```sh
+    python3 -m pip install -i https://test.pypi.org/simple hip-python>=6.3.0
     ```
 4. Apply NVSHMEM fix
 (Disclaimer: This step is because of NVSHMEM license requirements, it is illegal to release any modified codes or patch.)
@@ -74,6 +84,8 @@ Dependencies with other versions may also work well, but this is not guaranteed.
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/llvm-project/build/lib
     ```
 
+    For ROCMSHMEM on AMD GPU, no explicit build required as the building process is integrated with Triton-distributed.
+
 6. Build Triton-distributed
     Then you can build Triton-distributed.
     ```sh
@@ -102,10 +114,19 @@ This example runs on a single node with 8 H800 GPUs.
 ```sh
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma
 ```
+For AMD CDNA3 GPUs:
+```sh
+bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_ag_gemm_intra_node.py 8192 53248 16384
+```
+
 #### GEMM ReduceScatter example on single node
 This example runs on a single node with 8 H800 GPUs.
 ```sh
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568
+```
+For AMD CDNA3 GPUs:
+```sh
+bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_gemm_rs_intra_node.py 8192 3584 14336
 ```
 #### NVSHMEM example in Triton-distributed
 ```sh
