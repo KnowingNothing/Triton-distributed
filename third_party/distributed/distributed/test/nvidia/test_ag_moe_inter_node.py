@@ -302,7 +302,7 @@ def perf_test(input_len, config):
 
     _, permute_perf = perf_func(sort_func, iters=100, warmup_iters=500)
     _, triton_perf = perf_func(triton_func, iters=100, warmup_iters=500)
-    _, torch_perf = perf_func(torch_func, iters=1, warmup_iters=1)
+    _, torch_perf = perf_func(torch_func, iters=100, warmup_iters=500)
 
     dist_print(
         f"RANK {tp_group.rank()} perf: compute permute {permute_perf} ms, dist-triton={triton_perf} ms, torch={torch_perf} ms; speedup={torch_perf/triton_perf}",
