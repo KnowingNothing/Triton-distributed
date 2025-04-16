@@ -425,8 +425,8 @@ def rowise_intranode_ag_scatter_group_gemm(
 
     current_stream.wait_stream(ag_stream)
     current_stream.wait_stream(group_gemm_stream)
-    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
     block_barriers[rank].zero_()
+    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
     return compiled
 
 
