@@ -25,12 +25,17 @@
 import triton
 import torch
 import triton.language as tl
+import triton.distributed.language as dl
 from triton.language.extra import libshmem_device
 from triton.distributed.utils import (
     CUDA_CHECK, )
 from cuda import cuda
 from triton.language.extra.cuda.language_extra import (
-    __syncthreads, )
+    tid,
+    __syncthreads,
+)
+
+import pynvshmem
 
 
 @tl.core.extern
@@ -115,6 +120,41 @@ def ld_acquire(barrier_ptr, scope: tl.constexpr = "gpu", _builder=None):
         pack=1,
         _builder=_builder,
     )
+
+
+@triton.jit
+def barrier_all_intra_node(local_world_size, comm_buf_ptr):
+    """
+    This function is used for intra-node barrier synchronization.
+    It is based on the Compare-And-Swap(CAS) operation to ensure that
+    all GPUs within the current node reach the barrier.
+    """
+    thread_id = tid(axis=0).to(tl.int32)
+    rank = dl.rank()
+    local_rank = rank % local_world_size
+    node_id = rank // local_world_size
+    rank_offset = node_id * local_world_size
+    if thread_id < local_world_size:
+        remote_ptr = dl.symm_at(comm_buf_ptr, thread_id + rank_offset)
+        while atomic_cas(remote_ptr + local_rank, 0, 1, "sys", "release") != 0:
+            pass
+        while (atomic_cas(comm_buf_ptr + thread_id, 1, 0, "sys", "acquire") != 1):
+            pass
+    __syncthreads()
+
+
+def barrier_all_on_stream(
+    stream,
+    is_intra_node=False,
+    barrier_all_buf=None,
+    local_world_size=0,
+):
+    if not is_intra_node:
+        pynvshmem.nvshmem_barrier_all_on_stream(stream.cuda_stream)
+    else:
+        assert barrier_all_buf is not None and local_world_size > 0
+        with torch.cuda.stream(stream):
+            barrier_all_intra_node[(1, )](local_world_size, barrier_all_buf)
 
 
 def wait_eq(ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=False):

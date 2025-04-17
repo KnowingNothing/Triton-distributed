@@ -598,7 +598,7 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
             scatter_bufs_intra_node, scatter_signal_buf_intra_node = ctx.get_scatter_bufs_and_signal_for_each_node(
                 input, cur_node_id)
             intra_node_scatter(input_intra_node, scatter_bufs_intra_node, scatter_signal_buf_intra_node, local_rank,
-                               stream)
+                               stream, overlap_with_gemm=ctx.overlap_with_gemm)
 
             # ring reduce intra node
             rs_buf_cur_node = rs_per_node_buf[M_per_rank * cur_node_id:(cur_node_id + 1) * M_per_rank]
