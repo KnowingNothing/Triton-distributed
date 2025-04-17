@@ -43,149 +43,156 @@ Feel free to contact us if you want to use Triton-distributed on your own hardwa
 
 ## Getting started
 ### Install Triton-distributed from source
-#### The best practice to use Triton-distributed:
-- Python 3.9 (suggest using virtual environment)
-- CUDA 12.4
-- Torch 2.4
 
-Dependencies with other versions may also work well, but this is not guaranteed. If you find any problem in installing, please tell us in Issues.
-
-#### Steps:
-1. Clone Triton-distributed to your own path (e.g., `/home/Triton-distributed`)
-2. Update submodules
-    ```sh
-    git submodule update --init --recursive
-    ```
-3. Install dependencies
-    ```sh
-    pip3 install torch==2.4
-    pip3 install black "clang-format==19.1.2" pre-commit ruff yapf==0.43
-    pip3 install ninja cmake wheel pybind11 cuda-python==12.4 numpy chardet pytest
-    ```
-4. Build
-    ```sh
-    cd /home/Triton-distributed
-    export USE_TRITON_DISTRIBUTED_AOT=0
-    pip3 install -e python --verbose --no-build-isolation
-    ```
-
-    If you want to use AOT, then
-    ```sh
-    export USE_TRITON_DISTRIBUTED_AOT=1
-    pip3 install -e python --verbose --no-build-isolation
-    ```
-    (Note: You have to first build non-AOT version before building AOT version)
-5. Setup environment variables (Do this step at the beginning every time you use Triton-distributed)
-    ```sh
-    cd /home/Triton-distributed
-    source scripts/setenv.sh
-    ```
-
-### Test your installation
-#### AllGather GEMM example on single node
-This example runs on a single node with 8 H800 GPUs.
-```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma
-```
-#### GEMM ReduceScatter example on single node
-This example runs on a single node with 8 H800 GPUs.
-```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568
-```
-#### NVSHMEM example in Triton-distributed
-```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_nvshmem_api.py
-```
+[Build Guide](docs/distributed/build.md)
 
 ### How to use Triton-distributed
 Triton-distributed provides a set of easy-to use primitives to support the development of distributed compute-communication overlapping kernels. The primitives are divided into low-level primitives and high-level primitives. Currently, we have released our low-level primitives, and we plan to release high-level primitives in future.
 
-All the primitives are exposed by `triton.distributed.language`
-#### Low-level primitives
-##### Context Querying Primitives
-```py
-rank(axis=-1, _builder=None)
-num_ranks(axis=-1, _builder=None)
-symm_at(ptr, rank, _builder=None)
+[Triton-distributed Primitives](docs/distributed/primitives.md)
 
-```
-##### Singal Control Primitives
-```py
-wait(barrierPtrs, numBarriers, scope: str, semantic: str, _builder=None)
-consume_token(value, token, _builder=None)
-notify(ptr, rank, signal=1, sig_op="set", comm_scope="inter_node", _builder=None)
-```
-##### NVSHMEM-related Primitives
-
-Besides the primitives, Triton-distributed also expose all the NVSHMEM primitives to Python, allowing users to program communication kernels purely in Python.
-
-All the NVSHMEM-related device-side primitives are exposed by `triton.language.extra.libshmem_device`
-```py
-my_pe()
-n_pes()
-int_p(dest, value, pe)
-remote_ptr(local_ptr, pe)
-barrier_all()
-barrier_all_block()
-barrier_all_warp()
-sync_all()
-sync_all_block()
-sync_all_warp()
-quiet()
-fence()
-getmem_nbi_block(dest, source, bytes, pe)
-getmem_block(dest, source, bytes, pe)
-getmem_nbi_warp(dest, source, bytes, pe)
-getmem_warp(dest, source, bytes, pe)
-getmem_nbi(dest, source, bytes, pe)
-getmem(dest, source, bytes, pe)
-putmem_block(dest, source, bytes, pe)
-putmem_nbi_block(dest, source, bytes, pe)
-putmem_warp(dest, source, bytes, pe)
-putmem_nbi_warp(dest, source, bytes, pe)
-putmem(dest, source, bytes, pe)
-putmem_nbi(dest, source, bytes, pe)
-putmem_signal_nbi(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal_nbi_block(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal_block(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal_nbi_warp(dest, source, bytes, sig_addr, signal, sig_op, pe)
-putmem_signal_warp(dest, source, bytes, sig_addr, signal, sig_op, pe)
-signal_op(sig_addr, signal, sig_op, pe)
-signal_wait_until(sig_addr, cmp_, cmp_val)
-```
-
-Using these primitives, users can program compute-communication kernels easily. For example, a ring-put example is shown here:
+Using these primitives, users can program communication kernels easily. For example, a low-latency AllToAll (with better latency than [DeepEP](https://github.com/deepseek-ai/DeepEP) for inference) is shown below.
+The performance of this example on 32 H800 GPUs is 137us (128 tokens per rank, topk=8, hidden_size=7168, dtype=fp8), while DeepEP is 182 us (note: DeepEP doesn't use NVLink for inference).
 ```py
 @triton.jit
-def ring_put(ptr):
-    mype = libshmem_device.my_pe()
-    npes = libshmem_device.n_pes()
-    peer = (mype + 1) % npes
-    libshmem_device.int_p(ptr, mype, peer)
+def all_to_all_kernel(
+    data_src,
+    data_dst,
+    splits_src,
+    splits_dst,
+    signal,
+    splits_cumsum,
+    scale_src,
+    scale_dst,
+    rank: int,
+    call_count: int,
+    WITH_SCALE: tl.constexpr,
+    WORLD_SIZE: tl.constexpr,
+    HIDDEN: tl.constexpr,
+    MAX_M: tl.constexpr,
+    EXPERTS_PER_RANK: tl.constexpr,
+    NUM_TOT_EXPERTS: tl.constexpr,
+    ELEMENT_SIZE: tl.constexpr = 2,
+    SCALE_ELEMENT_SIZE: tl.constexpr = 4,
+):
+    pid = tl.program_id(0)
+    threadidx = tid(axis=0)
+
+    exp_st = pid * EXPERTS_PER_RANK
+    exp_ed = exp_st + EXPERTS_PER_RANK
+
+    m_st = tl.load(splits_cumsum + exp_st)
+    m_ed = tl.load(splits_cumsum + exp_ed)
+    num_rows_cur_block = m_ed - m_st
+
+    src_off = m_st
+    dst_off = rank * MAX_M
+
+    split_src_ptr = splits_src + exp_st
+    off0 = exp_st + tl.arange(0, EXPERTS_PER_RANK)
+    off1 = exp_st + tl.arange(0, EXPERTS_PER_RANK) + 1
+    cumsum_sts = tl.load(splits_cumsum + off0)
+    cumsum_eds = tl.load(splits_cumsum + off1)
+    tl.store(split_src_ptr + tl.arange(0, EXPERTS_PER_RANK), cumsum_eds - cumsum_sts)
+
+    act_pos = call_count % 2
+    data_dst_ptr = data_dst + act_pos * WORLD_SIZE * MAX_M * HIDDEN + dst_off * HIDDEN
+    split_dst_ptr = splits_dst + act_pos * NUM_TOT_EXPERTS + rank * EXPERTS_PER_RANK
+    signal_ptr = signal + act_pos * WORLD_SIZE + rank
+
+    libshmem_device.putmem_nbi_block(
+        data_dst_ptr,
+        data_src + src_off * HIDDEN,
+        num_rows_cur_block * HIDDEN * ELEMENT_SIZE,
+        pid,
+    )
+    libshmem_device.putmem_nbi_block(
+        split_dst_ptr,
+        split_src_ptr,
+        EXPERTS_PER_RANK * 4,  # now we use `int32` for splits
+        pid,
+    )
+    if WITH_SCALE:
+        scale_dst_ptr = scale_dst + act_pos * WORLD_SIZE * MAX_M + dst_off
+        libshmem_device.putmem_signal_nbi_block(
+            scale_dst_ptr,
+            scale_src + src_off,
+            num_rows_cur_block * SCALE_ELEMENT_SIZE,
+            signal_ptr,
+            call_count,
+            libshmem_device.NVSHMEM_SIGNAL_SET,
+            pid,
+        )
+
+    libshmem_device.fence()
+    if threadidx == 0:
+        if not WITH_SCALE:
+            libshmem_device.signal_op(
+                signal_ptr,
+                call_count,
+                libshmem_device.NVSHMEM_SIGNAL_SET,
+                pid,
+            )
+        libshmem_device.signal_wait_until(
+            signal + act_pos * WORLD_SIZE + pid,
+            libshmem_device.NVSHMEM_CMP_EQ,
+            call_count,
+        )
 ```
 
-#### High-level primitives
-To provide better programming experience, we also provide a set of high-level primitives for communication and signal control. These primitives, as decribed in our [MLSys 2025 paper](https://mlsys.org/virtual/2025/poster/2969), use a tile-centric design philosophy. These high-level primitives will be released soon after MLSys 2025.
+Also, users can combine the communication part with computation part to design overlapping kernels. We have provided example implementations in `third_party/distributed/distributed/kernels`.
+
+## Performance
+Triton-distributed can achieve comparable or better performance than hand-tuned libraries.
+
+
+### AllGather GEMM on single node of H800x8
+![Ag-GEMM-inter-node](asset/ag-gemm-intranode-perf.png)
+
+### GEMM ReduceScatter on single node of H800x8
+![Ag-GEMM-inter-node](asset/gemm-rs-intranode-perf.png)
+
+### AllGather GEMM on 2 nodes of H800x8
+![Ag-GEMM-inter-node](asset/ag-gemm-internode-perf.png)
+
+### GEMM ReduceScatter on 2 nodes of H800x8
+![GEMM-Rs-inter-node](asset/gemm-rs-internode-perf.png)
+
+### Scaling of Distributed Flash-Decode from 1 GPU to 32 GPUs
+The batch size is 1 (one query) for decoding.
+![flash-decode-inter-node](asset/flash-decode-scaling.png)
+
+### Performance on Other Platforms
+[AMD GPUs](docs/distributed/amd-perf.md)
+
 
 ## Roadmaps
 ### Functionalities
 - [x] Release low-level primitives
 - [ ] Release high-level primitives
+- [ ] Tutorials
+- [ ] Pre-built binary
 ### Kernels
 - [x] Release single-node GEMM TP overlapping kernels
-- [ ] Release single-node MoE TP overlapping kernels
-- [ ] Release single-node distributed Flash-Decoding kernels
+- [x] Release single-node MoE TP overlapping kernels
+- [x] Release single-node distributed Flash-Decoding kernels
 - [ ] Release single-node MoE EP overlapping kernels
-- [ ] Release cross-node GEMM TP overlapping kernels
-- [ ] Release cross-node MoE TP overlapping kernels
-- [ ] Release cross-node distributed Flash-Decoding kernels
-- [ ] Release cross-node EP all-to-all kernels (similar to [DeepEP](https://github.com/deepseek-ai/DeepEP))
+- [x] Release cross-node GEMM TP overlapping kernels
+- [x] Release cross-node MoE TP overlapping kernels
+- [x] Release cross-node distributed Flash-Decoding kernels
+- [x] Release cross-node EP all-to-all kernels (similar to [DeepEP](https://github.com/deepseek-ai/DeepEP))
+- [ ] Provide tutorials for kernel implementation
 ### Backends
+Computation
 - [x] Nvidia SM90a support
 - [x] Nvidia SM80 support
-- [ ] Nvidia SM89 support
+- [x] Nvidia SM89 support
 - [x] AMD CDNA3 support
+
+Communication
+- [x] NVLink
+- [x] IB
+- [ ] PCIe
 ### Performance
 - [ ] Performance report
 
@@ -193,7 +200,8 @@ To provide better programming experience, we also provide a set of high-level pr
 The Triton-distributed project is under MIT license.
 Part of our code is under Apache-2.0 License:
 - `third_party/distributed/distributed/kernels/flash_decode.py`
-Triton's original code is partially under Apache-2.0 Linces, these files include:
+
+Triton's original code is partially under Apache-2.0 License, these files include:
 - `include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
 - `lib/Dialect/TritonGPU/Transforms/Pipeliner/PipelineExpander.cpp`
 - `python/triton/_C/include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
@@ -214,6 +222,5 @@ If you use Triton-distributed in a scientific publication, we encourage you to a
 
 Founded in 2023, ByteDance Seed Team is dedicated to crafting the industry's most advanced AI foundation models. The team aspires to become a world-class research team and make significant contributions to the advancement of science and society.
 
-# Join the Discussion Group
-
-![discussion-group](asset/wechat-group-temporal.png)
+# Discussion and Contribution
+Please use issues or pull requests for discussion and contribution (see [CONTRIBUTING.md](CONTRIBUTING.md)).
