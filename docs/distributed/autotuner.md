@@ -604,9 +604,9 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     ...
 ```
 
-The log output of the rank-i tuning process will be printed in `rank-i.log`.
+The log output of the rank-i tuning process will be printed in `./.autotune_logs/rank-i.log`.
 
-For more examples, refer to the following test files: [test_ag_gemm_intra_node.py](../../python/triton/distributed/test/nvidia/test_ag_gemm_intra_node.py), [test_moe_reduce_rs.py](../../python/triton/distributed/test/nvidia/test_moe_reduce_rs.py), and [test_ag_moe.py](../../python/triton/distributed/test/nvidia/test_ag_moe.py). You can run the tests using the following commands:
+For more examples, refer to the following test files: [test_ag_gemm_intra_node.py](../../third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py), [test_moe_reduce_rs.py](../../third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py), and [test_ag_moe.py](../../third_party/distributed/distributed/test/nvidia/test_ag_moe.py). You can run the tests using the following commands:
 
 ```bash 
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma_autotune
