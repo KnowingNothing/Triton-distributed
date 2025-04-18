@@ -260,11 +260,31 @@ def parse_args():
 
     parser.add_argument("--seed", type=int, default=42)
 
+    parser.add_argument("--autotune", action="store_true")
+
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+
+    if args.autotune:
+        import triton
+        from triton.distributed.autotuner import contextual_autotune
+        import importlib
+        moe_reduce_rs_module = importlib.import_module('triton.distributed.kernels.nvidia.moe_reduce_rs')
+
+        configs = [
+            triton.Config({"BLOCK_N": BN, "BLOCK_K": BK}, num_stages=s, num_warps=w)
+            for BN in [128, 256]
+            for BK in [32, 64]
+            for s in [3, 4]
+            for w in [4, 8]
+        ]
+        moe_reduce_rs_module.kernel_producer_group_gemm_tp_scatter_input = triton.autotune(
+            configs=configs, key=["EM", "N",
+                                  "K_per_rank"])(moe_reduce_rs_module.kernel_producer_group_gemm_tp_scatter_input)
+        moe_reduce_rs = contextual_autotune(is_dist=True)(moe_reduce_rs)
 
     RANK = int(os.environ.get("RANK", 0))
     LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))

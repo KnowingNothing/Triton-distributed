@@ -56,13 +56,15 @@ class ContextualAutoTuner:
 
     def dist_print(self, *args, **kwargs):
         import torch
+        import os
 
         rank = torch.distributed.get_rank()
         file = self._log_file.get(rank, None)
         if file is None:
-            file = open(f"rank-{rank}.log", "w")
+            os.makedirs("./.autotune_logs", exist_ok=True)
+            file = open(f"./.autotune_logs/rank-{rank}.log", "w")
             self._log_file[rank] = file
-        print(*args, **kwargs, file=file, flush=True)
+        print(f"[rank-{rank}]", *args, **kwargs, file=file, flush=True)
 
     def __call__(self, *args, **kwargs):
         f_run = lambda: self.fn(*args, **kwargs)
@@ -75,7 +77,7 @@ class ContextualAutoTuner:
             try:
                 while True:
                     try:
-                        ret = f_run()
+                        f_run()
                         break
                     except self.KernelError:
                         continue
@@ -83,10 +85,10 @@ class ContextualAutoTuner:
                     # if self.dist:
                     #     torch.distributed.barrier()
                     try:
-                        ret = f_run()
+                        f_run()
                     except self.KernelError:
                         continue
-                return ret
+                return f_run()
             finally:
                 ContextualAutoTuner._INSTANCE = None
                 self._ctxs = []
@@ -106,9 +108,9 @@ def _do_bench_iterator(funcs, n_repeat=5, n_warmup=3, quantiles=None, return_mod
     di = triton.runtime.driver.active.get_device_interface()
     for i, fn in enumerate(funcs):
         try:
-            for _ in range(n_warmup):
+            for j in range(n_warmup):
                 ret = fn()
-                yield i, ret, None
+                yield ret, i, j, None
             start_event = [di.Event(enable_timing=True) for _ in range(n_repeat)]
             end_event = [di.Event(enable_timing=True) for _ in range(n_repeat)]
             for j in range(n_repeat):
@@ -117,34 +119,32 @@ def _do_bench_iterator(funcs, n_repeat=5, n_warmup=3, quantiles=None, return_mod
                 ret = fn()
                 end_event[j].record(stream)
                 if j < n_repeat - 1:
-                    yield i, ret, None
+                    yield ret, i, j, None
                 else:
                     times = [(e.synchronize(), s.elapsed_time(e))[-1] for s, e in zip(start_event, end_event)]
-                    yield i, ret, triton.testing._summarize_statistics(times, quantiles, return_mode)
+                    yield ret, i, j, triton.testing._summarize_statistics(times, quantiles, return_mode)
         except Exception as e:
-            yield i, None, e
+            yield None, i, j, e
 
 
 def _bench_fn(self: Autotuner, *args, config, **meta):
     # check for conflicts, i.e. meta-parameters both provided
     # as kwargs and by the autotuner
-    conflicts = meta.keys() & config.kwargs.keys()
-    if conflicts:
-        raise ValueError(f"Conflicting meta-parameters: {', '.join(conflicts)}."
-                         " Make sure that you don't re-define auto-tuned symbols.")
+    # conflicts = meta.keys() & config.kwargs.keys()
+    # if conflicts:
+    #     raise ValueError(f"Conflicting meta-parameters: {', '.join(conflicts)}."
+    #                      " Make sure that you don't re-define auto-tuned symbols.")
     # augment meta-parameters with tunable ones
-    current = dict(meta, **config.all_kwargs())
-    full_nargs = {**self.nargs, **current}
+    # current = dict(meta, **config.all_kwargs())
+    # full_nargs = {**self.nargs, **current}
+    full_nargs = dict({**self.nargs, **meta}, **config.all_kwargs())
 
     def kernel_call():
         if config.pre_hook:
             config.pre_hook(full_nargs)
         self.pre_hook(full_nargs)
         try:
-            ret = self.fn.run(
-                *args,
-                **current,
-            )
+            ret = self.fn.run(**full_nargs)
         except Exception as e:
             try:
                 self.post_hook(full_nargs, exception=e)
@@ -162,14 +162,11 @@ def _contextual_tuning_run(self: Autotuner, *args, **kwargs):
 
     def f_run(config):
         self.best_config = config
+        full_nargs = dict({**self.nargs, **kwargs}, **config.all_kwargs())
         if config.pre_hook is not None:
-            full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
+            # full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
             config.pre_hook(full_nargs)
-        ret = self.fn.run(
-            *args,
-            **kwargs,
-            **config.all_kwargs(),
-        )
+        ret = self.fn.run(**full_nargs)
         self.nargs = None
         return ret
 
@@ -177,18 +174,21 @@ def _contextual_tuning_run(self: Autotuner, *args, **kwargs):
         all_args = {**self.nargs, **kwargs}
         _args = {k: v for (k, v) in all_args.items() if k in self.arg_names}
         key = [_args[key] for key in self.keys if key in _args]
+        ks = [key for key in self.keys if key in _args]
+        kvs = dict(zip(ks, key))
         for _, arg in _args.items():
             if hasattr(arg, "dtype"):
                 key.append(str(arg.dtype))
-        return tuple(key)
+        return tuple(key), kvs
 
     if len(self.configs) <= 1:
         return f_run(self.configs[0])
 
     ctx: _TuningContext = getattr(self, "_tuning_context", None)
     ctx_tuner = ContextualAutoTuner._INSTANCE
+    key, kvs = f_key()
     if ctx is None or ctx.finished:
-        config = self.cache.get(f_key(), None)
+        config = self.cache.get(key, None)
         if config is not None:
             return f_run(config)
 
@@ -201,31 +201,41 @@ def _contextual_tuning_run(self: Autotuner, *args, **kwargs):
         ctx_tuner._ctxs.append(ctx)
 
     while True:
-        i, ret, ms = next(ctx.bench_iter)
-        ctx_tuner.dist_print("bench", i, ms)
+        ret, cfg_i, iter_j, ms = next(ctx.bench_iter)
+        msg = f"func: {self.fn.__name__} | key: {kvs} | config-id: {cfg_i} | config: {{{ctx.configs[cfg_i]}}} | measure-iter: {iter_j}"
+        if isinstance(ms, Exception):
+            msg += f" | error: {ms}"
+        elif ms is not None:
+            msg += f" | config-{cfg_i} average latency: {ms} ms"
+        ctx_tuner.dist_print(msg)
         if not isinstance(ms, Exception):
             break
         if not isinstance(ms, TritonError):
             raise ctx_tuner.KernelError("kernel launch failed")
-        if i >= len(ctx.configs) - 1:
+        if cfg_i >= len(ctx.configs) - 1:
             break
 
     if ms is not None:
         if not isinstance(ms, Exception):
-            ctx.okay_configs.append(ctx.configs[i])
+            ctx.okay_configs.append((cfg_i, ctx.configs[cfg_i]))
             ctx.config_times.append(ms)
-        if i >= len(ctx.configs) - 1:
+        if cfg_i >= len(ctx.configs) - 1:
             if len(ctx.okay_configs) <= 0:
                 raise RuntimeError("cannot find valid config")
             if ctx_tuner.is_dist:
                 import torch
+                torch.cuda.Event.elapsed_time
 
                 times_tensor = torch.tensor(ctx.config_times, device="cuda")
                 torch.distributed.all_reduce(times_tensor, torch.distributed.ReduceOp.MAX)
                 ctx.config_times = times_tensor.tolist()
 
-            self.best_config = self.cache[f_key()] = min(zip(ctx.okay_configs, ctx.config_times),
-                                                         key=lambda t: t[-1])[0]
+            (self.best_config_id, self.best_config), self.best_time = min(zip(ctx.okay_configs, ctx.config_times),
+                                                                          key=lambda t: t[-1])
+            ctx_tuner.dist_print(
+                f"func: {self.fn.__name__} | key: {kvs} | best-config-id: {self.best_config_id} | best-config: {{{self.best_config}}} | best-latency: {self.best_time} ms"
+            )
+            self.cache[key] = self.best_config
             self.configs_timings = ctx.config_times
             self._tuning_context = None
             ctx.finished = True

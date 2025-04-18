@@ -186,7 +186,24 @@ layer_configs = {
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--M", type=int, default=8192)
+    parser.add_argument("--autotune", action="store_true")
     args = parser.parse_args()
+
+    if args.autotune:
+        import triton
+        from triton.distributed.autotuner import contextual_autotune
+        from triton.distributed.kernels.nvidia import allgather_group_gemm
+
+        configs = [
+            triton.Config({"BLOCK_N": BN, "BLOCK_K": BK}, num_stages=s, num_warps=w)
+            for BN in [128, 256]
+            for BK in [32, 64]
+            for s in [3, 4]
+            for w in [4, 8]
+        ]
+        allgather_group_gemm.kernel_consumer_m_parallel_scatter_group_gemm = triton.autotune(
+            configs=configs, key=["M", "N", "K"])(allgather_group_gemm.kernel_consumer_m_parallel_scatter_group_gemm)
+        ag_group_gemm_intra_node = contextual_autotune(is_dist=True)(ag_group_gemm_intra_node)
 
     initialize_distributed()
 
