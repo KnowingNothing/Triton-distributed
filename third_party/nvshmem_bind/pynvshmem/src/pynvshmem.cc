@@ -30,6 +30,7 @@
 #include <nvshmemx.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
+#include <sstream>
 #include <torch/all.h>
 #include <torch/csrc/utils/pybind.h>
 #include <torch/python.h>
@@ -63,9 +64,10 @@ private:
 
 #define CUDA_CHECK(cuda_error)                                                 \
   {                                                                            \
-    if (cuda_error != cudaSuccess) {                                           \
-      printf("cudaError %s in %s:%d\n", cudaGetErrorString(cuda_error),        \
-             __func__, __LINE__);                                              \
+    cudaError x = (cuda_error);                                                \
+    if (x != cudaSuccess) {                                                    \
+      fprintf(stderr, "cudaError %s in %s:%d\n", cudaGetErrorString(x),        \
+              __func__, __LINE__);                                             \
       throw std::runtime_error("cuda error.");                                 \
     }                                                                          \
   }
@@ -176,6 +178,14 @@ nvshmem_create_tensor_list(const std::vector<int64_t> &shape,
 }
 
 PYBIND11_MODULE(_pynvshmem, m) {
+  m.def("nvshmem_my_pe", []() {
+    check_nvshmem_init();
+    return (nvshmem_my_pe());
+  });
+  m.def("nvshmem_n_pes", []() {
+    check_nvshmem_init();
+    return (nvshmem_n_pes());
+  });
   m.def("nvshmemx_cumodule_init", [](intptr_t module) {
     CHECK_NVSHMEMX(nvshmemx_cumodule_init((CUmodule)module));
   });

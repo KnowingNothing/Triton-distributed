@@ -73,7 +73,7 @@ def nvshmem_barrier_all():
     ...
 
 
-def nvshmem_barrier_all_on_stream():
+def nvshmem_barrier_all_on_stream(stream: np.intp):
     ...
 
 

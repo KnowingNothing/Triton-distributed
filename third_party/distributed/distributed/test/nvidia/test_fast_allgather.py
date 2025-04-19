@@ -43,7 +43,10 @@ def parse_args():
     parser.add_argument(
         "--mode",
         default="pull_1d",
-        choices=["push_2d_ll_multimem", "push_2d_ll", "push_2d", "pull_1d", "push_2d_ll_perf_only"],
+        choices=[
+            "push_numa_2d_ll", "push_numa_2d", "push_2d_ll_multimem", "push_2d_ll", "push_2d", "pull_1d",
+            "push_numa_2d_ll_multinode"
+        ],
     )
     args = parser.parse_args()
     return args
@@ -64,12 +67,16 @@ def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int):
             return ag_op.forward_push_2d(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
         elif args.mode == "push_2d_ll":
             return ag_op.forward_push_2d_ll(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
+        elif args.mode == "push_numa_2d":
+            return ag_op.forward_push_numa_2d(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
+        elif args.mode == "push_numa_2d_ll":
+            return ag_op.forward_push_numa_2d_ll(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
+        elif args.mode == "push_numa_2d_ll_multinode":
+            return ag_op.forward_push_numa_2d_ll_multinode(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
         elif args.mode == "push_2d_ll_multimem":
             return ag_op.forward_push_2d_ll_multimem(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
         elif args.mode == "pull_1d":
             return ag_op.forward_pull(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
-        elif args.mode == "push_2d_ll_perf_only":
-            return ag_op._forward_push_2d_ll_perf_only(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes], iters=2)
         else:
             raise ValueError(f"Unknown mode {args.mode}")
 

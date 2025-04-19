@@ -25,7 +25,7 @@
 import pynvshmem
 import torch
 import torch.distributed
-from triton.distributed.kernels.nvidia import _forward_push_2d_ll_kernel, _forward_push_2d_kernel, _forward_pull_kernel, _forward_push_2d_ll_multimem_kernel
+from triton.distributed.kernels.nvidia import _forward_push_2d_ll_kernel, _forward_push_2d_kernel, _forward_pull_kernel, _forward_push_2d_ll_multimem_kernel, _forward_push_numa_2d_ll_kernel, _forward_push_numa_2d_kernel, _forward_push_numa_2d_ll_multinode_kernel
 
 
 class AllGatherLayer:
@@ -90,6 +90,60 @@ class AllGatherLayer:
             signal,
             ll_buffer,
             self.nnodes,
+            self.size,
+            self.rank,
+            self.signal_target,
+            num_warps=32,
+        )
+        self.signal_target += 1
+        return symm_buffer
+
+    def forward_push_numa_2d(self, symm_buffer: torch.Tensor):
+        assert symm_buffer.nbytes * 2 < self.max_buffer_size
+        signal = self.signal[self.signal_target % self.stages]
+        _forward_push_numa_2d_kernel[(self.size, )](
+            symm_buffer,
+            symm_buffer.nbytes // self.size,
+            signal,
+            2,  # TODO(houqi.1993) 2 NUMA nodes supported
+            self.size,
+            self.rank,
+            self.signal_target,
+            num_warps=32,
+        )
+        self.signal_target += 1
+        return symm_buffer
+
+    def forward_push_numa_2d_ll_multinode(self, symm_buffer: torch.Tensor):
+        assert symm_buffer.nbytes * 2 < self.max_buffer_size
+        signal = self.signal[self.signal_target % self.stages]
+        ll_buffer = self.ll_buffers[self.signal_target % self.stages]
+        _forward_push_numa_2d_ll_multinode_kernel[(self.size, )](
+            symm_buffer,
+            symm_buffer.nbytes // self.size,
+            signal,
+            ll_buffer,
+            self.nnodes,
+            2,  # TODO(houqi.1993) 2 NUMA nodes supported
+            self.size,
+            self.rank,
+            self.signal_target,
+            num_warps=32,
+        )
+
+        self.signal_target += 1
+        return symm_buffer
+
+    def forward_push_numa_2d_ll(self, symm_buffer: torch.Tensor):
+        assert symm_buffer.nbytes * 2 < self.max_buffer_size
+        signal = self.signal[self.signal_target % self.stages]
+        ll_buffer = self.ll_buffers[self.signal_target % self.stages]
+        _forward_push_numa_2d_ll_kernel[(self.size, )](
+            symm_buffer,
+            symm_buffer.nbytes // self.size,
+            signal,
+            ll_buffer,
+            2,  # TODO(houqi.1993) 2 NUMA nodes supported
             self.size,
             self.rank,
             self.signal_target,
