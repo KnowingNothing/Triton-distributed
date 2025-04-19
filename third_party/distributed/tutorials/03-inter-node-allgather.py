@@ -290,3 +290,7 @@ perf_ag(
 )
 
 torch.distributed.destroy_process_group()
+
+# To run this tutorial
+# source ./scripts/sentenv.sh
+# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/03-inter-node-allgather.py

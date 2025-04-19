@@ -410,3 +410,7 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     print(f"RANK {RANK}: pass!")
     torch.distributed.destroy_process_group()
+
+# To run this tutorial
+# source ./scripts/sentenv.sh
+# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/06-inter-node-reduce-scatter.py

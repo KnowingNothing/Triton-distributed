@@ -421,5 +421,4 @@ if __name__ == "__main__":
 
 # To run this tutorial
 # source ./scripts/sentenv.sh
-# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/03-ag-gemm.py
-# This tutorial must be peformed with 2 nodes.
+# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/07-overlapping-allgather-gemm.py

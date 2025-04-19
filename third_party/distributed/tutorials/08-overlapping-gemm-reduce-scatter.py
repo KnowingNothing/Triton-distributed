@@ -464,3 +464,7 @@ if __name__ == "__main__":
     dist_print(f"torch #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
     torch.distributed.destroy_process_group()
+
+# To run this tutorial
+# source ./scripts/sentenv.sh
+# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/08-overlapping-gemm-reduce-scatter.py

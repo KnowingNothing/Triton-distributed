@@ -893,3 +893,7 @@ if __name__ == "__main__":
     if args.with_scale or args.online_quant_fp8:
         check(triton_scale, ref_scale, "Triton scale")
     torch.distributed.destroy_process_group(EP_GROUP)
+
+# To run this tutorial
+# source ./scripts/sentenv.sh
+# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/04-deepseek-infer-all2all.py
