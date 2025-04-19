@@ -51,7 +51,9 @@ jobs:
           - bash ./scripts/gen_aot_code.sh
           - export USE_TRITON_DISTRIBUTED_AOT=1
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
-
+      - name: unit tests
+        commands:
+          - python3 ./third_party/distributed/distributed/test/nvidia/test_language_extra.py
       - name: distributed tests
         commands:
           #############

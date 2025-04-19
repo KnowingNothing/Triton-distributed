@@ -28,7 +28,7 @@ import triton
 import triton.language as tl
 import triton.distributed.language as dl
 from triton.language.extra import libshmem_device
-from triton.language.extra.cuda.language_extra import tid, atomic_add, ld_acquire, __syncthreads, load_u32, store_u32, atomic_add_per_warp
+from triton.language.extra.cuda.language_extra import tid, atomic_add, ld_acquire, __syncthreads, ld_b32, st_b32, atomic_add_per_warp
 
 
 ########## triton kernels ##########
@@ -73,8 +73,8 @@ def kernel_dispatch_token(
             target_node = (node_id + node_offset + 1) % nnodes
             target_rank = local_rank + target_node * local_world_size
             for req_id in range(global_warp_id, num_tokens, total_warps):
-                start_index = load_u32(send_reqs_for_nodes + target_node * max_tokens * 2 + req_id)
-                end_index = load_u32(send_reqs_for_nodes + target_node * max_tokens * 2 + max_tokens + req_id)
+                start_index = ld_b32(send_reqs_for_nodes + target_node * max_tokens * 2 + req_id)
+                end_index = ld_b32(send_reqs_for_nodes + target_node * max_tokens * 2 + max_tokens + req_id)
                 msg_size = (end_index - start_index) * bytes_per_token
                 src_ptr = input_buf + node_id * max_tokens * hidden_size + start_index * hidden_size
                 if end_index > start_index:
@@ -133,7 +133,7 @@ def kernel_dispatch_token(
         token_num = tl.load(num_input_tokens_per_rank + src_rank)
         for token_offset in range(global_warp_id, token_num, total_warps):
             for j in range(topk):
-                expert_idx = load_u32(topk_indices_buf + (src_send_node * max_tokens + token_offset) * topk + j)
+                expert_idx = ld_b32(topk_indices_buf + (src_send_node * max_tokens + token_offset) * topk + j)
                 expert_rank = expert_idx // experts_per_rank
                 expert_node_idx = expert_rank // local_world_size
                 expert_idx_intra_rank = expert_idx % experts_per_rank
@@ -145,7 +145,7 @@ def kernel_dispatch_token(
                     src_ptr = input_buf + src_send_node * max_tokens * hidden_size + token_offset * hidden_size
                     dst_ptr = output_buf + store_idx * hidden_size
                     libshmem_device.putmem_warp(dst_ptr, src_ptr, bytes_per_token, expert_rank)
-                    store_u32(token_dst_scatter_idx + (src_send_node * max_tokens + token_offset) * topk + j, store_idx)
+                    st_b32(token_dst_scatter_idx + (src_send_node * max_tokens + token_offset) * topk + j, store_idx)
 
 
 @triton.jit
@@ -212,8 +212,8 @@ def kernel_combine_token(
             pass
 
         for req_id in range(global_warp_id, token_num, total_warps):
-            start_index = load_u32(send_reqs_in_dispatch + target_node * max_tokens * 2 + req_id)
-            end_index = load_u32(send_reqs_in_dispatch + target_node * max_tokens * 2 + max_tokens + req_id)
+            start_index = ld_b32(send_reqs_in_dispatch + target_node * max_tokens * 2 + req_id)
+            end_index = ld_b32(send_reqs_in_dispatch + target_node * max_tokens * 2 + max_tokens + req_id)
             msg_size = (end_index - start_index) * bytes_per_token
             if end_index > start_index:
                 src_ptr = intra_node_reduce_buf + target_node * max_tokens * hidden_size + start_index * hidden_size
@@ -281,10 +281,10 @@ def kernel_get_ag_splits_and_recv_offset(
     for target_rank in range(pid, world_size, num_pid):
         libshmem_device.signal_wait_until(splits_signal_buf + target_rank, libshmem_device.NVSHMEM_CMP_EQ, 1)
         for expert_idx in range(thread_idx, num_experts, threads_per_block):
-            val = load_u32(full_splits_buf + target_rank * num_experts + expert_idx)
+            val = ld_b32(full_splits_buf + target_rank * num_experts + expert_idx)
             ep_rank = expert_idx // experts_per_rank
             expert_idx_intra_rank = expert_idx % experts_per_rank
-            store_u32(
+            st_b32(
                 recv_buf_offset_per_expert + ep_rank * experts_per_rank * world_size +
                 expert_idx_intra_rank * world_size + target_rank, val)
         splits_cur_rank = tl.load(full_splits_buf + target_rank * num_experts + offs, mask=mask)

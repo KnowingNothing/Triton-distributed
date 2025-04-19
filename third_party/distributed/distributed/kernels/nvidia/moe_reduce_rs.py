@@ -38,7 +38,6 @@ from triton.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import (
     atomic_add,
     __syncthreads,
-    __tid__,
     tid,
 )
 
@@ -551,7 +550,7 @@ def kernel_producer_group_gemm_tp_scatter_input(
     counter_ptr = barrier_counter + offs_counter
     remote_barrier_ready_ptr = tl.load(barriers_ready_ptrs + local_rank).to(tl.pointer_type(tl.uint64))
     __syncthreads()
-    thread_id = __tid__(axis="x")
+    thread_id = tid(0)
     value = 1
     if thread_id == 0:
         if atomic_add(counter_ptr, value, "gpu", "relaxed") == threshold - 1:

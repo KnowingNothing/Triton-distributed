@@ -62,64 +62,18 @@ def atomic_cas(
     )
 
 
-@tl.core.extern
-def thread_id(axis: tl.constexpr, _builder=None):
-    return tl.inline_asm_elementwise(
-        asm=f"mov.u32 $0, %tid.{axis.value};",
-        constraints="=r",
-        args=[],
-        dtype=tl.uint32,
-        is_pure=True,
-        pack=1,
-        _builder=_builder,
-    )
-
-
 @triton.jit
 def barrier_all(rank, num_ranks, comm_buf_ptr):
-    tid = thread_id(axis="x")
+    thread_idx = tid(axis=0)
     sm_id = tl.program_id(axis=0)
-    if tid < num_ranks:
+    if thread_idx < num_ranks:
         remote_ptr = libshmem_device.remote_ptr(comm_buf_ptr + sm_id * num_ranks + rank,
-                                                tid.to(tl.int32)).to(tl.pointer_type(tl.int32))
+                                                thread_idx.to(tl.int32)).to(tl.pointer_type(tl.int32))
         while atomic_cas(remote_ptr, 0, 1, "sys", "release") != 0:
             pass
-        while (atomic_cas(comm_buf_ptr + sm_id * num_ranks + tid, 1, 0, "sys", "acquire") != 1):
+        while (atomic_cas(comm_buf_ptr + sm_id * num_ranks + thread_idx, 1, 0, "sys", "acquire") != 1):
             pass
     __syncthreads()
-
-
-@tl.core.extern
-def red_release(barrier_ptr, value, scope: tl.constexpr = "gpu", _builder=None):
-    tl.inline_asm_elementwise(
-        asm=f"""{{
-        mov.u32         $0, %tid.x;
-        red.release.{scope.value}.global.add.s32 [$1], $2;
-        }}""",
-        constraints=("=r,"
-                     "l,r"),  # no use output, which is threadId.x
-        args=[barrier_ptr, value],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-        _builder=_builder,
-    )
-
-
-@tl.core.extern
-def ld_acquire(barrier_ptr, scope: tl.constexpr = "gpu", _builder=None):
-    return tl.inline_asm_elementwise(
-        asm=f"""{{
-        ld.global.acquire.{scope.value}.b32 $0, [$1];
-        }}
-        """,
-        constraints=("=r,l"),
-        args=[barrier_ptr],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-        _builder=_builder,
-    )
 
 
 @triton.jit

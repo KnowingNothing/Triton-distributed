@@ -40,8 +40,8 @@ from triton.language.extra.cuda.language_extra import (
     load_v2_b64,
     store_v2_u32,
     atomic_add,
-    atomic_store,
-    ld_u32_acquire,
+    st,
+    ld_acquire,
     multimem_st_b64,
     multimem_st_v2_b32,
 )
@@ -240,9 +240,9 @@ def barrier_on_this_grid(ptr):
         old_arrive = tl.cast(0, tl.uint32)
 
     if _is_cta_master():
-        current_arrive = ld_u32_acquire(ptr)
+        current_arrive = ld_acquire(ptr)
         while ((old_arrive ^ current_arrive) & 0x80000000) == 0:
-            current_arrive = ld_u32_acquire(ptr, scope=tl.constexpr("gpu"))
+            current_arrive = ld_acquire(ptr, scope=tl.constexpr("gpu"))
 
     __syncthreads()
 
@@ -373,7 +373,7 @@ def _forward_push_2d_ll_kernel(
             )  # magic number here
             __syncthreads()
             if thread_idx == 0:
-                atomic_store(symm_flag + segment, signal_target, scope="gpu", semantic="release")
+                st(symm_flag + segment, signal_target, scope="gpu", semantic="release")
         else:  # pack ll data
             _pack_ll_block(
                 ll_buffer_int8 + rank * bytes_per_rank * 2,

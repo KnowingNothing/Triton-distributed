@@ -58,9 +58,7 @@ else:
 if use_aot:
     from triton._C.libtriton_distributed import distributed
 
-from triton.distributed.kernels.nvidia.common_ops import thread_id, ld_acquire, red_release
-from triton.language.extra.cuda.language_extra import (
-    __syncthreads, )
+from triton.language.extra.cuda.language_extra import (__syncthreads, ld_acquire, red_release, tid)
 
 
 @triton.jit
@@ -542,9 +540,9 @@ persistent_signature = (
         "i32, ") +  # batch
     (
         ", ".join([
-            "i32:16", "i32:16",  # "i32:1", 
             "i32:16", "i32:16",  # "i32:1",
-            "i32:16", "i32:16",  # "i32:1", 
+            "i32:16", "i32:16",  # "i32:1",
+            "i32:16", "i32:16",  # "i32:1",
             "i32:16", "i32:16", "i32",  # "i32:1",
             "i32:16", "i32:16", "i32",  # "i32:1"
         ]) + ", ")
@@ -718,7 +716,7 @@ def kernel_gqa_fwd_batch_decode_split_kv_persistent(
         offs_log = bid * stride_o_bs + cur_head * stride_o_h + split_kv_id * stride_o_split + V_DIM
         tl.store(output_ptr + offs_log, e_max + tl.log(e_sum), mask=mask_h)
 
-    tx = thread_id("x")
+    tx = tid(0)
     if tx == 0:
         red_release(workspace_ptr + sm_id, 1, "gpu")
     __syncthreads()
@@ -1161,10 +1159,10 @@ def gqa_fwd_batch_decode_persistent_aot(stream, q, k_cache, v_cache, workspace, 
                # shape,
                batch,
                # strides
-               q.stride(0), q.stride(1),  # q.stride(2), 
+               q.stride(0), q.stride(1),  # q.stride(2),
                k_cache.stride(-3), k_cache.stride(-2),  # k_cache.stride(-1),
                v_cache.stride(-3), v_cache.stride(-2),  # v_cache.stride(-1),
-               output_split.stride(0), output_split.stride(1), output_split.stride(2),  # output_split.stride(3), 
+               output_split.stride(0), output_split.stride(1), output_split.stride(2),  # output_split.stride(3),
                output_combine.stride(0), output_combine.stride(1), block_table.stride(0),  # block_table.stride(1),
                # algo_info
                algo_info)
