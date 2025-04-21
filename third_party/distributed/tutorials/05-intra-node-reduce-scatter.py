@@ -23,8 +23,8 @@
 #
 ################################################################################
 """
-Gemm reduce-scatter
-===================
+Intra-node ReduceScatter
+========================
 In this tutorial, you will write a intra-node reduce-scatter operation.
 
 In doing so, you will learn about:
@@ -34,7 +34,9 @@ In doing so, you will learn about:
 
 .. code-block:: bash
 
-    CUDA_DEVICE_MAX_CONNECTIONS=8 ./third_party/distributed/launch.sh  ./third_party/distributed/tutorials/04-1-intra-node-reudce-scatter.py
+    # To run this tutorial
+    source ./scripts/sentenv.sh
+    bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/05-intra-node-reduce-scatter.py
 
 """
 
@@ -163,7 +165,7 @@ def intra_node_scatter(input_intra_node, scatter_bufs_intra_node: List[torch.Ten
             """
             Rank level swizzle: Each rank perform scatter start from the next rank of the current.
             In this way, the send/recv communication volume of each rank is balanced.
-            
+
             For time start from 0 to local_world_size, the communication order between ranks:
                 time 0: 0->1, 1->2, 2->3, 3->0
                 time 1: 0->2, 1->3, 2->0, 3->1
@@ -240,7 +242,3 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     print(f"RANK {LOCAL_RANK}: pass!")
     torch.distributed.destroy_process_group()
-
-# To run this tutorial
-# source ./scripts/sentenv.sh
-# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/05-intra-node-reduce-scatter.py

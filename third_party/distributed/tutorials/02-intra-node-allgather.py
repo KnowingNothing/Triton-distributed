@@ -1,14 +1,44 @@
+################################################################################
+#
+# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+################################################################################
 """
-Allgather Kernel
-===============
+Intra-node AllGather
+====================
 
-In this tutorial, you will write a distributed Allgather kernel using  Dist-Triton.
+In this tutorial, you will write a distributed AllGather kernel using Triton-distributed.
 
 In doing so, you will learn about:
 
 * Writing the AllGather kernel with symmetric pointers directly.
 
 * Writing the AllGather kernel with NVSHMEM device functions.
+
+.. code-block:: bash
+
+    # To run this tutorial
+    source ./scripts/sentenv.sh
+    bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/02-intra-node-allgather.py
 
 """
 
@@ -31,7 +61,7 @@ from triton.distributed.utils import initialize_distributed, dist_print
 # --------------
 
 # %%
-# For inranode communication, we can directly use pointers returned by NVSHMEM to copy data.
+# For intra-node communication, we can directly use pointers returned by NVSHMEM to copy data.
 
 
 def cp_engine_producer_all_gather_full_mesh_pull(
@@ -158,7 +188,3 @@ if __name__ == "__main__":
     dist_print(f"Rank {rank}", "Pass!✅", need_sync=True, allowed_ranks="all")
 
     torch.distributed.destroy_process_group()
-
-# To run this tutorial
-# source ./scripts/sentenv.sh
-# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/02-intra-node-allgather.py

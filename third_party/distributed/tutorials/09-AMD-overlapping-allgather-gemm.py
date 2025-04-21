@@ -23,8 +23,8 @@
 #
 ################################################################################
 """
-Allgather Gemm intra node
-=========================
+Overlapping AllGather GEMM on AMD GPU
+=====================================
 This script demonstrates the implementations allgather-gemm intra node with computational communication overlap using Triton-distrbuted.
 
 In this tutorial, you will write a simple fused AllGather and Gemm using Triton-distributed.
@@ -35,15 +35,11 @@ In doing so, you will learn about:
 
 * Intra node communication on AMD GPUs.
 
-
-One can find more details about allgather-gemm and computational communication overlap at [FLUX](https://arxiv.org/abs/2406.06858).
-
 .. code-block:: bash
 
-    # how to run current example
-    bash launch_amd.sh 10-amd-gemm-fuse-ag-rs.py
+    # To run this tutorial
+    bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/tutorials/09-AMD-overlapping-allgather-gemm.py
 
-This tutorial only support AMD CDNA3.
 """
 
 import os
@@ -79,7 +75,10 @@ assert triton.runtime.driver.active.get_current_target().backend == "hip"
 #         t1                       t2
 # The total time consumption is t1 + t2.
 #
-# Notice that when the shape of GEMM is relatively large, it is always tiled into small blocks for computation on heterogeneous accelerators. This means that there are always some tiles computed first and some computed later. Therefore, we can first transfer the data that is first relied on in the GEMM computation during AG, so that the GEMM computation and the AG communication can be overlapped, improving the overall MFU. As shown below, both communication and computation are divided into 4 blocks, and the blocks with the same number have dependencies:
+# Notice that when the shape of GEMM is relatively large, it is always tiled into small blocks for computation on heterogeneous accelerators.
+# This means that there are always some tiles computed first and some computed later. Therefore, we can first transfer the data that is first
+# relied on the GEMM computation during AG, so that the GEMM computation and the AG communication can be overlapped, improving the overall MFU.
+# As shown below, both communication and computation are divided into 4 blocks, and the blocks with the same number have dependencies:
 # +---------------+    +-----------------------+
 # | 0 | 1 | 2 | 3 | +  |  0  |  1  |  2  |  3  |
 # +---------------+    +-----------------------+
@@ -90,7 +89,7 @@ assert triton.runtime.driver.active.get_current_target().backend == "hip"
 # | 0 | 1 | 2 | 3 | AG
 # +---------------+
 #     |   \    \   \
-#     |     \    \   \
+#     |    \     \   \
 #     |     |     |    \
 #     v     v     v     v
 #     +-----------------------+
@@ -99,12 +98,16 @@ assert triton.runtime.driver.active.get_current_target().backend == "hip"
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #       t0: AG GEMM fused
 #
-# Under the ideal computation-to-memory access ratio, we can hide the communication time of blocks 1, 2, and 3 in the GEMM computation time overhead. Fortunately, there is always a part of the AG communication that is local. Local communication can be omitted or has very low overhead. If the communication of block 0 only occurs locally, then the GEMM waiting for the communication of block 0 always has almost no overhead.
+# Under the ideal computation-to-memory access ratio, we can hide the communication time of blocks 1, 2, and 3 in the GEMM computation time overhead.
+# Fortunately, there is always a part of the AG communication that is local. Local communication can be omitted or has very low overhead.
+# If the communication of block 0 only occurs locally, then the GEMM waiting for the communication of block 0 always has almost no overhead.
 #
 # %%
 # details
 # -------
-# Assume that the shapes of matrices A and B in GEMM are [M, K] and [K, N] respectively. We can partition both communication and computation along the M-axis into several chunks. Communication is carried out on a per-chunk basis, and each tile of GEMM needs to wait for the data on the chunks it depends on to arrive. We can use signals to build a producer-consumer dependency model. That is, GEMM acts as the consumer and waits for the signals that the current tile's computation depends on, while AG acts as the producer and sets the signals after the data transfer is completed.
+# Assume that the shapes of matrices A and B in GEMM are [M, K] and [K, N] respectively. We can partition both communication and computation along the M-axis into several chunks.
+# Communication is carried out on a per-chunk basis, and each tile of GEMM needs to wait for the data on the chunks it depends on to arrive. We can use signals to build a producer-consumer dependency model.
+# That is, GEMM acts as the consumer and waits for the signals that the current tile's computation depends on, while AG acts as the producer and sets the signals after the data transfer is completed.
 # For example, assume that the size of M is 1024, the size of each chunk is 128, and the BLOCK_SIZE_M of GEMM is 256. Then each tile of GEMM needs to wait for the signals of two chunks to arrive.
 
 
@@ -319,7 +322,11 @@ class triton_ag_gemm_intra_node(torch.nn.Module):
         self.input_dtype = input_dtype
         self.output_dtype = output_dtype
 
-        # Use the auxiliary functions provided by Triton-distributed to construct the context required for AG-GEMM. This simplifies the code logic. The context mainly includes: (1) The globally symmetric memory required for AllGather; (2) The signals used for communication between AG and GEMM; (3) Streams.
+        # Use the auxiliary functions provided by Triton-distributed to construct the context required for AG-GEMM. This simplifies the code logic.
+        # The context mainly includes:
+        # (1) The globally symmetric memory required for AllGather;
+        # (2) The signals used for communication between AG and GEMM;
+        # (3) Streams.
         self.ctx = create_ag_gemm_intra_node_context(
             self.max_M,
             self.N,

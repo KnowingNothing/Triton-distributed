@@ -23,13 +23,15 @@
 #
 ################################################################################
 """
-Gemm reduce-scatter
-===================
+Inter-node ReduceScatter
+========================
 In this tutorial, you will write a multi-node reduce-scatter operation.
 
 .. code-block:: bash
 
-    CUDA_DEVICE_MAX_CONNECTIONS=8 ./third_party/distributed/launch.sh  ./third_party/distributed/tutorials/04-2-multi-node-reudce-scatter.py
+    # To run this tutorial
+    source ./scripts/sentenv.sh
+    bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/06-inter-node-reduce-scatter.py
 
 """
 
@@ -136,7 +138,7 @@ class ReduceScatter2DContext:
         if self.nnodes > 1:
             return self.num_sync_sms + self.num_p2p_sms + self.num_reduction_sms
         else:
-            # for intra node rs, no need sm.
+            # for intra node rs, no sm required.
             return 0
 
     @property
@@ -147,7 +149,7 @@ class ReduceScatter2DContext:
 def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dtype, overlap_with_gemm=True,
                                 num_reduction_sms=15) -> ReduceScatter2DContext:
     """
-        for num_reduction_sms: tunable param, 16 are enough for H800
+        for num_reduction_sms: tunable param, 16 sms are enough for H800
             For H800, we overlap local reduce and inter-node p2p with intra-node scatter.
             The reduction kernel bandwidth is not a bottleneck if it exceeds 450GB, so only a few SMs are needed.
             For machines with higher intra_node bandwidth(e.g. H100), we may need to increase the number of SMs or redesign overlapping.
@@ -324,17 +326,17 @@ def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
     M_per_rank = M // ctx.world_size
     ctx.p2p_stream.wait_stream(stream)
     """
-    step1:
-        Leveraging the characteristics of reduce-scatter, we first partition the input data according to the target nodes for communication.
-        For the data send to each node, we perform an intra-node reduce-scatter operation within the current node.
-        Finally, we use P2P communication to send the data to the same local rank on the target node.
-        This can reduce the inter-node communication volume by a factor of local_world_size.
+    Step 1: Leveraging the characteristics of reduce-scatter, we first partition the input data according to the target nodes for communication.
+            For the data send to each node, we perform an intra-node reduce-scatter operation within the current node.
+            Finally, we use P2P communication to send the data to the same local rank on the target node.
+            This can reduce the inter-node communication volume by a factor of local_world_size.
     """
     rs_resutl_per_node = reducer_scatter_for_each_node(input, stream, ctx)
     barrier_all_on_stream(stream)
     output = torch.empty((M_per_rank, N), dtype=input.dtype, device=input.device)
-
-    # Step 2: After receiving data sent via P2P from all nodes, perform a reduction to get the final result.
+    """
+    Step 2: After receiving data sent via P2P from all nodes, perform a reduction to get the final result.
+    """
     ring_reduce(rs_resutl_per_node, output, ctx.node_id, ctx.nnodes, stream)
     return output
 
@@ -410,7 +412,3 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     print(f"RANK {RANK}: pass!")
     torch.distributed.destroy_process_group()
-
-# To run this tutorial
-# source ./scripts/sentenv.sh
-# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/06-inter-node-reduce-scatter.py

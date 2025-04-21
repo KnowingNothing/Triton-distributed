@@ -12,5 +12,5 @@ It is recommended that you first read the technique report, which contains desig
 6. [Communication]: Inter-node ReduceScatter
 7. [Overlapping]: AllGather GEMM overlapping
 8. [Overlapping]: GEMM ReduceScatter overlapping
-9. [AMD][Primitives]: Primitives based on libdevice
-10. [AMD][Fused computation and communication]: GEMM fuse with AllGather or ReduceScatter
+9. [Overlapping]: AllGather GEMM overlapping on AMD
+10. [Overlapping]: GEMM ReduceScatter overlapping on AMD

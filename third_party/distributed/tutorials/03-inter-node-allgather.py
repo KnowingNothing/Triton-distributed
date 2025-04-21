@@ -23,13 +23,15 @@
 #
 ################################################################################
 """
-Low Latency All-Gather
-======================
-In this tutorial, you will write a low latency all gather kernel.
+Inter-node AllGather
+====================
+In this tutorial, you will write a low latency all gather kernel using using Triton-distributed.
 
 .. code-block:: bash
 
-    ./third_party/distributed/launch.sh  ./third_party/distributed/tutorials/06-low-latency-all-gather.py
+    # To run this tutorial
+    source ./scripts/sentenv.sh
+    bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/03-inter-node-allgather.py
 
 """
 import datetime
@@ -149,7 +151,7 @@ def all_gather_push_2d_kernel(
                     signal_value,
                 )
             __syncthreads()
-    else:  # inra-NODE communication
+    else:  # intra-NODE communication
         peer = node_id * LOCAL_WORLD_SIZE + peer_local_rank
         segment = peer_node_id * LOCAL_WORLD_SIZE + local_rank
         # wait for inter-NODE putmem_signal done from other nodes
@@ -290,7 +292,3 @@ perf_ag(
 )
 
 torch.distributed.destroy_process_group()
-
-# To run this tutorial
-# source ./scripts/sentenv.sh
-# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/03-inter-node-allgather.py

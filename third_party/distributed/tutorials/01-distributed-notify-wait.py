@@ -24,7 +24,7 @@
 ################################################################################
 """
 Distributed Notify and Wait
-===============
+===========================
 
 In this tutorial, you will write a simple notify and wait example using Triton-distributed.
 
@@ -37,6 +37,12 @@ In doing so, you will learn about:
 * The distributed runtime initialization and symmetric tensor management.
 
 * How to write producer-consumer data transfer through a small queue
+
+.. code-block:: bash
+
+    # To run this tutorial
+    source ./scripts/sentenv.sh
+    bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/01-distributed-notify-wait.py
 
 """
 
@@ -223,7 +229,3 @@ TP_GROUP = initialize_distributed()
 main(TP_GROUP)
 # Finalize
 torch.distributed.destroy_process_group()
-
-# To run this tutorial
-# source ./scripts/sentenv.sh
-# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/01-distributed-notify-wait.py

@@ -23,9 +23,10 @@
 #
 ################################################################################
 """
-Gemm reduce-scatter
-===================
-In this tutorial, you will write a Multi Node Gemm reduce-scatter operation that is significantly faster
+Overlapping GEMM ReduceScatter
+==============================
+
+In this tutorial, you will write a Multi-node Gemm reduce-scatter operation that is significantly faster
 than PyTorch's native op.
 
 In doing so, you will learn about:
@@ -34,7 +35,9 @@ In doing so, you will learn about:
 
 .. code-block:: bash
 
-    CUDA_DEVICE_MAX_CONNECTIONS=8 ./third_party/distributed/launch.sh  ./third_party/distributed/tutorials/04-3-gemm-reudce-scatter.py
+    # To run this tutorial
+    source ./scripts/sentenv.sh
+    bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/08-overlapping-gemm-reduce-scatter.py
 
 """
 
@@ -46,7 +49,7 @@ import triton.distributed.language as dl
 
 from typing import Optional, List
 from triton import pynvshmem
-# The implementation of reduce_scatter_2d_op is the same as that in 04-2-mutl-node-gemm-reudce-scatter.py.
+# The implementation of reduce_scatter_2d_op is the same as that in 06-intern-node-reudce-scatter.py.
 from triton.distributed.kernels.nvidia.gemm_reduce_scatter import ReduceScatter2DContext, create_reduce_scater_2d_ctx, reduce_scatter_2d_op
 
 import os
@@ -464,7 +467,3 @@ if __name__ == "__main__":
     dist_print(f"torch #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
     torch.distributed.destroy_process_group()
-
-# To run this tutorial
-# source ./scripts/sentenv.sh
-# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/08-overlapping-gemm-reduce-scatter.py

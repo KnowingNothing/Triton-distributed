@@ -54,7 +54,9 @@ At the core of our implementation are low-level primitives that manage the commu
 
 .. code-block:: bash
 
-    ./third_party/distributed/launch.sh  ./third_party/distributed/tutorials/07-low-latency-all-to-all.py
+    # To run this tutorial
+    source ./scripts/sentenv.sh
+    bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/04-deepseek-infer-all2all.py
 
 """
 import torch
@@ -893,7 +895,3 @@ if __name__ == "__main__":
     if args.with_scale or args.online_quant_fp8:
         check(triton_scale, ref_scale, "Triton scale")
     torch.distributed.destroy_process_group(EP_GROUP)
-
-# To run this tutorial
-# source ./scripts/sentenv.sh
-# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/04-deepseek-infer-all2all.py
