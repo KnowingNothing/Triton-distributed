@@ -20,7 +20,7 @@
 ![seed logo](https://github.com/user-attachments/assets/c42e675e-497c-4508-8bb9-093ad4d1f216)
 
 # Triton-distributed
-<!-- 
+<!--
 <p align="center">
   <a href="https://github.com/bytedance/flux">
     <img src="https://img.shields.io/badge/Triton-distributed-Project Page-yellow"></a>
@@ -150,10 +150,10 @@ Triton-distributed 可以达到和手写分布式算子库接近的性能，有�
 ![Ag-GEMM-inter-node](asset/gemm-rs-intranode-perf.png)
 
 ### AllGather GEMM 双机H800
-![Ag-GEMM-inter-node](asset/ag-inter-node-gemm.png)
+![Ag-GEMM-inter-node](asset/ag-gemm-internode-perf.png)
 
 ### GEMM ReduceScatter 双机H800
-![GEMM-Rs-inter-node](asset/gemm-rs-inter-node.png)
+![GEMM-Rs-inter-node](asset/gemm-rs-internode-perf.png)
 
 ### 分布式Flash-Decode从单机到四机扩展情况
 ![flash-decode-inter-node](asset/flash-decode-scaling.png)
