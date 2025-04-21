@@ -614,6 +614,15 @@ download_and_copy(
 )
 download_and_copy(
     name="nvcc",
+    src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/bin/nvlink{exe_extension}",
+    dst_path="bin/nvlink",
+    variable="TRITON_NVLINK_PATH",
+    version=NVIDIA_TOOLCHAIN_VERSION["nvlink"],
+    url_func=lambda system, arch, version:
+    f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
+)
+download_and_copy(
+    name="nvcc",
     src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/include",
     dst_path="include",
     variable="TRITON_CUDACRT_PATH",
@@ -649,8 +658,6 @@ download_and_copy(
     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
 )
 backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
-
-download_nvshmem()
 
 
 def add_link_to_backends():

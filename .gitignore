@@ -57,6 +57,7 @@ cmake-build-*
 cuobjdump
 nvdisasm
 ptxas
+nvlink
 
 # Third-party include
 third_party/nvidia/backend/include
@@ -98,7 +99,6 @@ python/triton/distributed
 triton_aot_generated
 rank-*.log
 python/*.egg-info
-third_party/nvshmem
 third_party/rocshmem_bind/runtime/*.o
 third_party/rocshmem_bind/rocshmem_build
 third_party/rocshmem_bind/ompi_build

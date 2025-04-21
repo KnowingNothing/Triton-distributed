@@ -444,7 +444,12 @@ public:
         op->getNumResults() == 0
             ? voidTy
             : this->getTypeConverter()->convertType(op->getResult(0).getType());
-    StringRef funcName = op.getSymbol();
+    bool enable_ibgda =
+        mlir::triton::tools::getBoolEnv("NVSHMEM_IBGDA_SUPPORT");
+    std::string funcName = op.getSymbol().str();
+    // currently nvshmem bitcode does not support ibgda, so use ptx wrapper
+    if (enable_ibgda)
+      funcName += "_wrapper";
     StringRef libname = op.getLibname();
     StringRef libpath = op.getLibpath();
 

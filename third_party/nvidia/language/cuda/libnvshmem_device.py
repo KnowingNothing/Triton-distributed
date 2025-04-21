@@ -440,7 +440,7 @@ def putmem_nbi_block(dest, source, nbytes, pe, _builder=None):
         {
             (tl.pointer_type(tl.void), tl.pointer_type(tl.void), tl.uint64, tl.int32): (
                 "nvshmemx_putmem_nbi_block",
-                (tl.int32),
+                (),
             ),
         },
         is_pure=False,
@@ -721,7 +721,7 @@ def signal_wait_until(sig_addr, cmp_, cmp_val, _builder=None):
         {
             (pi_u64_t, tl.int32, tl.uint64): (
                 "nvshmem_signal_wait_until",
-                tl.int32,
+                tl.uint64,
             ),
         },
         is_pure=False,
@@ -737,29 +737,29 @@ def broadcast(team, dest, source, nelems, pe_root, _builder=None):
         [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder), pe_root],  # no cast
         {
             (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64, tl.int32):
-            ("nvshmem_int8_broadcast", ()),
+            ("nvshmem_int8_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64, tl.int32):
-            ("nvshmem_int16_broadcast", ()),
+            ("nvshmem_int16_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64, tl.int32):
-            ("nvshmem_int32_broadcast", ()),
+            ("nvshmem_int32_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64, tl.int32):
-            ("nvshmem_int64_broadcast", ()),
+            ("nvshmem_int64_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64, tl.int32):
-            ("nvshmem_uint8_broadcast", ()),
+            ("nvshmem_uint8_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64, tl.int32):
-            ("nvshmem_uint16_broadcast", ()),
+            ("nvshmem_uint16_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64, tl.int32):
-            ("nvshmem_uint32_broadcast", ()),
+            ("nvshmem_uint32_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64, tl.int32):
-            ("nvshmem_uint64_broadcast", ()),
+            ("nvshmem_uint64_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64, tl.int32):
-            ("nvshmem_half_broadcast", ()),
+            ("nvshmem_half_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
-            ("nvshmem_bfloat16_broadcast", ()),
+            ("nvshmem_bfloat16_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64, tl.int32):
-            ("nvshmem_float_broadcast", ()),
+            ("nvshmem_float_broadcast", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64, tl.int32):
-            ("nvshmem_double_broadcast", ()),
+            ("nvshmem_double_broadcast", (tl.int32)),
         },
         is_pure=False,
         _builder=_builder,
@@ -774,29 +774,29 @@ def broadcast_warp(team, dest, source, nelems, pe_root, _builder=None):
         [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder), pe_root],  # no cast
         {
             (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64, tl.int32):
-            ("nvshmemx_int8_broadcast_warp", ()),
+            ("nvshmemx_int8_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64, tl.int32):
-            ("nvshmemx_int16_broadcast_warp", ()),
+            ("nvshmemx_int16_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64, tl.int32):
-            ("nvshmemx_int32_broadcast_warp", ()),
+            ("nvshmemx_int32_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64, tl.int32):
-            ("nvshmemx_int64_broadcast_warp", ()),
+            ("nvshmemx_int64_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64, tl.int32):
-            ("nvshmemx_uint8_broadcast_warp", ()),
+            ("nvshmemx_uint8_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64, tl.int32):
-            ("nvshmemx_uint16_broadcast_warp", ()),
+            ("nvshmemx_uint16_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64, tl.int32):
-            ("nvshmemx_uint32_broadcast_warp", ()),
+            ("nvshmemx_uint32_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64, tl.int32):
-            ("nvshmemx_uint64_broadcast_warp", ()),
+            ("nvshmemx_uint64_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64, tl.int32):
-            ("nvshmemx_half_broadcast_warp", ()),
+            ("nvshmemx_half_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
-            ("nvshmemx_bfloat16_broadcast_warp", ()),
+            ("nvshmemx_bfloat16_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64, tl.int32):
-            ("nvshmemx_float_broadcast_warp", ()),
+            ("nvshmemx_float_broadcast_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64, tl.int32):
-            ("nvshmemx_double_broadcast_warp", ()),
+            ("nvshmemx_double_broadcast_warp", (tl.int32)),
         },
         is_pure=False,
         _builder=_builder,
@@ -811,29 +811,29 @@ def broadcast_block(team, dest, source, nelems, pe_root, _builder=None):
         [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder), pe_root],  # no cast
         {
             (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64, tl.int32):
-            ("nvshmemx_int8_broadcast_block", ()),
+            ("nvshmemx_int8_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64, tl.int32):
-            ("nvshmemx_int16_broadcast_block", ()),
+            ("nvshmemx_int16_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64, tl.int32):
-            ("nvshmemx_int32_broadcast_block", ()),
+            ("nvshmemx_int32_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64, tl.int32):
-            ("nvshmemx_int64_broadcast_block", ()),
+            ("nvshmemx_int64_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64, tl.int32):
-            ("nvshmemx_uint8_broadcast_block", ()),
+            ("nvshmemx_uint8_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64, tl.int32):
-            ("nvshmemx_uint16_broadcast_block", ()),
+            ("nvshmemx_uint16_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64, tl.int32):
-            ("nvshmemx_uint32_broadcast_block", ()),
+            ("nvshmemx_uint32_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64, tl.int32):
-            ("nvshmemx_uint64_broadcast_block", ()),
+            ("nvshmemx_uint64_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64, tl.int32):
-            ("nvshmemx_half_broadcast_block", ()),
+            ("nvshmemx_half_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64, tl.int32):
-            ("nvshmemx_bfloat16_broadcast_block", ()),
+            ("nvshmemx_bfloat16_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64, tl.int32):
-            ("nvshmemx_float_broadcast_block", ()),
+            ("nvshmemx_float_broadcast_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64, tl.int32):
-            ("nvshmemx_double_broadcast_block", ()),
+            ("nvshmemx_double_broadcast_block", (tl.int32)),
         },
         is_pure=False,
         _builder=_builder,
@@ -868,25 +868,30 @@ def fcollect(team, dest, source, nelems, _builder=None):
         "",
         [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder)],  # no cast
         {
-            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64): ("nvshmem_int8_fcollect", ()),
-            (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64): ("nvshmem_int16_fcollect", ()),
-            (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64): ("nvshmem_int32_fcollect", ()),
-            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64): ("nvshmem_int64_fcollect", ()),
-            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64): ("nvshmem_uint8_fcollect", ()),
-            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64):
-            ("nvshmem_uint16_fcollect", ()),
-            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64):
-            ("nvshmem_uint32_fcollect", ()),
-            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64):
-            ("nvshmem_uint64_fcollect", ()),
+            (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64):
+            ("nvshmem_int8_fcollect", (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64):
+            ("nvshmem_int16_fcollect", (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64):
+            ("nvshmem_int32_fcollect", (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64): ("nvshmem_int64_fcollect",
+                                                                                          (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64): ("nvshmem_uint8_fcollect",
+                                                                                          (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64): ("nvshmem_uint16_fcollect",
+                                                                                            (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64): ("nvshmem_uint32_fcollect",
+                                                                                            (tl.int32)),
+            (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64): ("nvshmem_uint64_fcollect",
+                                                                                            (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64): ("nvshmem_half_fcollect",
-                                                                                              ()),
+                                                                                              (tl.int32)),
             (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64):
-            ("nvshmem_bfloat16_fcollect", ()),
+            ("nvshmem_bfloat16_fcollect", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64): ("nvshmem_float_fcollect",
-                                                                                              ()),
+                                                                                              (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64): ("nvshmem_double_fcollect",
-                                                                                              ()),
+                                                                                              (tl.int32)),
         },
         is_pure=False,
         _builder=_builder,
@@ -903,27 +908,27 @@ def fcollect_warp(team, dest, source, nelems, _builder=None):
             (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64): ("nvshmemx_int8_fcollect_warp",
                                                                                         ()),
             (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64):
-            ("nvshmemx_int16_fcollect_warp", ()),
+            ("nvshmemx_int16_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64):
-            ("nvshmemx_int32_fcollect_warp", ()),
+            ("nvshmemx_int32_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64):
-            ("nvshmemx_int64_fcollect_warp", ()),
+            ("nvshmemx_int64_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64):
-            ("nvshmemx_uint8_fcollect_warp", ()),
+            ("nvshmemx_uint8_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64):
-            ("nvshmemx_uint16_fcollect_warp", ()),
+            ("nvshmemx_uint16_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64):
-            ("nvshmemx_uint32_fcollect_warp", ()),
+            ("nvshmemx_uint32_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64):
-            ("nvshmemx_uint64_fcollect_warp", ()),
+            ("nvshmemx_uint64_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64):
-            ("nvshmemx_half_fcollect_warp", ()),
+            ("nvshmemx_half_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64):
-            ("nvshmemx_bfloat16_fcollect_warp", ()),
+            ("nvshmemx_bfloat16_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64):
-            ("nvshmemx_float_fcollect_warp", ()),
+            ("nvshmemx_float_fcollect_warp", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64):
-            ("nvshmemx_double_fcollect_warp", ()),
+            ("nvshmemx_double_fcollect_warp", (tl.int32)),
         },
         is_pure=False,
         _builder=_builder,
@@ -938,29 +943,29 @@ def fcollect_block(team, dest, source, nelems, _builder=None):
         [team, dest, source, tl.cast(nelems, tl.uint64, _builder=_builder)],  # no cast
         {
             (tl.int32, tl.pointer_type(tl.int8), tl.pointer_type(tl.int8), tl.uint64): ("nvshmemx_int8_fcollect_block",
-                                                                                        ()),
+                                                                                        (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int16), tl.pointer_type(tl.int16), tl.uint64):
-            ("nvshmemx_int16_fcollect_block", ()),
+            ("nvshmemx_int16_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int32), tl.pointer_type(tl.int32), tl.uint64):
-            ("nvshmemx_int32_fcollect_block", ()),
+            ("nvshmemx_int32_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.int64), tl.pointer_type(tl.int64), tl.uint64):
-            ("nvshmemx_int64_fcollect_block", ()),
+            ("nvshmemx_int64_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint8), tl.pointer_type(tl.uint8), tl.uint64):
-            ("nvshmemx_uint8_fcollect_block", ()),
+            ("nvshmemx_uint8_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint16), tl.pointer_type(tl.uint16), tl.uint64):
-            ("nvshmemx_uint16_fcollect_block", ()),
+            ("nvshmemx_uint16_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint32), tl.pointer_type(tl.uint32), tl.uint64):
-            ("nvshmemx_uint32_fcollect_block", ()),
+            ("nvshmemx_uint32_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.uint64), tl.pointer_type(tl.uint64), tl.uint64):
-            ("nvshmemx_uint64_fcollect_block", ()),
+            ("nvshmemx_uint64_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float16), tl.pointer_type(tl.float16), tl.uint64):
-            ("nvshmemx_half_fcollect_block", ()),
+            ("nvshmemx_half_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.bfloat16), tl.pointer_type(tl.bfloat16), tl.uint64):
-            ("nvshmemx_bfloat16_fcollect_block", ()),
+            ("nvshmemx_bfloat16_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float32), tl.pointer_type(tl.float32), tl.uint64):
-            ("nvshmemx_float_fcollect_block", ()),
+            ("nvshmemx_float_fcollect_block", (tl.int32)),
             (tl.int32, tl.pointer_type(tl.float64), tl.pointer_type(tl.float64), tl.uint64):
-            ("nvshmemx_double_fcollect_block", ()),
+            ("nvshmemx_double_fcollect_block", (tl.int32)),
         },
         is_pure=False,
         _builder=_builder,

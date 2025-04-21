@@ -18,6 +18,7 @@ import os
 import subprocess
 from pathlib import Path
 import sysconfig
+from string import Template
 
 
 def min_dot_size(target: GPUTarget):
@@ -42,6 +43,8 @@ def _path_to_binary(binary: str):
         os.path.join(os.path.dirname(__file__), "bin", binary),
     ]
 
+    paths += ["/usr/local/cuda/bin/nvcc"]
+
     for path in paths:
         if os.path.exists(path) and os.path.isfile(path):
             result = subprocess.check_output([path, "--version"], stderr=subprocess.STDOUT)
@@ -56,6 +59,16 @@ def _path_to_binary(binary: str):
 def get_ptxas():
     name = "ptxas"
     return _path_to_binary(name)
+
+
+@functools.lru_cache()
+def get_nvlink():
+    return _path_to_binary("nvlink")
+
+
+@functools.lru_cache()
+def get_nvcc():
+    return _path_to_binary("nvcc")
 
 
 @functools.lru_cache()
@@ -118,6 +131,163 @@ def sm_arch_from_capability(capability: int):
     # TODO: Handle non-"a" sms
     suffix = "a" if capability >= 90 else ""
     return f"sm_{capability}{suffix}"
+
+
+class NVSHMEMHelper:
+
+    @functools.lru_cache()
+    @staticmethod
+    def get_nvshmem_home():
+        return Path(
+            os.environ.get(
+                "NVSHMEM_HOME",
+                Path(os.path.realpath(__file__)).parent.parent.parent
+                / "nvshmem"
+                / "build"
+                / "install",
+            )
+        )
+
+
+    @functools.lru_cache()
+    @staticmethod
+    def get_nvshmem_lib():
+        return NVSHMEMHelper.get_nvshmem_home() / "lib"
+
+
+    @functools.lru_cache()
+    @staticmethod
+    def get_aot_nvshmem_cubin(capability):
+        return (
+            Path(__file__).parent / 'lib'
+            / f"nvshmem_wrapper.sm{capability}.cubin"
+        )
+
+
+    @functools.lru_cache()
+    @staticmethod
+    def get_nvshmem_wrapper_src():
+        return (
+            Path(os.path.realpath(__file__)).parent.parent.parent
+                / "nvshmem_bind"
+                / "runtime"
+                / "nvshmem_wrapper.cu"
+        )
+
+
+    @functools.lru_cache()
+    @staticmethod
+    def extract_nvshmem_functions() -> dict:
+        file_path = NVSHMEMHelper.get_nvshmem_wrapper_src()
+        functions = {}
+        with open(file_path, 'r') as f:
+            content = f.read()
+
+        extern_block_pattern = re.compile(
+            r'extern "C" {\s*'  # match start with extern "C" 
+            r'((?:__device__.*?}\s*)+)'  # match __device__ func
+            r'}',
+            re.DOTALL
+        )
+
+        device_func_pattern = re.compile(
+            r'__device__\s+'          # __device__
+            r'(?:[\w\*]+\s+)+?'        # match return type
+            r'(\w+)\s*\([^\)]*\)\s*'  # match func signature
+            r'\{.*?\}(?=\s*__device__|\s*$)',  # func body
+            re.DOTALL
+        )
+
+        for extern_block in extern_block_pattern.finditer(content):
+            block_content = extern_block.group(1)
+            for match in device_func_pattern.finditer(block_content):
+                func_name = match.group(1)
+                full_code = match.group(0).strip()
+                functions[func_name] = full_code
+
+        return functions
+
+
+    @staticmethod
+    def generate_sub_cu(user_ptx):
+        functions = NVSHMEMHelper.extract_nvshmem_functions()
+        symbols = []
+        jit_funcs = []
+        for k, v in functions.items():
+            if k in user_ptx:
+                symbols.append(k)
+                jit_funcs.append(v)
+        content = '\n'.join(jit_funcs)
+        code_template = Template("""
+            #include <nvshmem.h>
+            #include <nvshmemx.h>
+
+            extern "C" {
+            $content
+            }
+        """)
+        code = code_template.substitute(content=content)
+        return code
+
+
+    @staticmethod
+    def get_jit_nvshmem_cubin(user_ptx: str, capability: int):
+        jit_code = NVSHMEMHelper.generate_sub_cu(user_ptx)
+        NVSHMEM_HOME = NVSHMEMHelper.get_nvshmem_home()
+        arch = sm_arch_from_capability(capability)
+        suffix = "a" if capability >= 90 else ""
+        with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.cu') as fsrc, \
+            tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.ptx') as fptx, \
+            tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.cubin') as fbin:
+            fsrc.write(jit_code)
+            fsrc.flush()
+
+            NVCC_GENCODE=f"-gencode=arch=compute_{capability}{suffix},code={arch}"
+            nvcc, _ = get_nvcc()
+            # nvshmem wrapper => ptx
+            nvcc_cmd = [
+                nvcc,
+                "-rdc=true",
+                "-ccbin", "g++",
+                NVCC_GENCODE,
+                "-I", os.path.join(NVSHMEM_HOME, "include"),
+                fsrc.name,
+                "-ptx",
+                "-c",
+                "-o", fptx.name
+            ]
+
+            try:
+                subprocess.run(nvcc_cmd, check=True, close_fds=False)
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(f"PTX generation failed: {e}")
+            fptx.flush()
+            ptxas, _ = get_ptxas()
+            # ptx => cubin
+            ptxas_cmd = [
+                ptxas,
+                "-c",
+                fptx.name,
+                f"--gpu-name={arch}",
+                "-o", fbin.name
+            ]
+
+            try:
+                subprocess.run(ptxas_cmd, check=True, close_fds=False)
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(f"PTX assembly failed for {arch}: {e}")
+
+            return fbin.name
+
+
+    @staticmethod
+    def get_nvshmem_cubin(user_ptx, capability):
+        aot_cubin_file = NVSHMEMHelper.get_aot_nvshmem_cubin(capability=capability)
+        if os.path.exists(aot_cubin_file):
+            return aot_cubin_file
+        else:
+            cubin = NVSHMEMHelper.get_jit_nvshmem_cubin(user_ptx, capability)
+            return cubin
 
 
 @dataclass(frozen=True)
@@ -351,11 +521,13 @@ class CUDABackend(BaseBackend):
                 if not k.is_declaration() and k.is_external_linkage():
                     k.set_nvvm_maxnreg(options.maxnreg)
         metadata['use_nvshmem'] = False
+        metadata["use_nvshmem_wrapper"] = False
         for k in llvm_mod.get_functions():
             # TODO(zhengxuegui.0): check whether the function exists in libnvshmem_device.bc
             if "nvshmem" in k.name and k.is_declaration():
                 metadata['use_nvshmem'] = True
-                break
+                if k.name.startswith("nvshmem") and k.name.endswith("wrapper"):
+                    metadata['use_nvshmem_wrapper'] = True
 
         # inline nvshmem ptx
         if "nvshmemi_device_state_d" in str(llvm_mod):
@@ -364,7 +536,7 @@ class CUDABackend(BaseBackend):
         if options.extern_libs:
             paths = [path for (name, path) in options.extern_libs]
             llvm.link_extern_libs(llvm_mod, paths)
-        if options.nvshmem_device_lib and metadata['use_nvshmem']:
+        if options.nvshmem_device_lib and metadata['use_nvshmem'] and not metadata['use_nvshmem_wrapper']:
             llvm.link_extern_libs(llvm_mod, [options.nvshmem_device_lib])
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
 
@@ -412,12 +584,16 @@ class CUDABackend(BaseBackend):
             fsrc.flush()
             fbin = fsrc.name + '.o'
 
+            fbin_combined = fbin + ".combined.cubin"
+            has_nvshmem_wrapper = metadata["use_nvshmem_wrapper"]
+            compile_only_cmds = ["-c"] if has_nvshmem_wrapper else []
+
             line_info = ["-lineinfo", "-suppress-debug-info"] if os.environ.get("TRITON_DISABLE_LINE_INFO",
                                                                                 "0") == "1" else ["-lineinfo"]
             fmad = [] if opt.enable_fp_fusion else ['--fmad=false']
             arch = sm_arch_from_capability(capability)
             opt_level = ['--opt-level', '0'] if os.environ.get("DISABLE_PTXAS_OPT", "0") == "1" else []
-            ptxas_cmd = [ptxas, *line_info, *fmad, '-v', *opt_level, f'--gpu-name={arch}', fsrc.name, '-o', fbin]
+            ptxas_cmd = [ptxas, *compile_only_cmds, *line_info, *fmad, '-v', *opt_level, f'--gpu-name={arch}', fsrc.name, '-o', fbin]
             try:
                 subprocess.run(ptxas_cmd, check=True, close_fds=False, stderr=flog)
                 if os.path.exists(fsrc.name):
@@ -441,8 +617,34 @@ class CUDABackend(BaseBackend):
                                  f"`ptxas` stderr:\n{log}\n"
                                  f'Repro command: {" ".join(ptxas_cmd)}\n')
 
-            with open(fbin, "rb") as f:
-                cubin = f.read()
+            if has_nvshmem_wrapper:
+                # nvlink
+                nvlink, _ = get_nvlink()
+                nvlink_cmds = [
+                    nvlink,
+                    f"-arch={arch}",
+                    f"-L{NVSHMEMHelper.get_nvshmem_lib()}",
+                    "-lnvshmem_device",
+                    fbin,
+                    NVSHMEMHelper.get_nvshmem_cubin(src, capability).__str__(),
+                    "-o",
+                    fbin_combined,
+                ]
+                try:
+                    subprocess.run(nvlink_cmds, check=True, close_fds=False, stderr=flog)
+                except Exception as e:
+                    import logging
+                    logging.error(f"error runing nvlink: {nvlink_cmds}")
+                    logging.exception(e)
+            if has_nvshmem_wrapper:
+                with open(fbin_combined, "rb") as f:
+                    cubin = f.read()
+            else:
+                with open(fbin, "rb") as f:
+                    cubin = f.read()
+            if os.path.exists(fbin_combined):
+                os.remove(fbin_combined)
+
             if os.path.exists(fbin):
                 os.remove(fbin)
         return cubin

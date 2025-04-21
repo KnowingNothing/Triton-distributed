@@ -1,3 +1,6 @@
 [submodule "third_party/rocshmem"]
 	path = third_party/rocshmem
 	url = https://github.com/ROCm/rocSHMEM.git
+[submodule "third_party/nvshmem"]
+	path = third_party/nvshmem
+	url = git@code.byted.org:mlsys/nvshmem.git

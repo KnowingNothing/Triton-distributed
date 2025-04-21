@@ -59,6 +59,17 @@ function download_libnvshmem_device_bc_byted() {
   fi
 }
 
+function build_nvshmem_cubin() {
+  pushd ${PROJECT_ROOT}/runtime
+  nvcc -rdc=true -ccbin g++ $NVCC_GENCODE -I$NVSHMEM_DIR/include nvshmem_wrapper.cu -ptx -c -o nvshmem_wrapper.ptx
+  IFS=";" read -ra arch_list <<<"$ARCH"
+  for _arch in "${arch_list[@]}"; do
+    ${PROJECT_ROOT}/../nvidia/backend/bin/ptxas -c nvshmem_wrapper.ptx --gpu-name=sm_${_arch} -o nvshmem_wrapper.sm${_arch}.cubin
+    mv nvshmem_wrapper.sm${_arch}.cubin ${PROJECT_ROOT}/../nvidia/backend/lib
+  done
+  popd
+}
+
 set_arch
 set_nvcc_gencode
 
