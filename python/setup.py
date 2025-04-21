@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import List, Optional
 
 from setuptools import Extension, setup
-from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 from dataclasses import dataclass
 
@@ -32,6 +31,8 @@ from wheel.bdist_wheel import bdist_wheel
 import pybind11
 
 from build_helpers import get_base_dir, get_cmake_dir
+
+from torch.utils.cpp_extension import BuildExtension as TorchBuildExtension
 
 
 @dataclass
@@ -401,17 +402,17 @@ class CMakeExtension(Extension):
         self.path = path
 
 
-class CMakeBuild(build_ext):
+class CMakeBuild(TorchBuildExtension):
 
-    user_options = build_ext.user_options + \
+    user_options = TorchBuildExtension.user_options + \
         [('base-dir=', None, 'base directory of Triton')]
 
     def initialize_options(self):
-        build_ext.initialize_options(self)
+        TorchBuildExtension.initialize_options(self)
         self.base_dir = get_base_dir()
 
     def finalize_options(self):
-        build_ext.finalize_options(self)
+        TorchBuildExtension.finalize_options(self)
 
     def build_nvshmem(self, cap):
         nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem_bind")
@@ -432,6 +433,37 @@ class CMakeBuild(build_ext):
         subprocess.check_call(["bash", f"{rocshmem_dir}/build.sh"] + extra_args)
 
     def run(self):
+        for ext in self.extensions:
+            if isinstance(ext, CMakeExtension):
+                self.build_extension_cmake(ext)
+
+        all_extensions = self.extensions
+        self.extensions = [ext for ext in self.extensions if not isinstance(ext, CMakeExtension)]
+        super().run()
+        self.extensions = all_extensions
+
+    def get_pybind11_cmake_args(self):
+        pybind11_sys_path = get_env_with_keys(["PYBIND11_SYSPATH"])
+        if pybind11_sys_path:
+            pybind11_include_dir = os.path.join(pybind11_sys_path, "include")
+        else:
+            pybind11_include_dir = pybind11.get_include()
+        return [f"-Dpybind11_INCLUDE_DIR='{pybind11_include_dir}'", f"-Dpybind11_DIR='{pybind11.get_cmake_dir()}'"]
+
+    def get_proton_cmake_args(self):
+        cmake_args = get_thirdparty_packages([get_json_package_info()])
+        cmake_args += self.get_pybind11_cmake_args()
+        cupti_include_dir = get_env_with_keys(["TRITON_CUPTI_INCLUDE_PATH"])
+        if cupti_include_dir == "":
+            cupti_include_dir = os.path.join(get_base_dir(), "third_party", "nvidia", "backend", "include")
+        cmake_args += ["-DCUPTI_INCLUDE_DIR=" + cupti_include_dir]
+        roctracer_include_dir = get_env_with_keys(["TRITON_ROCTRACER_INCLUDE_PATH"])
+        if roctracer_include_dir == "":
+            roctracer_include_dir = os.path.join(get_base_dir(), "third_party", "amd", "backend", "include")
+        cmake_args += ["-DROCTRACER_INCLUDE_DIR=" + roctracer_include_dir]
+        return cmake_args
+
+    def build_extension_cmake(self, ext):
         try:
             import torch
 
@@ -455,31 +487,6 @@ class CMakeBuild(build_ext):
         if (cmake_major, cmake_minor) < (3, 18):
             raise RuntimeError("CMake >= 3.18.0 is required")
 
-        for ext in self.extensions:
-            self.build_extension(ext)
-
-    def get_pybind11_cmake_args(self):
-        pybind11_sys_path = get_env_with_keys(["PYBIND11_SYSPATH"])
-        if pybind11_sys_path:
-            pybind11_include_dir = os.path.join(pybind11_sys_path, "include")
-        else:
-            pybind11_include_dir = pybind11.get_include()
-        return [f"-Dpybind11_INCLUDE_DIR='{pybind11_include_dir}'", f"-Dpybind11_DIR='{pybind11.get_cmake_dir()}'"]
-
-    def get_proton_cmake_args(self):
-        cmake_args = get_thirdparty_packages([get_json_package_info()])
-        cmake_args += self.get_pybind11_cmake_args()
-        cupti_include_dir = get_env_with_keys(["TRITON_CUPTI_INCLUDE_PATH"])
-        if cupti_include_dir == "":
-            cupti_include_dir = os.path.join(get_base_dir(), "third_party", "nvidia", "backend", "include")
-        cmake_args += ["-DCUPTI_INCLUDE_DIR=" + cupti_include_dir]
-        roctracer_include_dir = get_env_with_keys(["TRITON_ROCTRACER_INCLUDE_PATH"])
-        if roctracer_include_dir == "":
-            roctracer_include_dir = os.path.join(get_base_dir(), "third_party", "amd", "backend", "include")
-        cmake_args += ["-DROCTRACER_INCLUDE_DIR=" + roctracer_include_dir]
-        return cmake_args
-
-    def build_extension(self, ext):
         lit_dir = shutil.which('lit')
         ninja_dir = shutil.which('ninja')
         # lit is used by the test suite
@@ -682,12 +689,37 @@ def add_link_to_distributed():
     update_symlink(distributed_install_dir, distributed_dir)
 
 
+def add_link_to_pynvshmem():
+    for name in ["pynvshmem", "_pynvshmem"]:
+        pynvshmem_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "nvshmem_bind", "pynvshmem", "python",
+                         name))
+        pynvshmem_install_dir = os.path.join(os.path.dirname(__file__), "triton", name)
+        update_symlink(pynvshmem_install_dir, pynvshmem_dir)
+    # link nvshmem lib
+    nvshmem_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "nvshmem", "build", "install"))
+    nvshmem_install_dir = os.path.join(os.path.dirname(__file__), "triton", "_C", "nvshmem")
+    update_symlink(nvshmem_install_dir, nvshmem_dir)
+
+
 def add_links():
     add_link_to_backends()
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         add_link_to_proton()
     if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):  # Default ON
         add_link_to_distributed()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                if torch.version.hip is None:
+                    add_link_to_pynvshmem()
+                else:
+                    pass
+        except Exception:
+            print("Cannot import torch.")
+            pass
 
 
 class plugin_install(install):
@@ -721,7 +753,8 @@ class plugin_egginfo(egg_info):
 package_data = {
     "triton/tools/extra": sum((b.tools_package_data for b in backends), []),
     **{f"triton/backends/{b.name}": b.package_data
-       for b in backends}, "triton/language/extra": sum((b.language_package_data for b in backends), [])
+       for b in backends}, "triton/language/extra": sum((b.language_package_data for b in backends),
+                                                        []), '': ['*.so*', '*.a']
 }
 
 
@@ -767,7 +800,23 @@ def get_packages():
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         packages += ["triton/profiler"]
     if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):  # Default ON
-        packages += ["triton/distributed"]
+        packages += [
+            "triton/distributed", "triton/distributed/kernels", "triton/distributed/kernels/nvidia",
+            "triton/distributed/kernels/amd", "triton/distributed/layers/nvidia", "triton/distributed/tools",
+            "triton/distributed/test"
+        ]
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                if torch.version.hip is None:
+                    packages += ["triton/pynvshmem"]
+                    packages += ["triton/_pynvshmem"]
+                else:
+                    pass
+        except Exception:
+            print("Cannot import torch.")
+            pass
 
     return packages
 
@@ -806,8 +855,79 @@ def get_git_version_suffix():
         return get_git_commit_hash()
 
 
+###################
+# PYNVSHMEM Related
+def pathlib_wrapper(func):
+
+    def wrapper(*kargs, **kwargs):
+        include_dirs, library_dirs, libraries = func(*kargs, **kwargs)
+        return map(str, include_dirs), map(str, library_dirs), map(str, libraries)
+
+    return wrapper
+
+
+@pathlib_wrapper
+def nvshmem_deps():
+    nvshmem_home = Path(os.path.join(get_base_dir(), "python", "triton", "_C", "nvshmem"))
+    include_dirs = [nvshmem_home / "include"]
+    library_dirs = [nvshmem_home / "lib"]
+    libraries = ["nvshmem_host", "nvshmem_device"]
+    return include_dirs, library_dirs, libraries
+
+
+@pathlib_wrapper
+def cuda_deps():
+    cuda_home = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda"))
+    include_dirs = [cuda_home / "include"]
+    library_dirs = [cuda_home / "lib64", cuda_home / "lib64/stubs"]
+    libraries = ["cuda", "cudart", "nvidia-ml"]
+    return include_dirs, library_dirs, libraries
+
+
+def setup_pynvshmem_pytorch_extension():
+    """Setup CppExtension for PyTorch support"""
+    include_dirs, library_dirs, libraries = [], [], []
+
+    deps = [nvshmem_deps(), cuda_deps()]
+
+    for include_dir, library_dir, library in deps:
+        include_dirs += include_dir
+        library_dirs += library_dir
+        libraries += library
+
+    # Compiler flags
+    # too much warning from CUDA /usr/local/cuda/include/cusparse.h: "-Wdeprecated-declarations"
+    cxx_flags = [
+        "-O3",
+        "-DTORCH_CUDA=1",
+        "-fvisibility=hidden",
+        "-Wno-deprecated-declarations",
+        "-fdiagnostics-color=always",
+    ]
+    ld_flags = [
+        "-Wl,--exclude-libs=libnccl_static", "-Wl,-rpath,$ORIGIN"  # add $ORIGIN for relative path
+    ]
+
+    from torch.utils.cpp_extension import CUDAExtension
+
+    return CUDAExtension(
+        name="_pynvshmem",
+        sources=[os.path.join(os.pardir, "third_party", "nvshmem_bind", "pynvshmem", "src", "pynvshmem.cc")],
+        include_dirs=include_dirs,
+        library_dirs=library_dirs,
+        libraries=libraries,
+        dlink=True,
+        dlink_libraries=["nvshmem_device", "cudart_static"],
+        extra_compile_args={"cxx": cxx_flags, "nvcc": ["-rdc=true"]},
+        extra_link_args=ld_flags,
+    )
+
+
+# End PYNVSHMEM Related
+#######################
+
 setup(
-    name=os.environ.get("TRITON_WHEEL_NAME", "triton"),
+    name=os.environ.get("TRITON_WHEEL_NAME", "triton-dist"),
     version="3.3.0" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", ""),
     author="Philippe Tillet",
     author_email="phil@openai.com",
@@ -818,7 +938,8 @@ setup(
     entry_points=get_entry_points(),
     package_data=package_data,
     include_package_data=True,
-    ext_modules=[CMakeExtension("triton", "triton/_C/")],
+    ext_modules=[setup_pynvshmem_pytorch_extension(),
+                 CMakeExtension("triton", "triton/_C/")],
     cmdclass={
         "build_ext": CMakeBuild,
         "build_py": CMakeBuildPy,
@@ -830,8 +951,8 @@ setup(
     },
     zip_safe=False,
     # for PyPI
-    keywords=["Compiler", "Deep Learning"],
-    url="https://github.com/triton-lang/triton/",
+    keywords=["Compiler", "Deep Learning", "Overlapping", "Distributed"],
+    url="https://github.com/ByteDance-Seed/Triton-distributed",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
@@ -845,10 +966,7 @@ setup(
     ],
     test_suite="tests",
     extras_require={
-        "build": [
-            "cmake>=3.20",
-            "lit",
-        ],
+        "build": ["cmake>=3.20", "lit", "packaging", "ninja", "cuda-python==12.4", "pybind11"],
         "tests": [
             "autopep8",
             "isort",
@@ -858,11 +976,13 @@ setup(
             "pytest-xdist",
             "scipy>=1.7.1",
             "llnl-hatchet",
+            "pytest",
         ],
         "tutorials": [
             "matplotlib",
             "pandas",
             "tabulate",
+            "chardet",
         ],
     },
 )

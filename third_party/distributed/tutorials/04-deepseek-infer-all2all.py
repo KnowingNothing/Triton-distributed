@@ -61,7 +61,7 @@ import torch
 import torch.distributed
 import triton
 import triton.language as tl
-import pynvshmem
+from triton import pynvshmem
 
 import os
 import random

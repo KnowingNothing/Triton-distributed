@@ -32,7 +32,7 @@ import numpy as np
 
 from functools import partial
 
-import pynvshmem
+from triton import pynvshmem
 
 from triton.distributed.kernels.nvidia import create_moe_rs_context, select_experts, moe_reduce_rs
 

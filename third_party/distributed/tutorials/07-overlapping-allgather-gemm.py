@@ -13,20 +13,17 @@ In doing so, you will learn about:
 """
 
 import torch
+from triton import pynvshmem
+from typing import Optional
+from triton.distributed.utils import (initialize_distributed, TP_GROUP)
+from triton.distributed.kernels.nvidia.common_ops import wait_eq, set_signal
+from cuda import cudart
 
 import triton
 from triton.distributed.kernels.nvidia.allgather_gemm import create_ag_gemm_inter_node_context
 import triton.language as tl
 import triton.distributed.language as dl
 from triton.language.extra import libshmem_device
-
-import pynvshmem
-from typing import Optional
-
-from triton.distributed.utils import initialize_distributed
-
-from triton.distributed.kernels.nvidia.common_ops import wait_eq, set_signal
-from cuda import cudart
 
 # %%
 # Now, let's write a GEMM kernel to consume the transfered tensors!

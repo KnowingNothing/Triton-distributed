@@ -197,7 +197,6 @@ __global__ void __launch_bounds__(kNumThreads, 1)
         int32_t *sorted_token_ids, int32_t *expert_ids,
         int32_t *block_barrier_ids, int32_t *rank_block_num,
         int32_t *total_tokens_post_pad) {
-  int nblocks = gridDim.x;
   int nthreads = blockDim.x;
   int bid = blockIdx.x;
   int tid = (threadIdx.x * blockDim.y * blockDim.z + threadIdx.y * blockDim.z +

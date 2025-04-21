@@ -28,7 +28,7 @@ from triton.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import tid, ntid, __syncthreads, multimem_st_b64, load_v2_b64
 import torch
 import torch.distributed
-import pynvshmem
+from triton import pynvshmem
 import os
 import datetime
 

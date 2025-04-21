@@ -44,7 +44,7 @@ In doing so, you will learn about:
 # Kernel
 # --------------
 import torch
-import pynvshmem
+from triton import pynvshmem
 import os
 import datetime
 

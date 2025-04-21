@@ -22,7 +22,7 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-import pynvshmem
+from triton import pynvshmem
 import torch
 import torch.distributed
 from dataclasses import dataclass
@@ -170,7 +170,7 @@ def _forward_push_numa_2d_ll_kernel(
             )  # magic number here
             __syncthreads()
             if thread_idx == 0:
-                atomic_store(symm_flag + segment, signal_target, scope="gpu", semantic="release")
+                st(symm_flag + segment, signal_target, scope="gpu", semantic="release")
         else:  # pack ll data
             _pack_ll_block(
                 symm_ll_buffer + rank * bytes_per_rank * 2,
@@ -313,7 +313,7 @@ def _forward_push_numa_2d_ll_multinode_kernel(
             __syncthreads()
 
             if thread_idx == 0:
-                atomic_store(symm_flag + segment, signal_target, scope="gpu", semantic="release")
+                st(symm_flag + segment, signal_target, scope="gpu", semantic="release")
         else:  # pack ll data and send to peer
             _pack_ll_block(
                 symm_ll_buffer + rank * bytes_per_rank * 2,

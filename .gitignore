@@ -103,3 +103,6 @@ third_party/rocshmem_bind/runtime/*.o
 third_party/rocshmem_bind/rocshmem_build
 third_party/rocshmem_bind/ompi_build
 third_party/rocshmem_bind/pyrocshmem/build/
+python/*pynvshmem*
+python/triton/*pynvshmem*
+python/triton/_C/nvshmem

@@ -27,7 +27,7 @@ import torch.distributed
 import triton
 import triton.language as tl
 import triton.distributed
-import pynvshmem
+from triton import pynvshmem
 
 import argparse
 import random

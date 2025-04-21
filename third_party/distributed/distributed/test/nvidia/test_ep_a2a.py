@@ -33,7 +33,7 @@ from triton.distributed.utils import (
 )
 from functools import partial
 
-import pynvshmem
+from triton import pynvshmem
 
 import argparse
 import random

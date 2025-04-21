@@ -35,7 +35,7 @@ import numpy as np
 
 from functools import partial
 
-import pynvshmem
+from triton import pynvshmem
 
 from triton.distributed.utils import (
     generate_data,

@@ -16,7 +16,7 @@ import torch
 import triton
 import triton.language as tl
 from triton.language.extra import libshmem_device
-import pynvshmem
+from triton import pynvshmem
 
 from typing import List
 from cuda import cuda

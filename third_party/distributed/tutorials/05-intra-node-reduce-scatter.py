@@ -43,7 +43,7 @@ import triton
 import triton.language as tl
 from triton.distributed.kernels.nvidia.common_ops import barrier_all
 from typing import List, Optional
-import pynvshmem
+from triton import pynvshmem
 
 import os
 

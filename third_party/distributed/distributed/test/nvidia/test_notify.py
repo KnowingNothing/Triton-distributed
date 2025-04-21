@@ -24,7 +24,7 @@
 ################################################################################
 import torch
 import triton
-import pynvshmem
+from triton import pynvshmem
 import triton.distributed.language as dl
 
 import os

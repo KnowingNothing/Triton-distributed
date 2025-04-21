@@ -35,7 +35,7 @@ from cuda import cuda, cudart
 from triton._C.libtriton_distributed.distributed import moe_ag_scatter_align_block_size
 from triton.distributed.kernels.nvidia.common_ops import wait_eq, set_signal
 
-import pynvshmem
+from triton import pynvshmem
 
 
 def torch_dtype_to_triton_dtype(dtype):

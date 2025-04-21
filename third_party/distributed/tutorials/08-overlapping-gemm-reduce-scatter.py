@@ -45,7 +45,7 @@ import triton.language as tl
 import triton.distributed.language as dl
 
 from typing import Optional, List
-import pynvshmem
+from triton import pynvshmem
 # The implementation of reduce_scatter_2d_op is the same as that in 04-2-mutl-node-gemm-reudce-scatter.py.
 from triton.distributed.kernels.nvidia.gemm_reduce_scatter import ReduceScatter2DContext, create_reduce_scater_2d_ctx, reduce_scatter_2d_op
 

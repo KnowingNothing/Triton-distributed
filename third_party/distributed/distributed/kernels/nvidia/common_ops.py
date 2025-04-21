@@ -35,7 +35,7 @@ from triton.language.extra.cuda.language_extra import (
     __syncthreads,
 )
 
-import pynvshmem
+from triton import pynvshmem
 
 
 @tl.core.extern

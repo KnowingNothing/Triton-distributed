@@ -40,7 +40,7 @@ import triton.language as tl
 import triton.distributed.language as dl
 
 from typing import Optional, List
-import pynvshmem
+from triton import pynvshmem
 from triton.distributed.kernels.nvidia.common_ops import wait_eq, barrier_all_on_stream
 from triton.distributed.kernels.nvidia.gemm_reduce_scatter import ring_reduce
 from triton.language.extra import libshmem_device

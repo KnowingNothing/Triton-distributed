@@ -27,7 +27,7 @@ import torch
 
 import ctypes
 
-import pynvshmem
+from triton import pynvshmem
 from triton.distributed.kernels.nvidia.ep_a2a import (
     kernel_combine_token,
     kernel_dispatch_token,

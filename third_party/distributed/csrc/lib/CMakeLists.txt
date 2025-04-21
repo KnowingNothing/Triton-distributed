@@ -62,4 +62,12 @@ target_link_libraries(triton_distributed PUBLIC torch ${TORCH_PYTHON_LIBRARY} CU
 string(TOLOWER "${USE_TRITON_DISTRIBUTED_AOT}" USE_TRITON_DISTRIBUTED_AOT_LOWER)
 if(USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "on" OR USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "1" OR USE_TRITON_DISTRIBUTED_AOT_LOWER STREQUAL "true")
   target_link_libraries(triton_distributed PUBLIC triton_distributed_kernel)
+  # Get the link directory of triton_distributed
+  get_target_property(ORIGINAL_LINK_DIRS triton_distributed LINK_DIRECTORIES)
+
+  # Both set absolute and relateive link path
+  set_target_properties(triton_distributed PROPERTIES
+      INSTALL_RPATH "$ORIGIN;${ORIGINAL_LINK_DIRS}"
+      BUILD_WITH_INSTALL_RPATH TRUE
+  )
 endif()

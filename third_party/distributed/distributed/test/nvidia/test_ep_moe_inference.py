@@ -34,7 +34,7 @@ import numpy as np
 import random
 
 import datetime
-import pynvshmem
+from triton import pynvshmem
 
 from triton.distributed.kernels.nvidia import fast_all_to_all, create_all_to_all_context, all_to_all_post_process
 

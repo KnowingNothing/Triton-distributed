@@ -36,7 +36,7 @@ import datetime
 import os
 from dataclasses import dataclass
 
-import pynvshmem
+from triton import pynvshmem
 import torch
 
 import triton

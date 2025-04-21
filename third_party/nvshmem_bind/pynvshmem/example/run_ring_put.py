@@ -26,7 +26,7 @@
 import datetime
 import os
 
-import pynvshmem
+from triton import pynvshmem
 import torch
 import torch.distributed
 

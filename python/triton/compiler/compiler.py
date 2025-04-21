@@ -415,7 +415,7 @@ class CompiledKernel:
         if hasattr(self.metadata, 'use_nvshmem'):
             if self.metadata.use_nvshmem:
                 # patch function with nvshmem
-                import pynvshmem
+                from triton import pynvshmem
                 pynvshmem.nvshmemx_cumodule_init(self.module)
         elif hasattr(self.metadata, 'use_rocshmem'):
             if self.metadata.use_rocshmem:

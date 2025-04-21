@@ -24,7 +24,7 @@
 ################################################################################
 import torch
 from triton.distributed.layers.nvidia import AllGatherLayer
-import pynvshmem
+from triton import pynvshmem
 
 import os
 import datetime

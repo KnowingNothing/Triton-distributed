@@ -54,7 +54,7 @@ def is_hip():
 if is_cuda():
     from cuda import cuda, cudart
 
-    import pynvshmem
+    from triton import pynvshmem
 elif is_hip():
     from hip import hip
 else:

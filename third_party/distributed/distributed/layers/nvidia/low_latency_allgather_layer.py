@@ -22,7 +22,7 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-import pynvshmem
+from triton import pynvshmem
 import torch
 import torch.distributed
 from triton.distributed.kernels.nvidia import _forward_push_2d_ll_kernel, _forward_push_2d_kernel, _forward_pull_kernel, _forward_push_2d_ll_multimem_kernel, _forward_push_numa_2d_ll_kernel, _forward_push_numa_2d_kernel, _forward_push_numa_2d_ll_multinode_kernel

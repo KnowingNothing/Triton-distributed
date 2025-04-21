@@ -39,7 +39,7 @@ import triton.language as tl
 import triton.distributed.language as dl
 from triton.distributed.kernels.nvidia.common_ops import barrier_all
 
-import pynvshmem
+from triton import pynvshmem
 
 
 def CUDA_CHECK(err):

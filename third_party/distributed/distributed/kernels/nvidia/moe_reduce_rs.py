@@ -27,7 +27,7 @@ import triton
 import triton.language as tl
 import triton.distributed.language as dl
 
-import pynvshmem
+from triton import pynvshmem
 
 from typing import Optional, List
 

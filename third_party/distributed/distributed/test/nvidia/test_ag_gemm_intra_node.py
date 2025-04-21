@@ -32,7 +32,7 @@ import sys
 import datetime
 import numpy as np
 
-import pynvshmem
+from triton import pynvshmem
 
 from triton.distributed.utils import (
     perf_func,

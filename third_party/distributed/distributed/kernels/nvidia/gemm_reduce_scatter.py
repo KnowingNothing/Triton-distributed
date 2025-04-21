@@ -29,7 +29,7 @@ import triton.language as tl
 import triton.distributed.language as dl
 
 from typing import Optional, List
-import pynvshmem
+from triton import pynvshmem
 from triton.distributed.kernels.nvidia.common_ops import wait_eq
 from triton.language.extra.cuda.language_extra import __syncthreads, tid, atomic_cas
 from triton.distributed.utils import CUDA_CHECK

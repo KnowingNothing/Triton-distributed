@@ -28,7 +28,7 @@ from triton.distributed.kernels.nvidia import (create_fast_allgather_context, ge
                                                gqa_fwd_batch_decode_intra_rank_aot, gqa_fwd_batch_decode_intra_rank,
                                                kernel_inter_rank_gqa_fwd_batch_decode_combine_kv)
 from .low_latency_allgather_layer import AllGatherLayer
-import pynvshmem
+from triton import pynvshmem
 if "USE_TRITON_DISTRIBUTED_AOT" in os.environ and os.environ["USE_TRITON_DISTRIBUTED_AOT"] in [
         "1", "true", "on", "ON", "On", True
 ]:

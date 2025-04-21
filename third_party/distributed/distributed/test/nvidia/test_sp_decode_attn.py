@@ -32,7 +32,7 @@ import sys
 from cuda import cuda, cudart
 import datetime
 import numpy as np
-import pynvshmem
+from triton import pynvshmem
 
 from triton.distributed.layers.nvidia import SpGQAFlashDecodeAttention
 from triton.distributed.utils import perf_func, group_profile, dist_print

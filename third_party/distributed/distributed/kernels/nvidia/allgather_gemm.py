@@ -28,7 +28,7 @@ import triton.language as tl
 import triton.distributed.language as dl
 from triton.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import tid, __syncthreads
-import pynvshmem
+from triton import pynvshmem
 
 import time
 from typing import Optional, List

@@ -22,7 +22,7 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-import pynvshmem
+from triton import pynvshmem
 import torch
 import torch.distributed
 

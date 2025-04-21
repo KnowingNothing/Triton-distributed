@@ -9,7 +9,7 @@ import argparse
 import os
 import datetime
 
-import pynvshmem
+from triton import pynvshmem
 
 RANK = int(os.environ.get("RANK", 0))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
