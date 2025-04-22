@@ -258,10 +258,10 @@ def _forward_push_numa_2d_ll_multinode_kernel(
     # (i0, j0, k0) 2 conditions to put internode => (node_id, local_numa_id, numa_rank)
     #  1. send intra NUMA (i0, j0, k_x) x!=0
     #  2. send inter NUMA (i0, j_x, k0) x!=0
-    is_intra_numa = (numa_rank != peer_numa_rank)
+    is_intra_numa = numa_rank != peer_numa_rank
     is_inter_numa = node_id == peer_node_id and (local_numa_id != peer_local_numa_id and numa_rank == peer_numa_rank)
 
-    if is_intra_numa and global_numa_id == peer_global_numa_id:  # no need to wait, just send
+    if (is_intra_numa and global_numa_id == peer_global_numa_id):  # no need to wait, just send
         peer = global_numa_id * numa_world_size + peer_numa_rank
         segment = rank
         libshmem_device.putmem_signal_block(
@@ -275,7 +275,7 @@ def _forward_push_numa_2d_ll_multinode_kernel(
         )  # write and tell peer remote that remote copy is done
     elif is_intra_numa and global_numa_id != peer_global_numa_id:
         peer = global_numa_id * numa_world_size + peer_numa_rank
-        segment = peer_node_id * local_world_size + peer_local_numa_id * numa_world_size + numa_rank
+        segment = (peer_node_id * local_world_size + peer_local_numa_id * numa_world_size + numa_rank)
         # wait for segment ready
         if thread_idx == 0:
             libshmem_device.signal_wait_until(symm_flag + segment, libshmem_device.NVSHMEM_CMP_EQ, signal_target)
@@ -290,7 +290,7 @@ def _forward_push_numa_2d_ll_multinode_kernel(
             peer,
         )  # write and tell peer remote that remote copy is done
     elif is_inter_numa:
-        peer = node_id * local_world_size + peer_local_numa_id * numa_world_size + peer_numa_rank
+        peer = (node_id * local_world_size + peer_local_numa_id * numa_world_size + peer_numa_rank)
         segment = rank
         libshmem_device.putmem_signal_block(
             tl.cast(symm_ptr, tl.pointer_type(tl.int8)) + segment * bytes_per_rank,
@@ -345,18 +345,20 @@ def _forward_push_numa_2d_ll_multinode_kernel(
 
 
 @triton.jit(do_not_specialize=["rank", "signal_target"])
-def _forward_push_2d_kernel(symm_ptr, bytes_per_rank, symm_flag, nnodes, world_size, rank, signal_target):
-    local_world_size = world_size // nnodes
-    local_rank = rank % local_world_size
-    nid = rank // local_world_size
-    rank_base = nid * local_world_size
+def _forward_push_2d_kernel(symm_ptr, bytes_per_rank, symm_flag, NNODES, WORLD_SIZE, rank, signal_target):
+    LOCAL_WORLD_SIZE = WORLD_SIZE // NNODES
+    local_rank = rank % LOCAL_WORLD_SIZE
+    node_id = rank // LOCAL_WORLD_SIZE
+    rank_base = node_id * LOCAL_WORLD_SIZE
 
     pid = tl.program_id(0)
+    peer_rank = pid
+    peer_node_id = peer_rank // LOCAL_WORLD_SIZE
+    peer_local_rank = peer_rank % LOCAL_WORLD_SIZE
     thread_idx = tid(0)
-    if pid == local_rank:  # remote push
-        for n in range(nnodes - 1):
-            sid = (n + 1 + nid) % nnodes
-            peer = sid * local_world_size + local_rank
+    if peer_local_rank == local_rank:  # remote push
+        if peer_rank != rank:
+            peer = peer_node_id * LOCAL_WORLD_SIZE + local_rank
             segment = rank
             libshmem_device.putmem_signal_nbi_block(
                 tl.cast(symm_ptr, tl.pointer_type(tl.int8)) + segment * bytes_per_rank,
@@ -367,19 +369,148 @@ def _forward_push_2d_kernel(symm_ptr, bytes_per_rank, symm_flag, nnodes, world_s
                 libshmem_device.NVSHMEM_SIGNAL_SET,
                 peer,
             )  # write and tell peer remote that remote copy is done
-        if thread_idx < world_size and thread_idx != rank:
-            libshmem_device.signal_wait_until(
-                symm_flag + thread_idx,
-                libshmem_device.NVSHMEM_CMP_EQ,
-                signal_target,
-            )
-        __syncthreads()
+        else:
+            if thread_idx < WORLD_SIZE and thread_idx != rank:
+                libshmem_device.signal_wait_until(
+                    symm_flag + thread_idx,
+                    libshmem_device.NVSHMEM_CMP_EQ,
+                    signal_target,
+                )
+            __syncthreads()
     else:  # local push
-        peer = rank_base + pid
-        for n in range(nnodes):
-            sid = (n + nid) % nnodes
-            segment = sid * local_world_size + local_rank
-            if n != 0:  # wait for data from other nodes
+        peer = rank_base + peer_local_rank
+        segment = peer_node_id * LOCAL_WORLD_SIZE + local_rank
+        if peer_node_id != node_id:  # wait for data from other nodes
+            if thread_idx == 0:
+                libshmem_device.signal_wait_until(
+                    symm_flag + segment,
+                    libshmem_device.NVSHMEM_CMP_EQ,
+                    signal_target,
+                )
+            __syncthreads()
+        libshmem_device.putmem_signal_block(
+            tl.cast(symm_ptr, tl.pointer_type(tl.int8)) + segment * bytes_per_rank,
+            tl.cast(symm_ptr, tl.pointer_type(tl.int8)) + segment * bytes_per_rank,
+            bytes_per_rank,
+            symm_flag + segment,
+            signal_target,
+            libshmem_device.NVSHMEM_SIGNAL_SET,
+            peer,
+        )  # write and tell peer remote that remote copy is done
+
+
+@triton.jit(do_not_specialize=["rank", "signal_target"])
+def _forward_push_3d_kernel(
+    symm_ptr,
+    bytes_per_rank,
+    symm_ll_buffer,
+    symm_flag,
+    NNODES,
+    N_NUMA_NODES,
+    WORLD_SIZE,
+    rank,
+    signal_target,
+    INTER_NODE_WITH_LL: tl.constexpr = False,
+):
+    """inter-node / inter-NUMA / intra-NUMA"""
+    LOCAL_WORLD_SIZE = WORLD_SIZE // NNODES
+    NUMA_WORLD_SIZE = LOCAL_WORLD_SIZE // N_NUMA_NODES
+    local_rank = rank % LOCAL_WORLD_SIZE
+    node_id = rank // LOCAL_WORLD_SIZE
+    numa_rank = local_rank % NUMA_WORLD_SIZE
+    local_numa_id = local_rank // NUMA_WORLD_SIZE
+
+    pid = tl.program_id(0)
+    peer_rank = pid
+    peer_node_id = peer_rank // LOCAL_WORLD_SIZE
+    peer_local_rank = peer_rank % LOCAL_WORLD_SIZE
+    peer_numa_rank = peer_local_rank % NUMA_WORLD_SIZE
+    peer_local_numa_id = peer_local_rank // NUMA_WORLD_SIZE
+
+    thread_idx = tid(0)
+    num_ints = bytes_per_rank // 4
+    symm_ptr = tl.cast(symm_ptr, tl.pointer_type(tl.int8))
+    symm_ll_buffer = tl.cast(symm_ll_buffer, tl.pointer_type(tl.int8))
+    if peer_local_rank == local_rank:
+        if peer_node_id != node_id:
+            if INTER_NODE_WITH_LL:
+                segment = peer_node_id * LOCAL_WORLD_SIZE + local_rank
+                _recv_ll_block(
+                    symm_ptr + segment * bytes_per_rank,
+                    symm_ll_buffer + segment * bytes_per_rank * 2,
+                    num_ints,
+                    signal_target,
+                )
+                __syncthreads()
+                if thread_idx == 0:
+                    st(symm_flag + segment, signal_target, scope="gpu", semantic="release")
+        else:
+            wid = thread_idx // 32
+            if INTER_NODE_WITH_LL:
+                segment = rank
+                _pack_ll_block(symm_ll_buffer + rank * bytes_per_rank * 2, symm_ptr + rank * bytes_per_rank, num_ints,
+                               signal_target, 2048)
+                __syncthreads()
+
+                if wid < NNODES and wid != node_id:
+                    peer = wid * LOCAL_WORLD_SIZE + local_rank
+                    libshmem_device.putmem_nbi_warp(
+                        symm_ll_buffer + segment * bytes_per_rank * 2,
+                        symm_ll_buffer + segment * bytes_per_rank * 2,
+                        bytes_per_rank * 2,
+                        peer,
+                    )  # write and tell peer remote that remote copy is done
+            else:
+                if wid < NNODES and wid != node_id:
+                    peer = wid * LOCAL_WORLD_SIZE + local_rank
+                    segment = rank
+                    libshmem_device.putmem_signal_nbi_warp(
+                        symm_ptr + segment * bytes_per_rank,
+                        symm_ptr + segment * bytes_per_rank,
+                        bytes_per_rank,
+                        symm_flag + segment,
+                        signal_target,
+                        libshmem_device.NVSHMEM_SIGNAL_SET,
+                        peer,
+                    )  # write and tell peer remote that remote copy is done
+
+            __syncthreads()
+            if thread_idx < WORLD_SIZE and thread_idx != rank:
+                libshmem_device.signal_wait_until(
+                    symm_flag + thread_idx,
+                    libshmem_device.NVSHMEM_CMP_EQ,
+                    signal_target,
+                )
+            __syncthreads()
+    else:  # local push with NUMA opt
+        # NIC consume all the PCI-e bandwidth. don't overlap with inter-NODE communication
+        # inter/intra NODE communication overlap pattern is too complex.
+        if NNODES > 1:  # no if for single node.
+            if thread_idx < WORLD_SIZE and (thread_idx % LOCAL_WORLD_SIZE == local_rank and thread_idx != rank):
+                libshmem_device.signal_wait_until(
+                    symm_flag + thread_idx,
+                    libshmem_device.NVSHMEM_CMP_EQ,
+                    signal_target,
+                )
+            __syncthreads()
+
+        if peer_numa_rank == numa_rank:  # NUMA write
+            peer = (node_id * LOCAL_WORLD_SIZE + peer_local_numa_id * NUMA_WORLD_SIZE + numa_rank)
+            segment = peer_node_id * LOCAL_WORLD_SIZE + local_rank
+            libshmem_device.putmem_signal_block(
+                symm_ptr + segment * bytes_per_rank,
+                symm_ptr + segment * bytes_per_rank,
+                bytes_per_rank,
+                symm_flag + segment,
+                signal_target,
+                libshmem_device.NVSHMEM_SIGNAL_SET,
+                peer,
+            )
+        else:
+            peer = (node_id * LOCAL_WORLD_SIZE + local_numa_id * NUMA_WORLD_SIZE + peer_numa_rank)
+            segment = (peer_node_id * LOCAL_WORLD_SIZE + peer_local_numa_id * NUMA_WORLD_SIZE + numa_rank)
+
+            if peer_local_numa_id != local_numa_id:  # wait for data from other NUMA
                 if thread_idx == 0:
                     libshmem_device.signal_wait_until(
                         symm_flag + segment,
@@ -387,15 +518,16 @@ def _forward_push_2d_kernel(symm_ptr, bytes_per_rank, symm_flag, nnodes, world_s
                         signal_target,
                     )
                 __syncthreads()
+
             libshmem_device.putmem_signal_block(
-                tl.cast(symm_ptr, tl.pointer_type(tl.int8)) + segment * bytes_per_rank,
-                tl.cast(symm_ptr, tl.pointer_type(tl.int8)) + segment * bytes_per_rank,
+                symm_ptr + segment * bytes_per_rank,
+                symm_ptr + segment * bytes_per_rank,
                 bytes_per_rank,
                 symm_flag + segment,
                 signal_target,
                 libshmem_device.NVSHMEM_SIGNAL_SET,
                 peer,
-            )  # write and tell peer remote that remote copy is done
+            )
 
 
 @triton.jit
@@ -745,7 +877,7 @@ def fast_allgather_pull(ctx: FastAllGatherContext, symm_buffer: torch.Tensor):
 
 def fast_allgather_push_2d(ctx: FastAllGatherContext, symm_buffer: torch.Tensor):
     ctx.signal_target += 1
-    _forward_push_2d_kernel[(ctx.num_ranks // ctx.num_nodes, )](
+    _forward_push_2d_kernel[(ctx.num_ranks, )](
         symm_buffer,
         symm_buffer.nbytes // ctx.num_ranks,
         ctx.signal_tensor,
@@ -753,6 +885,24 @@ def fast_allgather_push_2d(ctx: FastAllGatherContext, symm_buffer: torch.Tensor)
         ctx.num_ranks,
         ctx.rank,
         ctx.signal_target,
+        num_warps=32,
+    )
+    return symm_buffer
+
+
+def fast_allgather_push_3d(ctx: FastAllGatherContext, symm_buffer: torch.Tensor):
+    ctx.signal_target += 1
+    _forward_push_3d_kernel[(ctx.num_ranks, )](
+        symm_buffer,
+        symm_buffer.nbytes // ctx.num_ranks,
+        ctx.ll_buffers[ctx.signal_target % 2],
+        ctx.signal_tensor,
+        ctx.num_nodes,
+        2,  # TODO(houqi.1993)
+        ctx.num_ranks,
+        ctx.rank,
+        ctx.signal_target,
+        INTER_NODE_WITH_LL=False,
         num_warps=32,
     )
     return symm_buffer

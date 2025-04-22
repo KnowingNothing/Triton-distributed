@@ -40,19 +40,20 @@ def parse_args():
     parser.add_argument("--warmup_iters", type=int, default=30)
     parser.add_argument("--iters", type=int, default=500)
     parser.add_argument("--profile", action="store_true", default=False)
+    parser.add_argument("--verify", default=True, action=argparse.BooleanOptionalAction)
     parser.add_argument(
         "--mode",
         default="pull_1d",
         choices=[
             "push_numa_2d_ll", "push_numa_2d", "push_2d_ll_multimem", "push_2d_ll", "push_2d", "pull_1d",
-            "push_numa_2d_ll_multinode"
+            "push_numa_2d_ll_multinode", "push_3d", "push_3d_ll"
         ],
     )
     args = parser.parse_args()
     return args
 
 
-def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int):
+def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int, do_verify: bool):
     nbytes_per_rank = nbytes // WORLD_SIZE
     ref_tensor = torch.arange(nbytes, dtype=dtype).cuda()
 
@@ -65,6 +66,10 @@ def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int):
     def _run_with_ag_op():
         if args.mode == "push_2d":
             return ag_op.forward_push_2d(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
+        if args.mode == "push_3d":
+            return ag_op.forward_push_3d(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
+        if args.mode == "push_3d_ll":
+            return ag_op.forward_push_3d_ll(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
         elif args.mode == "push_2d_ll":
             return ag_op.forward_push_2d_ll(ag_buffer[ag_op.signal_target % ag_op.stages][:nbytes])
         elif args.mode == "push_numa_2d":
@@ -80,23 +85,25 @@ def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int):
         else:
             raise ValueError(f"Unknown mode {args.mode}")
 
-    for i in range(100):
-        ref_tensor = torch.randint(0, 9999999, [nbytes // 4], dtype=torch.int32).view(dtype).cuda()
-        torch.distributed.broadcast(ref_tensor, src=0)
-        ag_buffer[ag_op.signal_target % ag_op.stages][index_start:index_end].copy_(ref_tensor[index_start:index_end])
-        # torch.cuda.synchronize()
-        # pynvshmem.nvshmem_barrier_all()
-        result = _run_with_ag_op()
+    def _verify():
+        for i in range(100):
+            ref_tensor = torch.randint(0, 9999999, [nbytes // 4], dtype=torch.int32).view(dtype).cuda()
+            torch.distributed.broadcast(ref_tensor, src=0)
+            ag_buffer[ag_op.signal_target % ag_op.stages][index_start:index_end].copy_(
+                ref_tensor[index_start:index_end])
+            result = _run_with_ag_op()
 
-        try:
-            torch.testing.assert_close(result[:nbytes], ref_tensor, atol=0, rtol=0)
-        except Exception as e:
-            print(ag_buffer.view(WORLD_SIZE, -1))
-            print(ref_tensor.view(WORLD_SIZE, -1))
-            print(f"❌ RANK[{RANK}] check failed")
-            raise e
-    print(f"✅ RANK[{RANK}] check passed")
+            try:
+                torch.testing.assert_close(result[:nbytes], ref_tensor, atol=0, rtol=0)
+            except Exception as e:
+                print(result[:nbytes].view(WORLD_SIZE, -1))
+                print(ref_tensor.view(WORLD_SIZE, -1))
+                print(f"❌ RANK[{RANK}] check failed")
+                raise e
+        print(f"✅ RANK[{RANK}] check passed")
 
+    if do_verify:
+        _verify()
     pynvshmem.nvshmem_barrier_all()
     from triton.distributed.utils import perf_func, group_profile
 
@@ -108,9 +115,10 @@ def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int):
             iters=iters,
         )
 
-    gbps = (lambda ms: result[:nbytes].numel() * result.element_size() * 1e-9 / (ms * 1e-3) *
-            (WORLD_SIZE - 1) / WORLD_SIZE)
-    print(f"RANK = {RANK}, {nbytes // 1024} KB, Latency = {ag_time_ms} ms, Bandwith = {gbps(ag_time_ms):0.2f} GB/S")
+    gbps = (lambda ms: nbytes * 1e-9 / (ms * 1e-3) * (WORLD_SIZE - 1) / WORLD_SIZE)
+    print(
+        f"RANK = {RANK}, {nbytes // 1024} KB, Latency = {ag_time_ms * 1000:0.2f} us, Bandwith = {gbps(ag_time_ms):0.2f} GB/s"
+    )
 
 
 def align_to(value, alignment):
@@ -151,6 +159,6 @@ if __name__ == "__main__":
     maxbytes = align_to(args.maxbytes, 16)
     nbytes = minbytes
     while nbytes < maxbytes:
-        perf_ag(ag_op, ag_buffer, nbytes)
+        perf_ag(ag_op, ag_buffer, nbytes, args.verify)
         nbytes = args.stepfactor * nbytes
     torch.distributed.destroy_process_group()

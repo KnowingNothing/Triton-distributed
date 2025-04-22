@@ -24,7 +24,7 @@
 ################################################################################
 from .allgather_gemm import ag_gemm_intra_node, create_ag_gemm_intra_node_context, ag_gemm_inter_node, create_ag_gemm_inter_node_context, gemm
 from .low_latency_allgather import (fast_allgather, create_fast_allgather_context, _forward_pull_kernel,
-                                    _forward_push_2d_kernel, _forward_push_2d_ll_kernel,
+                                    _forward_push_2d_kernel, _forward_push_3d_kernel, _forward_push_2d_ll_kernel,
                                     _forward_push_2d_ll_multimem_kernel, _forward_push_numa_2d_ll_kernel,
                                     _forward_push_numa_2d_kernel, _forward_push_numa_2d_ll_multinode_kernel)
 from .allgather_group_gemm import (
@@ -45,6 +45,7 @@ from .moe_reduce_rs import create_moe_rs_context, select_experts, moe_reduce_rs
 __all__ = [
     "_forward_pull_kernel",
     "_forward_push_2d_kernel",
+    "_forward_push_3d_kernel",
     "_forward_push_2d_ll_kernel",
     "_forward_push_2d_ll_multimem_kernel",
     "_forward_push_numa_2d_kernel",

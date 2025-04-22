@@ -25,7 +25,7 @@
 from triton import pynvshmem
 import torch
 import torch.distributed
-from triton.distributed.kernels.nvidia import _forward_push_2d_ll_kernel, _forward_push_2d_kernel, _forward_pull_kernel, _forward_push_2d_ll_multimem_kernel, _forward_push_numa_2d_ll_kernel, _forward_push_numa_2d_kernel, _forward_push_numa_2d_ll_multinode_kernel
+from triton.distributed.kernels.nvidia import _forward_push_2d_ll_kernel, _forward_push_2d_kernel, _forward_push_3d_kernel, _forward_pull_kernel, _forward_push_2d_ll_multimem_kernel, _forward_push_numa_2d_ll_kernel, _forward_push_numa_2d_kernel, _forward_push_numa_2d_ll_multinode_kernel
 
 
 class AllGatherLayer:
@@ -67,7 +67,7 @@ class AllGatherLayer:
         return symm_buffer
 
     def forward_push_2d(self, symm_buffer: torch.Tensor):
-        _forward_push_2d_kernel[(self.size // self.nnodes, )](
+        _forward_push_2d_kernel[(self.size, )](
             symm_buffer,
             symm_buffer.nbytes // self.size,
             self.signal,
@@ -79,6 +79,31 @@ class AllGatherLayer:
         )
         self.signal_target += 1
         return symm_buffer
+
+    def _forward_push_3d(self, symm_buffer: torch.Tensor, use_ll_protocol: bool = False):
+        ll_buffer = self.ll_buffers[self.signal_target % self.stages]
+        _forward_push_3d_kernel[(self.size, )](
+            symm_buffer,
+            symm_buffer.nbytes // self.size,
+            ll_buffer,
+            self.signal,
+            self.nnodes,
+            2,  # TODO(houqi.1993)
+            self.size,
+            self.rank,
+            self.signal_target,
+            INTER_NODE_WITH_LL=use_ll_protocol,
+            num_warps=32,
+        )
+        self.signal_target += 1
+
+        return symm_buffer
+
+    def forward_push_3d(self, symm_buffer: torch.Tensor):
+        return self._forward_push_3d(symm_buffer, False)  # no LL protocol
+
+    def forward_push_3d_ll(self, symm_buffer: torch.Tensor):
+        return self._forward_push_3d(symm_buffer, True)  # with LL protocol
 
     def forward_push_2d_ll(self, symm_buffer: torch.Tensor):
         assert symm_buffer.nbytes * 2 < self.max_buffer_size
