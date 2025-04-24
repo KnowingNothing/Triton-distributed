@@ -152,7 +152,7 @@ if __name__ == "__main__":
     ].copy_(local_data)  # copy local data to symmetric memory for communication
     signal[rank].fill_(0)  # The initial value of signal should be 0s
     # We need barrier all to make sure the above initialization visible to other ranks
-    pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
     cp_engine_producer_all_gather_full_mesh_pull(
         rank, num_ranks, local_data, ag_buffer_ptrs, torch.cuda.current_stream(),
         signal)  # Here we use current stream for allgather, we can pass any other stream for comm-comp fusion.
@@ -171,7 +171,7 @@ if __name__ == "__main__":
     ].copy_(local_data)  # copy local data to symmetric memory for communication
     signal[rank].fill_(0)  # The initial value of signal should be 0s
     # We need barrier all to make sure the above initialization visible to other ranks
-    pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
     grid = lambda META: (int(num_ranks), )
     nvshmem_device_producer_all_gather_2d_put_block_kernel[grid](
         ag_buffer_ptrs[rank], signal[rank], M_per_rank * N,  # No. of elems of local data

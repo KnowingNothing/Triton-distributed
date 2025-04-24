@@ -22,7 +22,8 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-from .allgather_gemm import ag_gemm_intra_node, create_ag_gemm_intra_node_context, ag_gemm_inter_node, create_ag_gemm_inter_node_context, gemm
+from .allgather import get_auto_all_gather_method, AllGatherMethod, cp_engine_producer_all_gather_intra_node, inter_node_allgather
+from .allgather_gemm import ag_gemm_intra_node, create_ag_gemm_intra_node_context, ag_gemm_inter_node, create_ag_gemm_inter_node_context, gemm_persistent, gemm_non_persistent
 from .low_latency_allgather import (fast_allgather, create_fast_allgather_context, _forward_pull_kernel,
                                     _forward_push_2d_kernel, _forward_push_3d_kernel, _forward_push_2d_ll_kernel,
                                     _forward_push_2d_ll_multimem_kernel, _forward_push_numa_2d_ll_kernel,
@@ -66,8 +67,13 @@ __all__ = [
     "create_moe_rs_context",
     "fast_all_to_all",
     "fast_allgather",
+    "get_auto_all_gather_method",
+    "AllGatherMethod",
+    "cp_engine_producer_all_gather_intra_node",
+    "inter_node_allgather",
     "gemm_rs_multi_node",
-    "gemm",
+    "gemm_persistent",
+    "gemm_non_persistent",
     "get_triton_combine_kv_algo_info",
     "gqa_fwd_batch_decode_aot",
     "gqa_fwd_batch_decode_intra_rank_aot",

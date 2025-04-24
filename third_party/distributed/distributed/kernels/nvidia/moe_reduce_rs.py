@@ -33,13 +33,10 @@ from typing import Optional, List
 
 from dataclasses import dataclass
 
-from triton.distributed.kernels.nvidia.common_ops import wait_eq, set_signal
+from triton.distributed.kernels.nvidia.common_ops import wait_eq, set_signal, barrier_all_intra_node_atomic_cas_block
+from triton.distributed.utils import p2p_native_atomic_required
 from triton.language.extra import libshmem_device
-from triton.language.extra.cuda.language_extra import (
-    atomic_add,
-    __syncthreads,
-    tid,
-)
+from triton.language.extra.cuda.language_extra import (atomic_add, __syncthreads, tid, ntid)
 
 
 ################### helper functions ###################
@@ -65,84 +62,13 @@ def torch_dtype_to_triton_dtype(dtype):
 
 
 @triton.jit
-def get_tid():
-    return tl.inline_asm_elementwise(
-        """
-        mov.u32 $0, %tid.x;
-        mov.u32 $1, %tid.y;
-        mov.u32 $2, %tid.z;
-        """,
-        "=r,=r,=r",
-        [],
-        dtype=(tl.uint32, tl.uint32, tl.uint32),
-        is_pure=True,
-        pack=1,
-    )
-
-
-@triton.jit
-def get_ntid():
-    return tl.inline_asm_elementwise(
-        """
-        mov.u32 $0, %ntid.x;
-        mov.u32 $1, %ntid.y;
-        mov.u32 $2, %ntid.z;
-        """,
-        "=r,=r,=r",
-        [],
-        dtype=(tl.uint32, tl.uint32, tl.uint32),
-        is_pure=True,
-        pack=1,
-    )
-
-
-@triton.jit
 def get_flat_tid():
-    tid_x, tid_y, tid_z = get_tid()
-    ntid_x, ntid_y, _ = get_ntid()
+    tid_x, tid_y, tid_z = tid(0), tid(1), tid(2)
+    ntid_x, ntid_y = ntid(0), ntid(1)
     return tid_z * ntid_y * ntid_x + tid_y * ntid_x + tid_x
 
 
-@tl.core.extern
-def atomic_cas(
-    ptr,
-    value,
-    target_value,
-    scope: tl.constexpr,
-    semantic: tl.constexpr,
-    _builder=None,
-):
-    return tl.inline_asm_elementwise(
-        asm=f"atom.{semantic.value}.{scope.value}.global.cas.b32 $0, [$1], $2, $3;",
-        constraints=("=r,l,r,r"),
-        args=[
-            ptr,
-            value,
-            target_value,
-        ],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-        _builder=_builder,
-    )
-
-
-@triton.jit
-def barrier_all_intra_node(local_world_size, comm_buf_ptr):
-    thread_id = tid(axis=0).to(tl.int32)
-    rank = dl.rank()
-    local_rank = rank % local_world_size
-    node_id = rank // local_world_size
-    rank_offset = node_id * local_world_size
-    if thread_id < local_world_size:
-        remote_ptr = dl.symm_at(comm_buf_ptr, thread_id + rank_offset)
-        while atomic_cas(remote_ptr + local_rank, 0, 1, "sys", "release") != 0:
-            pass
-        while (atomic_cas(comm_buf_ptr + thread_id, 1, 0, "sys", "acquire") != 1):
-            pass
-    __syncthreads()
-
-
+@p2p_native_atomic_required
 def barrier_all_on_stream(
     stream,
     is_intra_node=False,
@@ -150,11 +76,11 @@ def barrier_all_on_stream(
     local_world_size=0,
 ):
     if not is_intra_node:
-        pynvshmem.nvshmem_barrier_all_on_stream(stream.cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(stream.cuda_stream)
     else:
         assert barrier_all_buf is not None and local_world_size > 0
         with torch.cuda.stream(stream):
-            barrier_all_intra_node[(1, )](local_world_size, barrier_all_buf)
+            barrier_all_intra_node_atomic_cas_block[(1, )](pynvshmem.nvshmem_my_pe(), local_world_size, barrier_all_buf)
 
 
 ################### compute ctx ###################

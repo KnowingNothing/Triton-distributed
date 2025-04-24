@@ -37,6 +37,7 @@ from triton import pynvshmem
 from triton.distributed.utils import (
     perf_func,
     dist_print,
+    group_profile,
 )
 
 ALL_TESTS = {}
@@ -54,9 +55,13 @@ def register_test(name):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--list", action="store_true", default=False)
     parser.add_argument("--case", type=str, choices=list(ALL_TESTS.keys()))
-    parser.add_argument("--shape_id", type=str, default="")
+    parser.add_argument("--shape_id", type=str, default="LLaMA-3.1-70B", choices=configs.keys())
+    parser.add_argument("--debug", action="store_true", default=False)
+    parser.add_argument("--persistent", action=argparse.BooleanOptionalAction,
+                        default=torch.cuda.get_device_capability() >= (9, 0))
+    parser.add_argument("--profile", default=False, action="store_true")
 
     args = parser.parse_args()
     return args
@@ -69,8 +74,8 @@ run: python {os.path.abspath(__file__)} --case XXX
 """)
 
 
-@register_test("correctness_tma")
-def test_ag_gemm_tma_intra_node(args, autotune=False):
+@register_test("correctness")
+def test_ag_gemm_intra_node(args, autotune=False):
     device = "cuda"
     dtype = torch.float16
     rank = args.rank
@@ -87,7 +92,7 @@ def test_ag_gemm_tma_intra_node(args, autotune=False):
     A = torch.randn([M_per_rank, K], dtype=dtype, device=device)
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
 
-    debug = False
+    debug = args.debug
 
     ag_stream = torch.cuda.Stream()
     gemm_stream = torch.cuda.Stream()
@@ -95,9 +100,11 @@ def test_ag_gemm_tma_intra_node(args, autotune=False):
     ctx = create_ag_gemm_intra_node_context(A, B, rank, num_ranks, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
                                             for_correctness=debug, ag_stream=ag_stream, gemm_stream=gemm_stream,
                                             serial=False, autotune=False)
+    if rank == 0:
+        print(f"all gather with: {ctx.all_gather_method}")
 
     def func():
-        return ag_gemm_intra_node(A, B, ctx=ctx)
+        return ag_gemm_intra_node(A, B, ctx=ctx, persistent=args.persistent)
 
     if autotune:
         _func = func
@@ -111,14 +118,13 @@ def test_ag_gemm_tma_intra_node(args, autotune=False):
         os.environ["TRITON_ALWAYS_COMPILE"] = "0"
         os.environ["MLIR_ENABLE_DUMP"] = "0"
 
-    for i in range(5):
-        # every time, use a new input data to check correctness
-        A.copy_(torch.randn([M_per_rank, K], dtype=dtype, device=device))
-        B.copy_(torch.randn([N_per_rank, K], dtype=dtype, device=device))
-        ctx.workspace_tensors[rank][:M].copy_(torch.randn([M, K], dtype=dtype, device=device))
-        pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
-        torch.cuda.synchronize()
-        C = func()
+    with group_profile("ag_gemm_intra_node_{os.environ['TORCHELASTIC_RUN_ID']}", args.profile, group=TP_GROUP):
+        for i in range(5):
+            # every time, use a new input data to check correctness
+            A.random_()
+            B.random_()
+            ctx.workspace_tensors[rank][:M].random_()
+            C = func()
 
     ag_A = torch.empty([M, K], dtype=dtype, device=device)
     torch.distributed.all_gather_into_tensor(
@@ -143,7 +149,7 @@ def test_ag_gemm_tma_intra_node(args, autotune=False):
                 print("Pass!")
 
 
-register_test("correctness_tma_autotune")(lambda args: test_ag_gemm_tma_intra_node(args, autotune=True))
+register_test("correctness_autotune")(lambda args: test_ag_gemm_intra_node(args, autotune=True))
 
 configs = {
     "LLaMA-7B": {"M": 8192, "N": 11008, "K": 4096, "BM": 128, "BN": 128, "BK": 64, "Stage": 5},
@@ -155,29 +161,20 @@ configs = {
 }
 
 
-@register_test("perf_tma")
+@register_test("perf")
 def test_perf_ag_gemm_tma_intra_node(args, autotune=False):
     device = "cuda"
     dtype = torch.float16
     rank = args.rank
     num_ranks = args.num_ranks
-    if args.shape_id:
-        shape_config = configs[args.shape_id]
-        M = shape_config["M"]
-        N = shape_config["N"]
-        K = shape_config["K"]
-        BLOCK_M = shape_config["BM"]
-        BLOCK_N = shape_config["BN"]
-        BLOCK_K = shape_config["BK"]
-        stages = shape_config["Stage"]
-    else:
-        M = 1024 * num_ranks
-        N = 28672
-        K = 8192
-        BLOCK_M = 128
-        BLOCK_N = 256
-        BLOCK_K = 64
-        stages = 3
+    shape_config = configs[args.shape_id]
+    M = shape_config["M"]
+    N = shape_config["N"]
+    K = shape_config["K"]
+    BLOCK_M = shape_config["BM"]
+    BLOCK_N = shape_config["BN"]
+    BLOCK_K = shape_config["BK"]
+    stages = shape_config["Stage"]
 
     assert M % num_ranks == 0
     assert N % num_ranks == 0
@@ -187,7 +184,7 @@ def test_perf_ag_gemm_tma_intra_node(args, autotune=False):
     A = torch.randn([M_per_rank, K], dtype=dtype, device=device)
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
 
-    ag_stream = torch.cuda.Stream()
+    ag_stream = torch.cuda.Stream(priority=-1)
     gemm_stream = torch.cuda.Stream()
 
     ctx = create_ag_gemm_intra_node_context(A, B, rank, num_ranks, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
@@ -195,15 +192,15 @@ def test_perf_ag_gemm_tma_intra_node(args, autotune=False):
                                             gemm_stream=gemm_stream, serial=False, autotune=False)
 
     def func():
-        return ag_gemm_intra_node(A, B, ctx=ctx)
+        return ag_gemm_intra_node(A, B, ctx=ctx, persistent=args.persistent)
 
     if autotune:
         _func = func
         ctx.autotune = True
         func = contextual_autotune(is_dist=True)(lambda: _func())
 
-    C, perf = perf_func(func, iters=100, warmup_iters=20)
-    dist_print(f"rank{RANK}", perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
+    C, duration_ms = perf_func(func, iters=10, warmup_iters=5)
+    dist_print(f"rank{RANK}: {duration_ms:0.2f} ms/iter", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
     with torch.profiler.profile(
             activities=[
@@ -227,7 +224,7 @@ def test_perf_ag_gemm_tma_intra_node(args, autotune=False):
     )
     C_golden = torch.matmul(ag_A, B.T)
     assert torch.allclose(C_golden, C, atol=1e-3, rtol=1e-3)
-    return perf
+    return duration_ms
 
 
 register_test("perf_tma_autotune")(lambda args: test_perf_ag_gemm_tma_intra_node(args, autotune=True))
@@ -261,10 +258,13 @@ if __name__ == "__main__":
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
     pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
-    pynvshmem.nvshmem_barrier_all()
-    torch.cuda.synchronize()
 
     args = get_args()
+    if torch.cuda.get_device_capability() < (9, 0):
+        if args.persistent:
+            print("Persistent is not supported on device with capability < (9, 0). exit...")
+            sys.exit()
+
     args.default_group = TP_GROUP
     args.rank = RANK
     args.num_ranks = WORLD_SIZE

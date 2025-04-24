@@ -50,10 +50,13 @@ files_to_check=()
 if [ "$format_all" -eq 1 ]; then
   files_to_check=($(git ls-files --exclude-standard | grep -v "$(git config --file .gitmodules --get-regexp path | awk '{ print $2 }' | xargs -I {} echo -n '\|{}' | cut -c 3-)"))
 else
-  files_to_check=($(git diff $base $target --name-only --diff-filter=ACMRT))
+  # exclude submodules such as nvshmem here. hopes your git supports --ignore-submodules too
+  files_to_check=($(git diff $base $target --name-only --diff-filter=ACMRT --ignore-submodules))
 fi
 
 current_dir="$PWD"
+# find ! -path does not work anyway. maybe a BUG for find. filter in files_to_check instead
+# neither `! -path` or `-path xxx -prune` works here.
 files_to_check_cpp=$(find "${files_to_check[@]}" -type f \
   -regextype posix-extended \
   -regex ".*\.(c|cpp|cc|h|hpp|cu|cuh)$" \

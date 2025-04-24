@@ -129,17 +129,38 @@ def int_p(dest, value, pe, _builder=None):
 
 
 @core.extern
-def remote_ptr(local_ptr, pe, _builder=None):
+def _remote_ptr_wrapper(local_ptr, pe, _builder=None):
     return extern_call(
         "libnvshmem_device",
         "",
         [local_ptr, pe],
-        {(core.pointer_type(core.dtype(core_dtype)), core.dtype(pe_dtype)): (
-             "nvshmem_ptr", core.pointer_type(core.dtype(core_dtype)),  # of the same dtype
-         )
-         for core_dtype in core.dtype.SINT_TYPES + core.dtype.UINT_TYPES + core.dtype.FP_TYPES + core.dtype.OTHER_TYPES
-         for pe_dtype in ["int32", "uint32"]},
+        {(core.pointer_type(core.void), core.dtype("int32")): (
+             "nvshmem_ptr", core.pointer_type(core.void),  # of the same dtype
+         )},
         is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def remote_ptr(local_ptr, pe, _builder=None):
+    tl.static_assert(
+        local_ptr.dtype.is_ptr(),
+        "remote_ptr(local_ptr, pe) local_ptr should be a pointer",
+        _builder=_builder,
+    )
+    tl.static_assert(
+        pe.dtype.is_int(),
+        "remote_ptr(local_ptr, pe) pe should be an integer",
+        _builder=_builder,
+    )
+    return tl.cast(
+        _remote_ptr_wrapper(
+            tl.cast(local_ptr, tl.pointer_type(tl.void), _builder=_builder),
+            tl.cast(pe, tl.int32, _builder=_builder),
+            _builder=_builder,
+        ),
+        local_ptr.dtype,
         _builder=_builder,
     )
 
@@ -538,6 +559,7 @@ def putmem_nbi(dest, source, nbytes, pe, _builder=None):
 
 @core.extern
 def putmem_signal(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -563,6 +585,7 @@ def putmem_signal(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=N
 
 @core.extern
 def putmem_signal_nbi(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -588,6 +611,7 @@ def putmem_signal_nbi(dest, source, nbytes, sig_addr, signal, sig_op, pe, _build
 
 @core.extern
 def putmem_signal_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -613,6 +637,7 @@ def putmem_signal_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _bui
 
 @core.extern
 def putmem_signal_nbi_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -638,6 +663,7 @@ def putmem_signal_nbi_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, 
 
 @core.extern
 def putmem_signal_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -663,6 +689,7 @@ def putmem_signal_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _buil
 
 @core.extern
 def putmem_signal_nbi_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _builder=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -688,6 +715,7 @@ def putmem_signal_nbi_warp(dest, source, nbytes, sig_addr, signal, sig_op, pe, _
 
 @core.extern
 def signal_op(sig_addr, signal, sig_op, pe, _builder=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",
@@ -710,6 +738,7 @@ def signal_op(sig_addr, signal, sig_op, pe, _builder=None):
 
 @core.extern
 def signal_wait_until(sig_addr, cmp_, cmp_val, _builder=None):
+    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _builder=_builder)
     return extern_call(
         "libnvshmem_device",
         "",

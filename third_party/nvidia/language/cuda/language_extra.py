@@ -372,6 +372,14 @@ def st(
         "st(ptr, val) argument 0 `ptr` should be a pointer of int type",
         _builder=_builder,
     )
+    dtype = ptr.dtype.element_ty
+    if isinstance(val, core.constexpr):
+        val = tl.cast(val.value, dtype, _builder=_builder)
+    else:
+        val = tl.cast(val, dtype, _builder=_builder)
+
+    tl.static_assert(val.dtype.is_int(), "st(ptr, val) argument `val` should be of int type", _builder=_builder)
+
     if isinstance(scope, core.constexpr):
         scope = scope.value
     if isinstance(semantic, core.constexpr):
@@ -382,12 +390,12 @@ def st(
         "semantic should be relaxed or release",
         _builder=_builder,
     )
-    constraint = _int_constaint(core.constexpr(val.dtype.primitive_bitwidth), _builder=_builder)
+    constraint = _int_constaint(core.constexpr(dtype.primitive_bitwidth), _builder=_builder)
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-st
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#volatile-operation
     return tl.inline_asm_elementwise(
         asm=f"""
-        st.{semantic}.{scope}.global.b{val.dtype.primitive_bitwidth} [$1], $2;
+        st.{semantic}.{scope}.global.b{dtype.primitive_bitwidth} [$1], $2;
         mov.u32 $0, 0;
         """,
         constraints=(f"=r,l,{constraint.value}"),  # no use output

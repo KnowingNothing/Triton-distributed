@@ -3,7 +3,7 @@
 
 For tuning a single Triton kernel, users can directly use the existing Triton interface [`triton.autotune`](https://triton-lang.org/main/python-api/generated/triton.autotune.html).
 
-```python 
+```python
 @triton.autotune(configs=[
     triton.Config(kwargs={'BLOCK_SIZE': 128}, num_warps=4),
     triton.Config(kwargs={'BLOCK_SIZE': 1024}, num_warps=8),
@@ -391,7 +391,7 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     comm_buf = pynvshmem.nvshmem_create_tensor([max_blocks * num_ranks], torch.int32)
     comm_buf.fill_(0)
     barriers[rank].fill_(0)
-    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
     torch.cuda.synchronize()
 
     ag_stream = torch.cuda.Stream()
@@ -429,7 +429,7 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     A.copy_(torch.randn([M_per_rank, K], dtype=dtype, device=device))
     B.copy_(torch.randn([N_per_rank, K], dtype=dtype, device=device))
     workspaces[rank].copy_(torch.randn([M, K], dtype=dtype, device=device))
-    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
     torch.cuda.synchronize()
     C = run_ag_gemm_persistent()
 
@@ -475,8 +475,6 @@ def main():
 
     torch.cuda.synchronize()
     pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
-    pynvshmem.nvshmem_barrier_all()
-    torch.cuda.synchronize()
 
     test_ag_gemm_tma_intra_node(RANK, WORLD_SIZE, TP_GROUP)
 
@@ -495,7 +493,7 @@ bash ./third_party/distributed/launch.sh <file_name>
 
 Next, we will add `triton.autotune` to `kernel_consumer_gemm_persistent` and modify `kernel_consumer_gemm_persistent` accordingly:
 
-```python 
+```python
 def matmul_get_configs():
     return [
         triton.Config(
@@ -535,7 +533,7 @@ def kernel_consumer_gemm_persistent(
     GROUP_SIZE_M: tl.constexpr,
     EPILOGUE_SUBTILE: tl.constexpr,
     NUM_SMS: tl.constexpr,
-): 
+):
     ...
 
 def ag_gemm_persistent(
@@ -590,17 +588,17 @@ def ag_gemm_persistent(
 
 Given that `kernel_consumer_gemm_persistent` is a subprocess of `run_ag_gemm_persistent`, and `run_ag_gemm_persistent` needs to be executed as a whole, we only need to decorate the `run_ag_gemm_persistent` function with `triton.distributed.autotuner.contextual_autotune` (and set `is_dist=True`):
 
-```python 
+```python
 
 from triton.distributed.autotuner import contextual_autotune
 
 def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     ...
-    
+
     @contextual_autotune(is_dist=True)
     def run_ag_gemm_persistent():
         ...
-        
+
     ...
 ```
 
@@ -608,7 +606,7 @@ The log output of the rank-i tuning process will be printed in `./.autotune_logs
 
 For more examples, refer to the following test files: [test_ag_gemm_intra_node.py](../../third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py), [test_moe_reduce_rs.py](../../third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py), and [test_ag_moe.py](../../third_party/distributed/distributed/test/nvidia/test_ag_moe.py). You can run the tests using the following commands:
 
-```bash 
+```bash
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma_autotune
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check --autotune
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 2048 --autotune

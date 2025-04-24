@@ -43,7 +43,8 @@ In doing so, you will learn about:
 import torch
 import triton
 import triton.language as tl
-from triton.distributed.kernels.nvidia.common_ops import barrier_all
+from triton.distributed.kernels.nvidia.common_ops import barrier_all_intra_node_atomic_cas_block
+from triton.distributed.utils import p2p_native_atomic_required
 from typing import List, Optional
 from triton import pynvshmem
 
@@ -181,6 +182,7 @@ def intra_node_scatter(input_intra_node, scatter_bufs_intra_node: List[torch.Ten
             remote_buf.copy_(local_buf)
 
 
+@p2p_native_atomic_required
 def reducer_scatter_intra_node(input, scatter_bufs, sync_buf, local_rank, local_world_size):
 
     stream = torch.cuda.current_stream()
@@ -192,7 +194,7 @@ def reducer_scatter_intra_node(input, scatter_bufs, sync_buf, local_rank, local_
     intra_node_scatter(input, scatter_bufs, local_rank, stream)
 
     # step 2: waits for all ranks to complete the scatter.
-    barrier_all[(1, )](local_rank, local_world_size, sync_buf)
+    barrier_all_intra_node_atomic_cas_block[(1, )](local_rank, local_world_size, sync_buf)
     # step 3: perform reduction to get the result of the intra-node reduce-scatter.
     ring_reduce(scatter_bufs[local_rank], output, local_rank, local_world_size, stream)
     return output

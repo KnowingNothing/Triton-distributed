@@ -429,7 +429,7 @@ if __name__ == "__main__":
                                             BLOCK_K=config["BK"], stages=config["stage"], ag_stream=torch.cuda.Stream(),
                                             gemm_stream=torch.cuda.Stream())
     ctx.barrier_tensors[ctx.local_rank].fill_(0)
-    pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
     # copy local data to the ctx
     ctx.workspace_tensors[ctx.local_rank][rank * M_per_rank:(rank + 1) * M_per_rank, :].copy_(A)
     set_signal(ctx.barrier_tensors[ctx.local_rank][rank].data_ptr(), 1, torch.cuda.current_stream(), True)

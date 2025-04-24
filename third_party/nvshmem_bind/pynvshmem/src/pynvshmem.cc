@@ -238,7 +238,7 @@ PYBIND11_MODULE(_pynvshmem, m) {
     check_nvshmem_init();
     nvshmem_barrier_all();
   });
-  m.def("nvshmem_barrier_all_on_stream", [](intptr_t stream) {
+  m.def("nvshmemx_barrier_all_on_stream", [](intptr_t stream) {
     nvshmemx_barrier_all_on_stream((cudaStream_t)stream);
   });
   m.def(
@@ -248,4 +248,39 @@ PYBIND11_MODULE(_pynvshmem, m) {
             shape, torch::python::detail::py_object_to_dtype(std::move(dtype)));
       },
       py::arg("shape"), py::arg("dtype"));
+
+  m.def("nvshmem_putmem",
+        [](intptr_t dest, const intptr_t source, size_t nelems, int pe) {
+          check_nvshmem_init();
+          nvshmem_putmem((void *)dest, (const void *)source, nelems, pe);
+        });
+  m.def("nvshmem_getmem",
+        [](intptr_t dest, const intptr_t source, size_t nelems, int pe) {
+          check_nvshmem_init();
+          nvshmem_getmem((void *)dest, (const void *)source, nelems, pe);
+        });
+
+  m.def("nvshmemx_putmem_on_stream",
+        [](intptr_t dest, const intptr_t source, size_t nelems, int pe,
+           intptr_t stream) {
+          check_nvshmem_init();
+          nvshmemx_putmem_on_stream((void *)dest, (const void *)source, nelems,
+                                    pe, (cudaStream_t)stream);
+        });
+  m.def("nvshmemx_getmem_on_stream",
+        [](intptr_t dest, const intptr_t source, size_t nelems, int pe,
+           intptr_t stream) {
+          check_nvshmem_init();
+          nvshmemx_getmem_on_stream((void *)dest, (const void *)source, nelems,
+                                    pe, (cudaStream_t)stream);
+        });
+  m.def("nvshmemx_putmem_signal_on_stream",
+        [](intptr_t dest, const intptr_t source, size_t nelems,
+           intptr_t sig_addr, uint64_t signal, int sig_op, int pe,
+           intptr_t stream) {
+          check_nvshmem_init();
+          nvshmemx_putmem_signal_on_stream((void *)dest, (const void *)source,
+                                           nelems, (uint64_t *)sig_addr, signal,
+                                           sig_op, pe, (cudaStream_t)stream);
+        });
 }

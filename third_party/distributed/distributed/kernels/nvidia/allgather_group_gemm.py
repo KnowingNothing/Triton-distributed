@@ -24,16 +24,16 @@
 ################################################################################
 from dataclasses import dataclass
 import torch
-import torch.distributed
 import triton
 import triton.language as tl
 from triton.language.extra import libshmem_device
 import triton.distributed.language as dl
-from triton.distributed.utils import CUDA_CHECK, TP_GROUP
+from triton.distributed.utils import TP_GROUP
 from typing import Optional, List
-from cuda import cuda, cudart
+from cuda import cudart
 from triton._C.libtriton_distributed.distributed import moe_ag_scatter_align_block_size
 from triton.distributed.kernels.nvidia.common_ops import wait_eq, set_signal
+from triton.distributed.kernels.nvidia.allgather import cp_engine_producer_all_gather_full_mesh_push
 
 from triton import pynvshmem
 
@@ -135,31 +135,6 @@ def sort_topk_ids_align_block_size(
         rank_block_num,
         num_tokens_post_pad,
     )
-
-
-def cp_engine_producer_all_gather_full_mesh_push(
-    rank,
-    num_ranks,
-    local_tensor: torch.Tensor,
-    remote_tensor_buffers: List[torch.Tensor],
-    barrier_buffers: List[torch.Tensor],
-    exec_stream: torch.cuda.Stream,
-):
-    M_per_rank, N_per_rank = local_tensor.shape
-    push_order = [(rank + i) % num_ranks for i in range(num_ranks)]
-    src = local_tensor
-    with torch.cuda.stream(exec_stream):
-        for dst_rank in push_order:
-            dst = remote_tensor_buffers[dst_rank][rank * M_per_rank:(rank + 1) * M_per_rank, :]
-            dst.copy_(src)
-
-            (err, ) = cuda.cuStreamWriteValue32(
-                exec_stream.cuda_stream,
-                barrier_buffers[dst_rank][rank].data_ptr(),
-                1,
-                cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
-            )
-            CUDA_CHECK(err)
 
 
 @triton.jit
@@ -426,7 +401,7 @@ def rowise_intranode_ag_scatter_group_gemm(
     current_stream.wait_stream(ag_stream)
     current_stream.wait_stream(group_gemm_stream)
     block_barriers[rank].zero_()
-    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
     return compiled
 
 
@@ -571,7 +546,7 @@ class MoE_AllGatherGroupGEMMTensorParallelContext:
         M_per_rank, K = local_data.shape
         local_rank = self.rank % self.local_world_size
         self.barrier_tensors[local_rank].fill_(0)
-        pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
         dst = self.workspace_tensors[local_rank][self.rank * M_per_rank:(self.rank + 1) * M_per_rank, :]
         dst.copy_(local_data)
         set_signal(self.barrier_tensors[local_rank][self.rank].data_ptr(), 1, torch.cuda.current_stream(), is_internode)
@@ -635,7 +610,7 @@ def create_ag_group_gemm_intra_node_context(
 
     barriers[rank].fill_(0)
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
     torch.cuda.synchronize()
 
     ret = MoE_AllGatherGroupGEMMTensorParallelContext(
@@ -762,7 +737,7 @@ def create_ag_group_gemm_inter_node_context(tp_pg, tensor_A, tensor_B, full_topk
 
     barriers[local_rank].fill_(0)
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
     torch.cuda.synchronize()
 
     ret = MoE_AllGatherGroupGEMMTensorParallelContext(

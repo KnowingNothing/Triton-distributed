@@ -22,25 +22,18 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-import torch
-import random
-
 import argparse
-import os
 import datetime
-import numpy as np
-
+import os
+import random
 from functools import partial
 
+import numpy as np
+import torch
+
 from triton import pynvshmem
-
-from triton.distributed.kernels.nvidia import create_moe_rs_context, select_experts, moe_reduce_rs
-
-from triton.distributed.utils import (
-    get_torch_prof_ctx,
-    perf_func,
-    dist_print,
-)
+from triton.distributed.kernels.nvidia import (create_moe_rs_context, moe_reduce_rs, select_experts)
+from triton.distributed.utils import dist_print, get_torch_prof_ctx, perf_func
 
 
 def create_ones_tensor(rank, shape, dtype=torch.float16, device="cuda"):
@@ -49,30 +42,6 @@ def create_ones_tensor(rank, shape, dtype=torch.float16, device="cuda"):
 
 def create_rand_tensor(rank, shape, dtype=torch.float16, device="cuda"):
     return (-2 * torch.rand(shape, dtype=dtype, device=device) + 1) / 100 * (rank + 1)
-
-
-def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup):
-    if not tensor.is_cuda:
-        tensor_gpu = tensor.cuda()
-        torch.distributed.broadcast(tensor_gpu, src=src, group=group)
-        tensor.copy_(tensor_gpu)
-    else:
-        torch.distributed.broadcast(tensor, src=src, group=group)
-    torch.cuda.synchronize()
-
-
-def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
-    rank, nranks = group.rank(), group.size()
-    if rank == 0:
-        unique_id: bytes = pynvshmem.nvshmemx_get_uniqueid()
-        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).clone()
-    else:
-        unique_id = torch.empty(128, dtype=torch.uint8)
-
-    broadcast_cpu(tensor=unique_id, group=group, src=0)
-
-    unique_id = unique_id.numpy().tobytes()
-    pynvshmem.nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)
 
 
 THRESHOLD_MAP = {
@@ -269,9 +238,10 @@ if __name__ == "__main__":
     args = parse_args()
 
     if args.autotune:
+        import importlib
+
         import triton
         from triton.distributed.autotuner import contextual_autotune
-        import importlib
         moe_reduce_rs_module = importlib.import_module('triton.distributed.kernels.nvidia.moe_reduce_rs')
 
         configs = [
@@ -319,9 +289,7 @@ if __name__ == "__main__":
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    init_nvshmem_by_uniqueid(TP_GROUP)
-    pynvshmem.nvshmem_barrier_all()
-    torch.cuda.synchronize()
+    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
 
     num_tokens_per_rank = args.M // WORLD_SIZE
     hidden_size = args.N

@@ -644,7 +644,6 @@ def initialize_distributed():
     EP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
     init_seed(seed=RANK)
     pynvshmem.init_nvshmem_by_uniqueid(EP_GROUP)
-    torch.cuda.synchronize()
     return EP_GROUP
 
 

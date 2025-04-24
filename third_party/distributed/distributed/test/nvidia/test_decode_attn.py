@@ -23,92 +23,20 @@
 #
 ################################################################################
 
-import torch
-import pytest
-from typing import List, Optional, Tuple
-
 import argparse
+import datetime
 import os
 import sys
-from cuda import cuda, cudart
-import datetime
+from typing import List, Optional, Tuple
+
 import numpy as np
+import pytest
+import torch
+
 from triton import pynvshmem
-
-from triton.distributed.kernels.nvidia import (gqa_fwd_batch_decode_persistent, gqa_fwd_batch_decode_persistent_aot,
-                                               gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot)
-
-
-def perf_func(func, iters, warmup_iters):
-    start_event = torch.cuda.Event(enable_timing=True)
-    stop_event = torch.cuda.Event(enable_timing=True)
-    for n in range(iters + warmup_iters):
-        if n == warmup_iters:
-            start_event.record()
-        output = func()
-    stop_event.record()
-    start_event.wait()
-    stop_event.wait()
-    torch.cuda.current_stream().synchronize()
-    duration_ms = start_event.elapsed_time(stop_event)
-    return output, duration_ms / iters
-
-
-def dist_print(*args, **kwargs):
-    rank = int(os.getenv("RANK", 0))
-    world_size = int(os.getenv("WORLD_SIZE", 1))
-    prefix = False
-    if "allowed_ranks" in kwargs:
-        allowed_ranks = kwargs["allowed_ranks"]
-        if isinstance(allowed_ranks, str) and allowed_ranks == "all":
-            allowed_ranks = list(range(world_size))
-
-        del kwargs["allowed_ranks"]
-    else:
-        allowed_ranks = [0]
-    if "prefix" in kwargs:
-        prefix = kwargs["prefix"]
-
-        del kwargs["prefix"]
-
-    need_sync = False
-    if "need_sync" in kwargs:
-        need_sync = kwargs["need_sync"]
-
-        del kwargs["need_sync"]
-
-    for allowed in allowed_ranks:
-        if need_sync:
-            torch.distributed.barrier()
-        if rank == allowed:
-            if prefix:
-                print(f"[rank:{rank}]", end="")
-            print(*args, **kwargs)
-
-
-def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup):
-    if not tensor.is_cuda:
-        tensor_gpu = tensor.cuda()
-        torch.distributed.broadcast(tensor_gpu, src=src, group=group)
-        tensor.copy_(tensor_gpu)
-    else:
-        torch.distributed.broadcast(tensor, src=src, group=group)
-    torch.cuda.synchronize()
-
-
-def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
-    rank, nranks = group.rank(), group.size()
-    if rank == 0:
-        unique_id: bytes = pynvshmem.nvshmemx_get_uniqueid()
-        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).clone()
-    else:
-        unique_id = torch.empty(128, dtype=torch.uint8)
-
-    broadcast_cpu(tensor=unique_id, group=group, src=0)
-
-    unique_id = unique_id.numpy().tobytes()
-    pynvshmem.nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)
-
+from triton.distributed.kernels.nvidia import (gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot,
+                                               gqa_fwd_batch_decode_persistent, gqa_fwd_batch_decode_persistent_aot)
+from triton.distributed.utils import dist_print, perf_func
 
 ALL_TESTS = {}
 
@@ -137,17 +65,6 @@ def help():
 Available choices: {list(ALL_TESTS.keys())}.
 run: python {os.path.abspath(__file__)} --case XXX
 """)
-
-
-def CUDA_CHECK(err):
-    if isinstance(err, cuda.CUresult):
-        if err != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError(f"Cuda Error: {err}: {cuda.cuGetErrorName(err)}")
-    elif isinstance(err, cudart.cudaError_t):
-        if err != cudart.cudaError_t.cudaSuccess:
-            raise RuntimeError(f"Cuda Error: {err}: {cudart.cudaGetErrorString(err)}")
-    else:
-        raise RuntimeError(f"Unknown error type: {err}")
 
 
 def ref_paged_attn(
@@ -641,9 +558,7 @@ if __name__ == "__main__":
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    init_nvshmem_by_uniqueid(TP_GROUP)
-    pynvshmem.nvshmem_barrier_all()
-    torch.cuda.synchronize()
+    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
 
     args = get_args()
     args.default_group = TP_GROUP

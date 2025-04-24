@@ -183,10 +183,6 @@ def initialize_distributed():
 
     torch.cuda.synchronize()
     pynvshmem.init_nvshmem_by_uniqueid(EP_GROUP)
-    pynvshmem.nvshmem_barrier_all()
-    torch.cuda.synchronize()
-
-    torch.cuda.synchronize()
     return EP_GROUP
 
 

@@ -26,77 +26,142 @@ import triton
 import torch
 import triton.language as tl
 import triton.distributed.language as dl
-from triton.language.extra import libshmem_device
 from triton.distributed.utils import (
     CUDA_CHECK, )
 from cuda import cuda
 from triton.language.extra.cuda.language_extra import (
     tid,
+    st,
+    ld,
     __syncthreads,
+    atomic_add,
+    ld_acquire,
+    atomic_cas,
 )
 
 from triton import pynvshmem
-
-
-@tl.core.extern
-def atomic_cas(
-    ptr,
-    value,
-    target_value,
-    scope: tl.constexpr,
-    semantic: tl.constexpr,
-    _builder=None,
-):
-    return tl.inline_asm_elementwise(
-        asm=f"atom.{semantic.value}.{scope.value}.global.cas.b32 $0, [$1], $2, $3;",
-        constraints=("=r,l,r,r"),
-        args=[
-            ptr,
-            value,
-            target_value,
-        ],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-        _builder=_builder,
-    )
+from triton.distributed.utils import p2p_native_atomic_required
 
 
 @triton.jit
-def barrier_all(rank, num_ranks, comm_buf_ptr):
+def _is_cta_master():
+    thread_idx_x = tid(0)
+    thread_idx_y = tid(1)
+    thread_idx_z = tid(2)
+    return (thread_idx_x + thread_idx_y + thread_idx_z) == 0
+
+
+@triton.jit
+def _is_gpu_master():
+    pid_x = tl.program_id(axis=0)
+    pid_y = tl.program_id(axis=1)
+    pid_z = tl.program_id(axis=2)
+    return (pid_x + pid_y + pid_z) == 0
+
+
+@triton.jit
+def barrier_on_this_grid(ptr):
+    """ triton implementation of cooperative_group::thid_grid().sync() """
+    __syncthreads()
+    pid_size_x = tl.num_programs(axis=0)
+    pid_size_y = tl.num_programs(axis=1)
+    pid_size_z = tl.num_programs(axis=2)
+    expected = pid_size_x * pid_size_y * pid_size_z
+    if _is_cta_master():
+        nb = tl.where(
+            _is_gpu_master(),
+            tl.cast(0x80000000, tl.uint32, bitcast=True) - (expected - 1),
+            1,
+        )
+        old_arrive = atomic_add(ptr.to(tl.pointer_type(tl.uint32)), nb, scope="gpu", semantic="release")
+    else:
+        old_arrive = tl.cast(0, tl.uint32)
+
+    if _is_cta_master():
+        current_arrive = ld_acquire(ptr)
+        while ((old_arrive ^ current_arrive) & 0x80000000) == 0:
+            current_arrive = ld_acquire(ptr, scope=tl.constexpr("gpu"))
+
+    __syncthreads()
+
+
+@triton.jit(do_not_specialize=["rank", "num_ranks"])
+def barrier_all_intra_node_atomic_cas_block(rank, num_ranks, symm_flag_ptr):
+    """ NOTE: this function should only be called with atomic support. memory over PCI-e does not support atomic r/w. DON'T use this function on such platforms.
+    """
     thread_idx = tid(axis=0)
-    sm_id = tl.program_id(axis=0)
-    if thread_idx < num_ranks:
-        remote_ptr = libshmem_device.remote_ptr(comm_buf_ptr + sm_id * num_ranks + rank,
-                                                thread_idx.to(tl.int32)).to(tl.pointer_type(tl.int32))
+    pid = tl.program_id(axis=0)
+    if pid == 0 and thread_idx < num_ranks:
+        remote_ptr = dl.symm_at(symm_flag_ptr + rank, thread_idx)
         while atomic_cas(remote_ptr, 0, 1, "sys", "release") != 0:
             pass
-        while (atomic_cas(comm_buf_ptr + sm_id * num_ranks + thread_idx, 1, 0, "sys", "acquire") != 1):
+    # barrier all CTAs
+    barrier_on_this_grid(symm_flag_ptr + num_ranks)
+    if thread_idx < num_ranks:
+        while (atomic_cas(symm_flag_ptr + thread_idx, 1, 0, "sys", "acquire") != 1):
             pass
     __syncthreads()
 
 
 @triton.jit
-def barrier_all_intra_node(local_world_size, comm_buf_ptr):
-    """
-    This function is used for intra-node barrier synchronization.
-    It is based on the Compare-And-Swap(CAS) operation to ensure that
-    all GPUs within the current node reach the barrier.
-    """
-    thread_id = tid(axis=0).to(tl.int32)
-    rank = dl.rank()
-    local_rank = rank % local_world_size
-    node_id = rank // local_world_size
-    rank_offset = node_id * local_world_size
-    if thread_id < local_world_size:
-        remote_ptr = dl.symm_at(comm_buf_ptr, thread_id + rank_offset)
-        while atomic_cas(remote_ptr + local_rank, 0, 1, "sys", "release") != 0:
+def _barrier_all_intra_node_non_atomic_once_block(rank, num_ranks, symm_flags, target_value):
+    thread_idx = tid(axis=0)
+    if thread_idx < num_ranks:
+        remote_ptr = dl.symm_at(symm_flags + rank, thread_idx)
+        st(remote_ptr, target_value, scope="sys", semantic="release")
+        while ld(symm_flags + thread_idx, scope="sys", semantic="acquire") != target_value:
             pass
-        while (atomic_cas(comm_buf_ptr + thread_id, 1, 0, "sys", "acquire") != 1):
-            pass
+
     __syncthreads()
 
 
+@triton.jit(do_not_specialize=["rank", "num_ranks", "target_value"])
+def barrier_all_intra_node_non_atomic_block(rank, num_ranks, symm_flags, target_value):
+    """ symm_flags is expected to:
+        1. of int32 dtype
+        2. has at least num_ranks * 2 elements
+        3. of symmetric pointer
+
+        symm_flags [0, num_ranks * 2) is used to sync all ranks.
+    """
+    tl.static_assert(symm_flags.dtype.element_ty == tl.int32)
+    _barrier_all_intra_node_non_atomic_once_block(rank, num_ranks, symm_flags, target_value)
+
+    # barrier all CTAs
+    barrier_on_this_grid(symm_flags + 2 * num_ranks)
+
+    # next iter
+    _barrier_all_intra_node_non_atomic_once_block(rank, num_ranks, symm_flags + num_ranks, target_value)
+
+    barrier_on_this_grid(symm_flags + 2 * num_ranks)
+
+
+@triton.jit(do_not_specialize=["rank", "num_ranks", "target_value"])
+def barrier_all_intra_node_non_atomic(rank, num_ranks, symm_flags, target_value):
+    """ symm_flags is expected to:
+        1. of int32 dtype
+        2. has at least num_ranks * 2 + 1 elements
+        3. of symmetric pointer
+
+        symm_flags [0, num_ranks * 2) is used to sync all ranks.
+        symm_flags[num_ranks * 2] is used to sync all CTAs
+    """
+    tl.static_assert(symm_flags.dtype.element_ty == tl.int32)
+    pid = tl.program_id(axis=0)
+    if pid == 0:
+        _barrier_all_intra_node_non_atomic_once_block(rank, num_ranks, symm_flags, target_value)
+
+    # barrier all CTAs
+    barrier_on_this_grid(symm_flags + 2 * num_ranks)
+
+    # next iter
+    if pid == 0:
+        _barrier_all_intra_node_non_atomic_once_block(rank, num_ranks, symm_flags + num_ranks, target_value)
+
+    barrier_on_this_grid(symm_flags + 2 * num_ranks)
+
+
+@p2p_native_atomic_required
 def barrier_all_on_stream(
     stream,
     is_intra_node=False,
@@ -104,11 +169,11 @@ def barrier_all_on_stream(
     local_world_size=0,
 ):
     if not is_intra_node:
-        pynvshmem.nvshmem_barrier_all_on_stream(stream.cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(stream.cuda_stream)
     else:
         assert barrier_all_buf is not None and local_world_size > 0
         with torch.cuda.stream(stream):
-            barrier_all_intra_node[(1, )](local_world_size, barrier_all_buf)
+            barrier_all_intra_node_atomic_cas_block[(1, )](pynvshmem.nvshmem_my_pe(), local_world_size, barrier_all_buf)
 
 
 def wait_eq(ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=False):

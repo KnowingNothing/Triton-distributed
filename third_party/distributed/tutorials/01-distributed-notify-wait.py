@@ -175,7 +175,7 @@ def main(TP_GROUP):
     # You need a barrier all to make sure the above initialization
     # is visible to all the other ranks.
     # This is usually used for intra-node.
-    pynvshmem.nvshmem_barrier_all_on_stream(stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(stream.cuda_stream)
 
     # Distributed info
     rank = TP_GROUP.rank()
@@ -194,7 +194,7 @@ def main(TP_GROUP):
         # by using flipping barriers. We will cover this optimization in future tutorial.
         # TODO: tutorial for flipping barriers.
         signal.fill_(0)
-        pynvshmem.nvshmem_barrier_all_on_stream(stream.cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(stream.cuda_stream)
 
         producer_consumer_kernel[(20, )](  # use 20 SMs
             rank,

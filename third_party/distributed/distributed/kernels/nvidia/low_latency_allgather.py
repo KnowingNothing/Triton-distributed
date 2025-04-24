@@ -39,9 +39,7 @@ from triton.language.extra.cuda.language_extra import (
     load_v4_u32,
     load_v2_b64,
     store_v2_u32,
-    atomic_add,
     st,
-    ld_acquire,
     multimem_st_b64,
     multimem_st_v2_b32,
 )
@@ -606,47 +604,6 @@ def _recv_ll_and_multimem_st_ll_block(dest_ptr, src_ptr, num_ints, ll_flag):
             data1, flag1, data2, flag2 = load_v4_u32(src_ptr + n * 4)
         multimem_st_v2_b32(dest_mc_ptr + n * 4, data1, flag1)
         multimem_st_v2_b32(dest_mc_ptr + n * 4 + 2, data2, flag2)
-
-
-@triton.jit
-def _is_cta_master():
-    thread_idx_x = tid(0)
-    thread_idx_y = tid(1)
-    thread_idx_z = tid(2)
-    return (thread_idx_x + thread_idx_y + thread_idx_z) == 0
-
-
-@triton.jit
-def _is_gpu_master():
-    pid_x = tl.program_id(axis=0)
-    pid_y = tl.program_id(axis=1)
-    pid_z = tl.program_id(axis=2)
-    return (pid_x + pid_y + pid_z) == 0
-
-
-@triton.jit
-def barrier_on_this_grid(ptr):
-    __syncthreads()
-    pid_size_x = tl.num_programs(axis=0)
-    pid_size_y = tl.num_programs(axis=1)
-    pid_size_z = tl.num_programs(axis=2)
-    expected = pid_size_x * pid_size_y * pid_size_z
-    if _is_cta_master():
-        nb = tl.where(
-            _is_gpu_master(),
-            tl.cast(0x80000000, tl.uint32, bitcast=True) - (expected - 1),
-            1,
-        )
-        old_arrive = atomic_add(ptr, nb, scope="gpu", semantic="release")
-    else:
-        old_arrive = tl.cast(0, tl.uint32)
-
-    if _is_cta_master():
-        current_arrive = ld_acquire(ptr)
-        while ((old_arrive ^ current_arrive) & 0x80000000) == 0:
-            current_arrive = ld_acquire(ptr, scope=tl.constexpr("gpu"))
-
-    __syncthreads()
 
 
 @triton.jit

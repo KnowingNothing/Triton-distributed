@@ -24,21 +24,27 @@
 ################################################################################
 
 import datetime
+import functools
+import gzip
+import json
+import logging
 import os
 import random
+import re
+import shutil
+import string
+import subprocess
+import sys
+from contextlib import contextmanager, nullcontext, redirect_stdout
+from multiprocessing import Pool, cpu_count
+from pathlib import Path
+from threading import Lock
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+import warnings
+from functools import wraps
 
 import numpy as np
 import torch
-from typing import Callable, List, Tuple, Union, Sequence, Optional, Any, Dict
-from contextlib import contextmanager, nullcontext
-from pathlib import Path
-import json
-import logging
-import gzip
-import shutil
-from multiprocessing import Pool, cpu_count
-import re
-import string
 
 
 def is_cuda():
@@ -82,26 +88,6 @@ def init_seed(seed=0):
     random.seed(3 + seed)
 
 
-def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
-    rank, nranks = group.rank(), group.size()
-    if rank == 0:
-        unique_id: bytes = pynvshmem.nvshmemx_get_uniqueid()
-        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).clone()
-    else:
-        unique_id = torch.empty(128, dtype=torch.uint8)
-
-    if not unique_id.is_cuda:
-        tensor_gpu = unique_id.cuda()
-        torch.distributed.broadcast(tensor_gpu, src=0, group=group)
-        unique_id.copy_(tensor_gpu)
-    else:
-        torch.distributed.broadcast(unique_id, src=0, group=group)
-    torch.cuda.synchronize()
-
-    unique_id = unique_id.numpy().tobytes()
-    pynvshmem.nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)
-
-
 def initialize_distributed():
     global _TP_GROUP
     assert _TP_GROUP is None, "TP_GROUP has already been initialized"
@@ -121,9 +107,7 @@ def initialize_distributed():
     _TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
 
     init_seed(seed=RANK)
-    init_nvshmem_by_uniqueid(_TP_GROUP)
-    pynvshmem.nvshmem_barrier_all()
-    torch.cuda.synchronize()
+    pynvshmem.init_nvshmem_by_uniqueid(_TP_GROUP)
     return _TP_GROUP
 
 
@@ -268,25 +252,29 @@ def HIP_CHECK(call_result):
 
 
 def load_json(json_file):
-    with open(json_file, 'r', encoding='utf-8', errors='replace') as file:
+    with open(json_file, "r", encoding="utf-8", errors="replace") as file:
         content = file.read()
 
         # torch 2.4+ profile with with_stack makes some invalid argument, which makes chrome/edge unhappy
         # use work around here: https://github.com/pytorch/pytorch/issues/121219
         # Decode Unicode escape sequences
-        content = content.encode().decode('unicode_escape')
+        content = content.encode().decode("unicode_escape")
 
         # Regex to find "name": "<value>"
         def replace_non_ascii_and_quotes(match):
             name = match.group(1)
-            visible_printable = ''.join(c for c in string.printable if c not in '\t\n\r\x0b\x0c}{')
-            cleaned_name = ''.join(c if c in visible_printable else 'x' for c in name)
-            cleaned_name = cleaned_name.replace('"', 'y')  # Replace internal quotes
+            visible_printable = "".join(c for c in string.printable if c not in "\t\n\r\x0b\x0c}{")
+            cleaned_name = "".join(c if c in visible_printable else "x" for c in name)
+            cleaned_name = cleaned_name.replace('"', "y")  # Replace internal quotes
             return f'"name": "{cleaned_name}"'
 
         # Apply regex to clean names
-        cleaned_content = re.sub(r'"name": "([\s\S]*?)"(?=, |\}|\s*\})', replace_non_ascii_and_quotes, content,
-                                 flags=re.DOTALL)
+        cleaned_content = re.sub(
+            r'"name": "([\s\S]*?)"(?=, |\}|\s*\})',
+            replace_non_ascii_and_quotes,
+            content,
+            flags=re.DOTALL,
+        )
 
     return json.loads(cleaned_content, strict=False)
 
@@ -451,7 +439,7 @@ class group_profile:
         self.merge_group = merge_group
         self.keep_merged_only = keep_merged_only
         self.compress = compress
-        self.trace_file = Path("prof") / f"{self.name}" / f"rank{self.group.rank()}.json"
+        self.trace_file = (Path("prof") / f"{self.name}" / f"rank{self.group.rank()}.json")
 
     def __enter__(self):
         if self.do_prof:
@@ -474,14 +462,19 @@ class group_profile:
             with open(self.trace_file, "rb") as f:
                 trace_content = f.read()
             trace_content_list = [None for _ in range(self.group.size())]
-            torch.distributed.gather_object(trace_content, trace_content_list if self.group.rank() == 0 else None,
-                                            dst=0, group=self.group)
+            torch.distributed.gather_object(
+                trace_content,
+                trace_content_list if self.group.rank() == 0 else None,
+                dst=0,
+                group=self.group,
+            )
             torch.cuda.synchronize()  # wait for all ranks export
             return trace_content_list if self.group.rank() == 0 else None
 
     def _merge_all_trace(self, trace_content_list):
         logging.info("merge profiles...")
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir).mkdir(exist_ok=True)
 
@@ -506,3 +499,171 @@ class group_profile:
             self.trace_file.unlink(missing_ok=True)
             if torch.cuda.current_device() == 0:  # run once for a device
                 shutil.rmtree(self.trace_file.parent, ignore_errors=True)
+
+
+class NvidiaSmiUtil:
+
+    @staticmethod
+    def get_nvlink_adjacency_matrix():
+        output = subprocess.check_output(["nvidia-smi", "topo", "-m"], text=True)
+        lines = [line.strip() for line in output.split("\n") if line.startswith("GPU")]
+
+        device_count = len(lines)
+        matrix = [[-1 for _ in range(device_count)] for _ in range(device_count)]
+
+        # 解析每行数据
+        for i, line in enumerate(lines):
+            parts = line.split()
+            for j in range(1, len(parts)):
+                if "NV" in parts[j]:
+                    matrix[i][j - 1] = 1  # 标记 NVLink 连接
+
+        return matrix
+
+    @staticmethod
+    def get_gpu_numa_node(gpu_index=0):
+        try:
+            # 获取 GPU 的 PCI 总线 ID
+            cmd = f"nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader,nounits -i {gpu_index}"
+            pci_id = subprocess.check_output(cmd, shell=True).decode().strip()
+            pci_address = pci_id.replace("00000000:", "").lower()  # 示例输入 "00000000:17:00.0" → "17:00.0"
+            # print(f"gpu_index: {gpu_index} => {pci_id} => {pci_address}")
+
+            # 通过 sysfs 查询 NUMA 节点
+            numa_node_path = f"/sys/bus/pci/devices/0000:{pci_address}/numa_node"
+            with open(numa_node_path, "r") as f:
+                numa_node = int(f.read().strip())
+
+            assert numa_node >= 0
+            return numa_node if numa_node >= 0 else 0
+
+        except Exception as e:
+            print(f"Error: {e}")
+            return -1
+
+
+_pynvml_initialized = False
+_lock = Lock()
+
+
+def ensure_nvml_initialized():
+    global _pynvml_initialized
+    if not _pynvml_initialized:
+        with _lock:
+            if not _pynvml_initialized:
+                import pynvml
+
+                pynvml.nvmlInit()
+                _pynvml_initialized = True
+
+
+@functools.lru_cache()
+def get_has_nvlink_pynvml():
+    num_devices = torch.cuda.device_count()
+
+    ensure_nvml_initialized()
+    import pynvml
+
+    handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(num_devices)]
+    return [pynvml.nvmlDeviceGetNvLinkState(handle, 0) for handle in handles]
+
+
+@functools.lru_cache()
+def get_numa_node_pynvml(gpu_index):
+    ensure_nvml_initialized()
+    import pynvml
+
+    handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
+    return pynvml.nvmlDeviceGetNumaNodeId(handle)  # no such symbol for CUDA driver 535.161.08
+
+
+@functools.lru_cache()
+def get_numa_node(gpu_index):
+    try:
+        return get_numa_node_pynvml(gpu_index)
+    except Exception:
+        return NvidiaSmiUtil.get_gpu_numa_node(gpu_index)
+
+
+@functools.lru_cache()
+def get_has_nvlink():
+    try:
+        return all(get_has_nvlink_pynvml())
+    except Exception:
+        nvlink_matrix = NvidiaSmiUtil.get_nvlink_adjacency_matrix()
+        return all(1 in row for row in nvlink_matrix)
+
+
+@functools.lru_cache()
+def get_numa_world_size():
+    numa_node = [get_numa_node(n) for n in range(torch.cuda.device_count())]
+    numa_node_set = set(numa_node)
+    assert len(numa_node_set) <= 2  # TODO(houqi.1993) only 2 NUMA node supported now.
+    if len(numa_node_set) == 1:
+        return torch.cuda.device_count()
+
+    gpu_count_per_numa = [numa_node.count(x) for x in numa_node_set]
+    assert gpu_count_per_numa[0] == gpu_count_per_numa[1]
+    return torch.cuda.device_count() // 2
+
+
+def assert_allclose(x: torch.Tensor, y: torch.Tensor, rtol, atol, verbose=True):
+    if not torch.allclose(x, y, rtol=rtol, atol=atol):
+        print(f"shape of x: {x.shape}")
+        print(f"shape of y: {y.shape}")
+
+        with redirect_stdout(sys.stderr):
+            print("x:")
+            print(x)
+            print("y:")
+            print(y)
+            print("x-y", x - y)
+
+            diff_loc = torch.isclose(x, y, rtol=rtol, atol=atol) == False  # noqa: E712
+            print("x@diff:")
+            print(x[diff_loc])
+            print("y@diff:")
+            print(y[diff_loc])
+            num_diff = torch.sum(diff_loc)
+            diff_rate = num_diff / y.shape.numel()
+            print(f"diff count: {num_diff} ({diff_rate*100:.3f}%), {list(y.shape)}")
+            max_diff = torch.max(torch.abs(x - y))
+            rtol_abs = rtol * torch.min(torch.abs(y))
+            print(f"diff max: {max_diff}, atol: {atol}, rtol_abs: {rtol_abs}")
+            diff_indices = (diff_loc == True).nonzero(as_tuple=False)  # noqa: E712
+            print(f"diff locations:\n{diff_indices}")
+            print("--------------------------------------------------------------\n")
+        raise RuntimeError
+
+    if verbose:
+        print("all close!")
+
+
+@functools.lru_cache()
+def check_p2p_native_atomic_supported():
+    assert torch.cuda.is_available()
+    count = torch.cuda.device_count()
+    if count <= 1:
+        return True
+
+    # force create CUDA context
+    (err, ) = cudart.cudaFree(0)
+    CUDA_CHECK(err)
+
+    (err, support) = cudart.cudaDeviceGetP2PAttribute(cudart.cudaDeviceP2PAttr.cudaDevP2PAttrNativeAtomicSupported, 0,
+                                                      1)
+    CUDA_CHECK(err)
+    return support == 1
+
+
+def p2p_native_atomic_required(fn):
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not check_p2p_native_atomic_supported():
+            warnings.warn(
+                "function {fn.__name__} requires P2P native atomic support but you are running on a platform that does not support it. this may cause undefined behavior"
+            )
+        return fn(*args, **kwargs)
+
+    return wrapper

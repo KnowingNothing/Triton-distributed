@@ -984,6 +984,7 @@ setup(
             "scipy>=1.7.1",
             "llnl-hatchet",
             "pytest",
+            "nvidia-ml-py",
         ],
         "tutorials": [
             "matplotlib",

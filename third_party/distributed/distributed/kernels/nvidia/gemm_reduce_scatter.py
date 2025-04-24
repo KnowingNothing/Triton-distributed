@@ -22,19 +22,20 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-import torch
 import dataclasses
-import triton
-import triton.language as tl
-import triton.distributed.language as dl
+from typing import List, Optional
 
-from typing import Optional, List
+import torch
+from cuda import cudart
+
+import triton
+import triton.distributed.language as dl
+import triton.language as tl
 from triton import pynvshmem
-from triton.distributed.kernels.nvidia.common_ops import wait_eq
-from triton.language.extra.cuda.language_extra import __syncthreads, tid, atomic_cas
+from triton.distributed.kernels.nvidia.common_ops import (barrier_all_intra_node_atomic_cas_block, wait_eq)
 from triton.distributed.utils import CUDA_CHECK
 from triton.language.extra import libshmem_device
-from cuda import cudart
+from triton.distributed.utils import p2p_native_atomic_required
 
 SIGNAL_DTYPE = torch.uint64
 
@@ -301,22 +302,6 @@ def kernel_ring_reduce(
         output_desc.store([tile_id_m * BLOCK_SIZE_M, tile_id_n * BLOCK_SIZE_N], accum)
 
 
-@triton.jit
-def barrier_all_intra_node(local_world_size, comm_buf_ptr):
-    thread_id = tid(axis=0).to(tl.int32)
-    rank = dl.rank()
-    local_rank = rank % local_world_size
-    node_id = rank // local_world_size
-    rank_offset = node_id * local_world_size
-    if thread_id < local_world_size:
-        remote_ptr = dl.symm_at(comm_buf_ptr, thread_id + rank_offset)
-        while atomic_cas(remote_ptr + local_rank, 0, 1, "sys", "release") != 0:
-            pass
-        while (atomic_cas(comm_buf_ptr + thread_id, 1, 0, "sys", "acquire") != 1):
-            pass
-    __syncthreads()
-
-
 # TMA related test
 def _matmul_launch_metadata(grid, kernel, args):
     ret = {}
@@ -462,6 +447,7 @@ def kernel_gemm_rs_producer_persistent(
             accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
 
+@p2p_native_atomic_required
 def barrier_all_on_stream(
     stream,
     is_intra_node=False,
@@ -469,11 +455,11 @@ def barrier_all_on_stream(
     local_world_size=0,
 ):
     if not is_intra_node:
-        pynvshmem.nvshmem_barrier_all_on_stream(stream.cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(stream.cuda_stream)
     else:
         assert barrier_all_buf is not None and local_world_size > 0
         with torch.cuda.stream(stream):
-            barrier_all_intra_node[(1, )](local_world_size, barrier_all_buf)
+            barrier_all_intra_node_atomic_cas_block[(1, )](pynvshmem.nvshmem_my_pe(), local_world_size, barrier_all_buf)
 
 
 def gemm_rs_producer_persistent(a, b, c, barrier, workspace, world_size, local_world_size, num_gemm_sms, gemm_stream,

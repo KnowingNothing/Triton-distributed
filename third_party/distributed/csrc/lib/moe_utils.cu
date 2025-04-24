@@ -171,10 +171,13 @@ void moe_ag_scatter_align_block_size_op(
 
   const int32_t shared_mem =
       ((num_experts + 1) * num_experts + (num_experts + 1)) * sizeof(int32_t);
-  int THREAD_NUM = (int)num_experts;
-  constexpr int CTA_NUM = 1;
-  dim3 grid_dim(CTA_NUM);
-  dim3 block_dim(THREAD_NUM);
+  dim3 grid_dim(1);
+  dim3 block_dim(num_experts);
+  if (shared_mem > 48 * 1024) {
+    CUDA_CHECK(cudaFuncSetAttribute(
+        moe_ag_scatter_align_block_size_kernel<int64_t>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem));
+  }
   moe_ag_scatter_align_block_size_kernel<int64_t>
       <<<grid_dim, block_dim, shared_mem, (cudaStream_t)moe_stream>>>(
           (int64_t *)topk_ids.data_ptr(),
@@ -188,7 +191,7 @@ void moe_ag_scatter_align_block_size_op(
   CUDA_CHECK(cudaGetLastError());
 }
 
-template <int kNumThreads, int kNumMaxExperts>
+template <int kNumThreads>
 __global__ void __launch_bounds__(kNumThreads, 1)
     moe_ag_scatter_align_block_size_parallel_kernel(
         int64_t *__restrict__ topk_ids, int32_t num_topk, int32_t num_experts,
@@ -202,9 +205,16 @@ __global__ void __launch_bounds__(kNumThreads, 1)
   int tid = (threadIdx.x * blockDim.y * blockDim.z + threadIdx.y * blockDim.z +
              threadIdx.z);
   unsigned int counter;
-  __shared__ int32_t tokens_cnts_per_expert[kNumMaxExperts];
-  __shared__ int32_t tokens_cnts_per_thread[kNumThreads][kNumMaxExperts];
-  __shared__ int32_t tokens_cumsum_per_thread[kNumThreads][kNumMaxExperts];
+  extern __shared__ char shmem[];
+  int32_t *tokens_cnts_per_expert = (int32_t *)shmem; // int32_t[num_experts]
+  int32_t *tokens_cnts_per_thread =
+      (int32_t *)(shmem +
+                  num_experts *
+                      sizeof(int32_t)); // int32_t[kNumThreads][num_experts]
+  int32_t *tokens_cumsum_per_thread =
+      (int32_t *)(shmem + num_experts * sizeof(int32_t) +
+                  kNumThreads * num_experts *
+                      sizeof(int32_t)); // int32_t[kNumThreads][num_experts]
 
   const size_t tokens_per_thread = CEILDIV(num_tokens_per_rank, nthreads);
   // each block calculate one rank
@@ -215,26 +225,27 @@ __global__ void __launch_bounds__(kNumThreads, 1)
 
 #pragma unroll
   for (int i = 0; i < num_experts; ++i)
-    tokens_cnts_per_thread[tid][i] = 0;
+    tokens_cnts_per_thread[num_experts * tid + i] = 0;
 
 #pragma unroll
   for (int i = tid; i < tokens_per_thread; i += nthreads) {
     auto shifted_topk_idx = topk_ids + topk_start_idx + i * num_topk;
 #pragma unroll
     for (int j = 0; j < num_topk; ++j) {
-      ++tokens_cnts_per_thread[tid][shifted_topk_idx[j]];
+      ++tokens_cnts_per_thread[num_experts * tid + shifted_topk_idx[j]];
     }
   }
   __syncthreads();
 
   if (tid < num_experts) {
-    int sum = tokens_cnts_per_thread[0][tid];
-    tokens_cumsum_per_thread[0][tid] = 0;
+    int sum = tokens_cnts_per_thread[tid];
+    tokens_cumsum_per_thread[tid] = 0;
 #pragma unroll
     for (int i = 1; i < nthreads; ++i) {
-      sum += tokens_cnts_per_thread[i][tid];
-      tokens_cumsum_per_thread[i][tid] =
-          tokens_cumsum_per_thread[i - 1][tid] + tokens_cnts_per_thread[i][tid];
+      sum += tokens_cnts_per_thread[i * num_experts + tid];
+      tokens_cumsum_per_thread[i * num_experts + tid] =
+          tokens_cumsum_per_thread[(i - 1) * num_experts + tid] +
+          tokens_cnts_per_thread[i * num_experts + tid];
     }
     tokens_cnts_per_expert[tid] = sum;
   }
@@ -292,10 +303,10 @@ __global__ void __launch_bounds__(kNumThreads, 1)
     for (int j = 0; j < num_topk; ++j) {
       int32_t expert_id = shifted_topk_idx[j];
       int32_t pos = expert_cumsum_per_rank[bid * num_experts + expert_id] +
-                    tokens_cumsum_per_thread[tid][expert_id];
+                    tokens_cumsum_per_thread[tid * num_experts + expert_id];
       sorted_token_ids[global_token_start_idx + pos] =
           topk_start_idx + i * num_topk + j;
-      ++tokens_cumsum_per_thread[tid][expert_id];
+      ++tokens_cumsum_per_thread[tid * num_experts + expert_id];
     }
   }
 }
@@ -307,23 +318,30 @@ void moe_ag_scatter_align_block_size_parallel_op(
     torch::Tensor block_barrier_ids, torch::Tensor rank_block_num,
     torch::Tensor num_tokens_post_pad, intptr_t moe_stream) {
 
-  constexpr int THREAD_NUM = 64;
-  constexpr int MAX_EXPERT = 256;
+  constexpr int kThreadNum = 64;
   int cta_num = num_ranks;
   dim3 grid_dim(cta_num);
-  dim3 block_dim(THREAD_NUM);
+  dim3 block_dim(kThreadNum);
   unsigned int *counter_d, *expert_cumsum_per_rank;
 
-  cudaMalloc((void **)&counter_d, sizeof(unsigned int) * 2);
-  cudaMemset(counter_d, 0, sizeof(unsigned int) * 2);
-  cudaMalloc((void **)&expert_cumsum_per_rank,
-             sizeof(unsigned int) * num_ranks * (num_experts + 1));
-  cudaMemset(expert_cumsum_per_rank, 0,
-             sizeof(unsigned int) * num_ranks * (num_experts + 1));
+  CUDA_CHECK(cudaMalloc((void **)&counter_d, sizeof(unsigned int) * 2));
+  CUDA_CHECK(cudaMemset(counter_d, 0, sizeof(unsigned int) * 2));
+  CUDA_CHECK(cudaMalloc((void **)&expert_cumsum_per_rank,
+                        sizeof(unsigned int) * num_ranks * (num_experts + 1)));
+  CUDA_CHECK(cudaMemset(expert_cumsum_per_rank, 0,
+                        sizeof(unsigned int) * num_ranks * (num_experts + 1)));
   CUDA_CHECK(cudaDeviceSynchronize());
 
-  moe_ag_scatter_align_block_size_parallel_kernel<THREAD_NUM, MAX_EXPERT>
-      <<<grid_dim, block_dim, 0, (cudaStream_t)moe_stream>>>(
+  int shared_memory_size = num_experts * kThreadNum * sizeof(int32_t) * 2 +
+                           kThreadNum * sizeof(int32_t);
+  if (shared_memory_size > 48 * 1024) {
+    CUDA_CHECK(cudaFuncSetAttribute(
+        moe_ag_scatter_align_block_size_parallel_kernel<kThreadNum>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, shared_memory_size));
+  }
+
+  moe_ag_scatter_align_block_size_parallel_kernel<kThreadNum>
+      <<<grid_dim, block_dim, shared_memory_size, (cudaStream_t)moe_stream>>>(
           (int64_t *)topk_ids.data_ptr(), topk, num_experts, num_ranks,
           num_tokens_per_rank, block_size, expert_cumsum_per_rank, counter_d,
           (int32_t *)sorted_token_ids.data_ptr(),
@@ -331,6 +349,7 @@ void moe_ag_scatter_align_block_size_parallel_op(
           (int32_t *)block_barrier_ids.data_ptr(),
           (int32_t *)rank_block_num.data_ptr(),
           (int32_t *)num_tokens_post_pad.data_ptr());
+  CUDA_CHECK(cudaGetLastError());
 }
 
 } // namespace ops

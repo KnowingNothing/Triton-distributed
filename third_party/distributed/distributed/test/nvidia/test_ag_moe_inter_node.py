@@ -123,7 +123,7 @@ def perf_test_ag(input_len, config):
         ctx.local_copy_and_barrier_all(A, is_internode=True)
         inter_node_allgather(A, ctx.workspace_tensors, ctx.barrier_tensors, 1, ctx.rank, ctx.local_world_size,
                              ctx.num_ranks, torch.cuda.current_stream(), ctx.internode_ag_stream)
-        pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
 
     triton_ag_func()
     assert torch.allclose(full_A, ctx.workspace_tensors[local_rank], atol=1e-3, rtol=1e-3)
@@ -230,7 +230,7 @@ def perf_test_group_gemm(input_len, config):
             num_warps=ctx.warps,
         )
         torch.cuda.synchronize()
-        pynvshmem.nvshmem_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
 
     with group_profile(f"trace_group_gemm_inter_node/m_{M}_n_{N}_k_{K}_e_{E}", do_prof=args.profile, group=tp_group):
         _, triton_perf = perf_func(_group_gemm, iters=10, warmup_iters=20)

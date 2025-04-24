@@ -1,9 +1,9 @@
 # AutoTuner of Triton-distributed
-## Triton Kernel AutoTuner 
+## Triton Kernel AutoTuner
 
 对于单个 Triton kernel 的 tuning，用户可以直接使用 Triton 原有的接口 [`triton.autotune`](https://triton-lang.org/main/python-api/generated/triton.autotune.html) 。
 
-```python 
+```python
 @triton.autotune(configs=[
     triton.Config(kwargs={'BLOCK_SIZE': 128}, num_warps=4),
     triton.Config(kwargs={'BLOCK_SIZE': 1024}, num_warps=8),
@@ -18,12 +18,12 @@ def some_kernel(x_ptr, x_size, BLOCK_SIZE: tl.constexpr):
 
 `triton.autotune` 会在 kernel 运行时开启 tuning 过程，tuning 时会遍历 `configs` 所指定的 tuning config，对于每个 config，运行若干次该 config 对应的 kernel，测量其运行时间，最后会选择平均运行时间最短的 config 作为最优的 config。最优 config 会被保存下来，用 `key` 所指定的参数索引。
 
-## Contextual/Global AutoTuner 
+## Contextual/Global AutoTuner
 tuning 过程需要反复执行某一段代码，这通常要求该段代码是 side-effect-free 的，不会依赖于或者改变某些上下文状态/全局状态，重复执行多次都能成功执行并且产生相同的结果。`triton.autotune` 作用于单个 Triton kernel，有时候我们并不能保证单个 Triton kernel 是 side-effect-free 的。此外，在分布式场景下，不同 rank 的 tuning 结果需要汇总起来，从而选出一个相同的最优 config。因此，用户可能需要一个更通用的 AutoTuner。
 
 因此，我们为用户提供了 `triton.distributed.autotuner.contextual_autotune` 接口（`ContextualAutotuner`），可以装饰任意一个无参数函数 `fn`（一个 [Thunk](https://en.wikipedia.org/wiki/Thunk)），该函数的子过程可能不是 side-effect-free 的，不能单独进行 tuning，但是该函数作为一个整体可以进行 tuning。`ContextualAutotuner` 接收 `is_dist` 参数来指定当前 tuning 是否为分布式场景。
 
-### Example 
+### Example
 
 下面是一个基础的 allgather-gemm 的代码，包含 `kernel_local_copy_and_barrier_all` 和  `kernel_consumer_gemm_persistent` 这两个 Triton kernel：
 
@@ -391,7 +391,7 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     comm_buf = pynvshmem.nvshmem_create_tensor([max_blocks * num_ranks], torch.int32)
     comm_buf.fill_(0)
     barriers[rank].fill_(0)
-    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
     torch.cuda.synchronize()
 
     ag_stream = torch.cuda.Stream()
@@ -429,7 +429,7 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     A.copy_(torch.randn([M_per_rank, K], dtype=dtype, device=device))
     B.copy_(torch.randn([N_per_rank, K], dtype=dtype, device=device))
     workspaces[rank].copy_(torch.randn([M, K], dtype=dtype, device=device))
-    pynvshmem.nvshmem_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
     torch.cuda.synchronize()
     C = run_ag_gemm_persistent()
 
@@ -475,8 +475,6 @@ def main():
 
     torch.cuda.synchronize()
     pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
-    pynvshmem.nvshmem_barrier_all()
-    torch.cuda.synchronize()
 
     test_ag_gemm_tma_intra_node(RANK, WORLD_SIZE, TP_GROUP)
 
@@ -489,13 +487,13 @@ if __name__ == "__main__":
 
 可以用下面的命令来测试上述代码：
 
-```bash 
+```bash
 bash ./third_party/distributed/launch.sh <file_name>
 ```
 
 下面我们给 `kernel_consumer_gemm_persistent` 添加 `triton.autotune`，对 `kernel_consumer_gemm_persistent` 进行修改：
 
-```python 
+```python
 def matmul_get_configs():
     return [
         triton.Config(
@@ -535,7 +533,7 @@ def kernel_consumer_gemm_persistent(
     GROUP_SIZE_M: tl.constexpr,
     EPILOGUE_SUBTILE: tl.constexpr,
     NUM_SMS: tl.constexpr,
-): 
+):
     ...
 
 def ag_gemm_persistent(
@@ -590,17 +588,17 @@ def ag_gemm_persistent(
 
 考虑到 `kernel_consumer_gemm_persistent` 是 `run_ag_gemm_persistent` 的一个子过程，而 `run_ag_gemm_persistent` 需要作为一个整体运行。为此，我们只需要用  `triton.distributed.autotuner.contextual_autotune` 装饰 `run_ag_gemm_persistent` 函数（并且设 `is_dist=True`）：
 
-```python 
+```python
 
 from triton.distributed.autotuner import contextual_autotune
 
 def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     ...
-    
+
     @contextual_autotune(is_dist=True)
     def run_ag_gemm_persistent():
         ...
-        
+
     ...
 ```
 
@@ -608,7 +606,7 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
 
 更多的例子可以参考部分测试文件：[test_ag_gemm_intra_node.py](../../third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py)、[test_moe_reduce_rs.py](../../third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py)、[test_ag_moe.py](../../third_party/distributed/distributed/test/nvidia/test_ag_moe.py)，可以用如下命令进行测试：
 
-```bash 
+```bash
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma_autotune
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check --autotune
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 2048 --autotune
@@ -631,4 +629,3 @@ bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/t
 | final execution to get results | ... | kernel-0 (config-0 (best-config)) | ... | kernel-1 (config-1 (best-config)) | ... |
 
 注意，在 `ContextualAutotuner` 执行 Tuning-Iter-3 的时候，kernel-0 的所有 config 都已经测量完毕，选出了 config-0 作为 best-config，而 kernel-1 的 config 还没测量完毕，所以 `ContextualAutotuner` 会继续执行 `fn` 直到 kernel-1 也 tuning 结束。
-

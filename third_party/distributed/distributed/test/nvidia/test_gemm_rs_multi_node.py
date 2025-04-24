@@ -180,8 +180,6 @@ if __name__ == "__main__":
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
     pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
-    pynvshmem.nvshmem_barrier_all()
-    torch.cuda.synchronize()
 
     input_dtype = DTYPE_MAP[args.dtype]
     output_dtype = input_dtype

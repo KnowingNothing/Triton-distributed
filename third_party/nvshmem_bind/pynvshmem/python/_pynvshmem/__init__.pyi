@@ -73,7 +73,7 @@ def nvshmem_barrier_all():
     ...
 
 
-def nvshmem_barrier_all_on_stream(stream: np.intp):
+def nvshmemx_barrier_all_on_stream(stream: np.intp):
     ...
 
 
@@ -95,4 +95,25 @@ def nvshmem_create_tensor(shape: Sequence[int], dtype: torch.dtype) -> torch.Ten
 
 
 def nvshmem_create_tensor_list_intra_node(shape: Sequence[int], dtype: torch.dtype) -> List[torch.Tensor]:
+    ...
+
+
+def nvshmem_getmem(dest: np.intp, source: np.intp, nelems: int, pe: int):
+    ...
+
+
+def nvshmem_putmem(dest: np.intp, source: np.intp, nelems: int, pe: int):
+    ...
+
+
+def nvshmemx_getmem_on_stream(dest: np.intp, source: np.intp, nelems: int, pe: int, stream: np.intp):
+    ...
+
+
+def nvshmemx_putmem_on_stream(dest: np.intp, source: np.intp, nelems: int, pe: int, stream: np.intp):
+    ...
+
+
+def nvshmemx_putmem_signal_on_stream(dest: np.intp, source: np.intp, nelems: int, sig_add: np.intp, signal: int,
+                                     sig_op: int, pe: int, stream: np.intp):
     ...
