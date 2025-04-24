@@ -380,7 +380,7 @@ class GEMMReduceScatterTensorParallelContext:
 
 def create_gemm_rs_intra_node_context(max_M, N, output_dtype, rank, num_ranks, tp_group, fuse_scatter=True,
                                       transpose_weight=False):
-    """create context for allgather gemm intra-node
+    """create context for gemm reduce-scatter intra-node
 
     Args:
         max_M (int): max M

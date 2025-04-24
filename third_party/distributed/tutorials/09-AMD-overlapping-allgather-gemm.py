@@ -382,21 +382,21 @@ class triton_ag_gemm_intra_node(torch.nn.Module):
                 full_input,
                 local_input,
                 weight,
-                output,  #
+                output,
                 M,
                 N_PER_RANK,
-                K,  #
+                K,
                 full_input.stride(0),
-                full_input.stride(1),  #
-                weight.stride(1),  #
-                weight.stride(0),  #
+                full_input.stride(1),
+                weight.stride(1),
+                weight.stride(0),
                 output.stride(0),
-                output.stride(1),  #
+                output.stride(1),
                 ctx.rank,
                 ctx.num_ranks,
                 ctx.barrier_tensors[ctx.rank],
                 M_PER_CHUNK=ctx.M_PER_CHUNK,
-                NUM_SMS=NUM_SMS,  #
+                NUM_SMS=NUM_SMS,
                 NUM_XCDS=NUM_XCDS,
             )
         current_stream.wait_stream(ctx.gemm_stream)

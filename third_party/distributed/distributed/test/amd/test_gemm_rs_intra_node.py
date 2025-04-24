@@ -94,7 +94,6 @@ class GemmRSIntraNode(torch.nn.Module):
         M, local_K = input.shape
         N = weight.shape[0] if not self.transpose_weight else weight.shape[1]
         assert N == self.N
-
         assert M % self.world_size == 0
 
         output = gemm_rs_intra_node(input, weight, ctx=self.ctx)
