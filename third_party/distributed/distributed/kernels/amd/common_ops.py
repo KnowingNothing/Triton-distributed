@@ -30,14 +30,17 @@ from triton.distributed.utils import (
     HIP_CHECK, )
 from hip import hip
 
-from triton.language.extra.hip import libdevice
+from triton.language.extra.hip.libdevice import (
+    thread_idx,
+    load_acquire_system,
+)
 
 
 @triton.jit
 def wait_eq_sys(barrier_ptr, value):
-    thread_idx = libdevice.thread_idx(axis=0)
-    if thread_idx == 0:
-        while libdevice.load_acquire_system(barrier_ptr) != value:
+    tid = thread_idx(axis=0)
+    if tid == 0:
+        while load_acquire_system(barrier_ptr) != value:
             pass
 
     tl.debug_barrier()
@@ -45,7 +48,7 @@ def wait_eq_sys(barrier_ptr, value):
 
 @triton.jit
 def barrier_all_ipc(rank, num_ranks, comm_buf_base_ptrs):
-    tid = libdevice.thread_idx(axis=0)  # noqa: F841
+    tid = thread_idx(axis=0)  # noqa: F841
     for i in range(num_ranks):
         remote_base_ptr = tl.load(comm_buf_base_ptrs + i).to(tl.pointer_type(tl.int32))
         # tl.device_print("remote_base_ptr", remote_base_ptr)

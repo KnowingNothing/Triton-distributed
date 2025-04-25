@@ -933,6 +933,22 @@ def setup_pynvshmem_pytorch_extension():
 # End PYNVSHMEM Related
 #######################
 
+# set ext_modules
+ext_modules = []
+try:
+    import torch
+
+    if torch.cuda.is_available():
+        if torch.version.hip is None:
+            ext_modules.append(setup_pynvshmem_pytorch_extension())
+        else:
+            pass
+except Exception:
+    print("Cannot import torch.")
+    pass
+
+ext_modules.append(CMakeExtension("triton", "triton/_C/"))
+
 setup(
     name=os.environ.get("TRITON_WHEEL_NAME", "triton-dist"),
     version="3.3.0" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", ""),
@@ -945,8 +961,7 @@ setup(
     entry_points=get_entry_points(),
     package_data=package_data,
     include_package_data=True,
-    ext_modules=[setup_pynvshmem_pytorch_extension(),
-                 CMakeExtension("triton", "triton/_C/")],
+    ext_modules=ext_modules,
     cmdclass={
         "build_ext": CMakeBuild,
         "build_py": CMakeBuildPy,

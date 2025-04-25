@@ -5,7 +5,46 @@ trigger:
     notification:
       when: [ success, failure ]
 jobs:
-  triton-pre-merge:
+  triton-amd-pre-merge:
+    name: Triton-distributed CI for amd backend.
+    image: rocm/bytedance-private:bkc24.13_torch2.5.1_ub22.04_aterV4
+    envs:
+      PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/third_party/rocshmem_bind/python/
+      # LD_LIBRARY_PATH:$LD_LIBRARY_PATH
+      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      # no_proxy: '.byted.org'
+      PATH: /home/code/.local/bin:$PATH
+    runs-on:
+      cluster: triton_distributed_amd_109
+
+    steps:
+      - name: code-format-check
+        commands:
+          - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43
+          - pip3 install pytest
+          - pip3 install chardet
+          - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
+          - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
+          - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
+          - python3 scripts/check_license.py
+
+      - name: build
+        commands:
+          - python3 -m pip install cmake==3.26 ninja wheel lit numpy plotly pandas pytest scipy==1.10.1 matplotlib tabulate pybind11 setuptools tqdm
+          - python3 -m pip install -i https://test.pypi.org/simple hip-python>=6.3.0
+          - git submodule update --init --recursive
+          - bash third_party/rocshmem_bind/build.sh
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+
+      - name: distributed tests
+        commands:
+          # ag gemm
+          - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096
+          # gemm rs
+          - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_gemm_rs_intra_node.py 8192 4096 12288
+
+  triton-nvidia-pre-merge:
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
     envs:
       PYTHONPATH: /home/code/python:/home/code/third_party/nvshmem_bind/python/:$PYTHONPATH
