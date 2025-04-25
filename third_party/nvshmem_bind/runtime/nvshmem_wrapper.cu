@@ -327,7 +327,7 @@ __device__ int nvshmem_uint64_broadcast_wrapper(nvshmem_team_t team,
                                                 uint64_t *dest,
                                                 const uint64_t *source,
                                                 size_t nelems, int PE_root) {
-  return nvshmem_uint64_broadcast_(team, dest, source, nelems, PE_root);
+  return nvshmem_uint64_broadcast(team, dest, source, nelems, PE_root);
 }
 
 __device__ int nvshmem_half_broadcast_wrapper(nvshmem_team_t team, half *dest,
