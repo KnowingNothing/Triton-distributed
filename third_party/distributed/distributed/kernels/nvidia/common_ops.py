@@ -90,13 +90,11 @@ def barrier_all_intra_node_atomic_cas_block(rank, num_ranks, symm_flag_ptr):
     """ NOTE: this function should only be called with atomic support. memory over PCI-e does not support atomic r/w. DON'T use this function on such platforms.
     """
     thread_idx = tid(axis=0)
-    pid = tl.program_id(axis=0)
-    if pid == 0 and thread_idx < num_ranks:
+    if thread_idx < num_ranks:
         remote_ptr = dl.symm_at(symm_flag_ptr + rank, thread_idx)
         while atomic_cas(remote_ptr, 0, 1, "sys", "release") != 0:
             pass
-    # barrier all CTAs
-    barrier_on_this_grid(symm_flag_ptr + num_ranks)
+
     if thread_idx < num_ranks:
         while (atomic_cas(symm_flag_ptr + thread_idx, 1, 0, "sys", "acquire") != 1):
             pass
