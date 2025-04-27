@@ -23,12 +23,13 @@
 #
 ################################################################################
 import sys
+from typing import Sequence
 
 import torch
 import torch.distributed
 
 try:
-    from _pynvshmem import *  # noqa: F403
+    from triton._C._pynvshmem import *  # noqa: F403
 except Exception as e:
     print(
         "please add NVSHMEM library path to LD_LIBRARY_PATH and try again",
@@ -36,34 +37,6 @@ except Exception as e:
         file=sys.stderr,
     )
     raise e
-
-
-def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup):
-    if not tensor.is_cuda:
-        tensor_gpu = tensor.cuda()
-        torch.distributed.broadcast(tensor_gpu, src=src, group=group)
-        tensor.copy_(tensor_gpu)
-    else:
-        torch.distributed.broadcast(tensor, src=src, group=group)
-    torch.cuda.synchronize()
-
-
-def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
-    rank, nranks = group.rank(), group.size()
-    if rank == 0:
-        unique_id: bytes = nvshmemx_get_uniqueid()  # noqa: F405
-        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).cpu().clone()
-    else:
-        # the default device("cpu") may be modified by set_default_device
-        unique_id = torch.empty(128, dtype=torch.uint8, device="cpu")
-
-    broadcast_cpu(tensor=unique_id, group=group, src=0)
-
-    unique_id = unique_id.cpu().numpy().tobytes()
-    nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)  # noqa: F405
-    nvshmem_barrier_all()  # noqa: F405
-    torch.cuda.synchronize()
-
 
 # team node
 NVSHMEM_TEAM_INVALID = -1
@@ -114,3 +87,56 @@ NVSHMEMI_AMO_FETCH_XOR = 17
 NVSHMEMI_AMO_SWAP = 18
 NVSHMEMI_AMO_COMPARE_SWAP = 19
 NVSHMEMI_AMO_OP_SENTINEL = sys.maxsize
+
+
+def nvshmem_create_tensor(shape: Sequence[int], dtype: torch.dtype) -> torch.Tensor:
+    nbytes = torch.Size(shape).numel() * dtype.itemsize
+    torch.cuda.synchronize()
+    buffer = symm_cuda_buffer(nbytes)  # noqa: F405
+    return torch.as_tensor(buffer, device="cuda").view(dtype).view(shape)
+
+
+def nvshmem_create_tensor_list_intra_node(shape: Sequence[int], dtype: torch.dtype) -> torch.Tensor:
+    nbytes = torch.Size(shape).numel() * dtype.itemsize
+    torch.cuda.synchronize()
+    buffer = symm_cuda_buffer(nbytes)  # noqa: F405
+    local_world_size = nvshmem_team_n_pes(NVSHMEMX_TEAM_NODE)  # noqa: F405
+    local_rank = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE)  # noqa: F405
+    rank = nvshmem_my_pe()  # noqa: F405
+    rank_offset = rank - local_rank
+
+    def _as_tensor(i):
+        i += rank_offset
+        if i == rank:
+            return torch.as_tensor(buffer, device="cuda").view(dtype).view(shape)
+        else:
+            return torch.as_tensor(buffer.symm_at(i), device="cuda").view(dtype).view(shape)
+
+    return [_as_tensor(i) for i in range(local_world_size)]
+
+
+def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup):
+    if not tensor.is_cuda:
+        tensor_gpu = tensor.cuda()
+        torch.distributed.broadcast(tensor_gpu, src=src, group=group)
+        tensor.copy_(tensor_gpu)
+    else:
+        torch.distributed.broadcast(tensor, src=src, group=group)
+    torch.cuda.synchronize()
+
+
+def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
+    rank, nranks = group.rank(), group.size()
+    if rank == 0:
+        unique_id: bytes = nvshmemx_get_uniqueid()  # noqa: F405
+        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).cpu().clone()
+    else:
+        # the default device("cpu") may be modified by set_default_device
+        unique_id = torch.empty(128, dtype=torch.uint8, device="cpu")
+
+    broadcast_cpu(tensor=unique_id, group=group, src=0)
+
+    unique_id = unique_id.cpu().numpy().tobytes()
+    nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)  # noqa: F405
+    nvshmem_barrier_all()  # noqa: F405
+    torch.cuda.synchronize()

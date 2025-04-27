@@ -571,6 +571,13 @@ class CMakeBuild(TorchBuildExtension):
             cmake_args += shlex.split(cmake_args_append)
 
         env = os.environ.copy()
+        if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):
+            if torch.cuda.is_available():
+                if torch.version.hip is None:
+                    cmake_args += ["-DTRITON_BUILD_PYNVSHMEM=ON"]
+                    nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem", "build", "install")
+                    env["NVSHMEM_DIR"] = nvshmem_dir
+
         cmake_dir = get_cmake_dir()
         subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
@@ -697,17 +704,15 @@ def add_link_to_distributed():
 
 
 def add_link_to_pynvshmem():
-    for name in ["pynvshmem", "_pynvshmem"]:
-        pynvshmem_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "nvshmem_bind", "pynvshmem", "python",
-                         name))
-        pynvshmem_install_dir = os.path.join(os.path.dirname(__file__), "triton", name)
-        update_symlink(pynvshmem_install_dir, pynvshmem_dir)
+    triton_root = Path(os.path.abspath(__file__)).parent.parent.absolute()
+    update_symlink(triton_root / "python" / "triton" / "pynvshmem",
+                   triton_root / "third_party" / "nvshmem_bind" / "pynvshmem" / "python" / "pynvshmem")
+    # update pyi
+    update_symlink(triton_root / "python" / "triton" / "_C" / "_pynvshmem",
+                   triton_root / "third_party" / "nvshmem_bind" / "pynvshmem" / "python" / "_pynvshmem")
     # link nvshmem lib
-    nvshmem_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "nvshmem", "build", "install"))
-    nvshmem_install_dir = os.path.join(os.path.dirname(__file__), "triton", "_C", "nvshmem")
-    update_symlink(nvshmem_install_dir, nvshmem_dir)
+    update_symlink(triton_root / "python" / "triton" / "_C" / "nvshmem",
+                   triton_root / "third_party" / "nvshmem" / "build" / "install")
 
 
 def add_links():
@@ -818,7 +823,7 @@ def get_packages():
             if torch.cuda.is_available():
                 if torch.version.hip is None:
                     packages += ["triton/pynvshmem"]
-                    packages += ["triton/_pynvshmem"]
+                    packages += ["triton/_C/_pynvshmem"]
                 else:
                     pass
         except Exception:
@@ -891,63 +896,11 @@ def cuda_deps():
     return include_dirs, library_dirs, libraries
 
 
-def setup_pynvshmem_pytorch_extension():
-    """Setup CppExtension for PyTorch support"""
-    include_dirs, library_dirs, libraries = [], [], []
-
-    deps = [nvshmem_deps(), cuda_deps()]
-
-    for include_dir, library_dir, library in deps:
-        include_dirs += include_dir
-        library_dirs += library_dir
-        libraries += library
-
-    # Compiler flags
-    # too much warning from CUDA /usr/local/cuda/include/cusparse.h: "-Wdeprecated-declarations"
-    cxx_flags = [
-        "-O3",
-        "-DTORCH_CUDA=1",
-        "-fvisibility=hidden",
-        "-Wno-deprecated-declarations",
-        "-fdiagnostics-color=always",
-    ]
-    ld_flags = [
-        "-Wl,--exclude-libs=libnccl_static", "-Wl,-rpath,$ORIGIN"  # add $ORIGIN for relative path
-    ]
-
-    from torch.utils.cpp_extension import CUDAExtension
-
-    return CUDAExtension(
-        name="_pynvshmem",
-        sources=[os.path.join(os.pardir, "third_party", "nvshmem_bind", "pynvshmem", "src", "pynvshmem.cc")],
-        include_dirs=include_dirs,
-        library_dirs=library_dirs,
-        libraries=libraries,
-        dlink=True,
-        dlink_libraries=["nvshmem_device", "cudart_static"],
-        extra_compile_args={"cxx": cxx_flags, "nvcc": ["-rdc=true"]},
-        extra_link_args=ld_flags,
-    )
-
-
 # End PYNVSHMEM Related
 #######################
 
 # set ext_modules
-ext_modules = []
-try:
-    import torch
-
-    if torch.cuda.is_available():
-        if torch.version.hip is None:
-            ext_modules.append(setup_pynvshmem_pytorch_extension())
-        else:
-            pass
-except Exception:
-    print("Cannot import torch.")
-    pass
-
-ext_modules.append(CMakeExtension("triton", "triton/_C/"))
+ext_modules = [CMakeExtension("triton", "triton/_C/")]
 
 setup(
     name=os.environ.get("TRITON_WHEEL_NAME", "triton-dist"),

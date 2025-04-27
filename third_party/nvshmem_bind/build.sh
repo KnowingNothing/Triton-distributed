@@ -75,7 +75,6 @@ set_nvcc_gencode
 
 export NVSHMEM_DIR=${PROJECT_ROOT}/../nvshmem/build/install
 bash -x ${PROJECT_ROOT}/build_nvshmem.sh ${build_args}
-# build_pynvshmem
 
 download_libnvshmem_device_bc_byted
 

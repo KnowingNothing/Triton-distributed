@@ -45,11 +45,45 @@ NVSHMEM_TEAMS_MIN = 6
 NVSHMEM_TEAM_INDEX_MAX = sys.maxsize
 
 
+class symm_cuda_buffer:
+
+    def __init__(self, nbytes: int):
+        ...
+
+    def data_ptr(self) -> np.intp:
+        ...
+
+    def nbytes(self) -> int:
+        ...
+
+    def symm_at(self, rank) -> symm_cuda_buffer:
+        ...
+
+    def __cuda_array_interface__(self) -> dict:
+        ...
+
+
 def nvshmemx_cumodule_init(module: np.intp) -> None:
     ...
 
 
 def nvshmemx_cumodule_finalize(module: np.intp) -> None:
+    ...
+
+
+def nvshmem_my_pe() -> np.int32:
+    ...
+
+
+def nvshmem_n_pes() -> np.int32:
+    ...
+
+
+def nvshmem_team_my_pe(team: np.int32) -> np.int32:
+    ...
+
+
+def nvshmem_team_n_pes(team: np.int32) -> np.int32:
     ...
 
 
@@ -90,8 +124,6 @@ def nvshmemx_mc_ptr(team, ptr):
 
 
 # torch related
-def nvshmem_create_tensor(shape: Sequence[int], dtype: torch.dtype) -> torch.Tensor:
-    ...
 
 
 def nvshmem_create_tensor_list_intra_node(shape: Sequence[int], dtype: torch.dtype) -> List[torch.Tensor]:
