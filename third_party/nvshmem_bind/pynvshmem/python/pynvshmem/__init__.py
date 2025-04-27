@@ -52,13 +52,14 @@ def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
     rank, nranks = group.rank(), group.size()
     if rank == 0:
         unique_id: bytes = nvshmemx_get_uniqueid()  # noqa: F405
-        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).clone()
+        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).cpu().clone()
     else:
-        unique_id = torch.empty(128, dtype=torch.uint8)
+        # the default device("cpu") may be modified by set_default_device
+        unique_id = torch.empty(128, dtype=torch.uint8, device="cpu")
 
     broadcast_cpu(tensor=unique_id, group=group, src=0)
 
-    unique_id = unique_id.numpy().tobytes()
+    unique_id = unique_id.cpu().numpy().tobytes()
     nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)  # noqa: F405
     nvshmem_barrier_all()  # noqa: F405
     torch.cuda.synchronize()
