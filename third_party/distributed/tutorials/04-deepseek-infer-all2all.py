@@ -59,23 +59,18 @@ At the core of our implementation are low-level primitives that manage the commu
     bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/04-deepseek-infer-all2all.py
 
 """
+import os
 import torch
 import torch.distributed
 import triton
 import triton.language as tl
-from triton import pynvshmem
-
-import os
 import random
 import argparse
-import datetime
-import numpy as np
 
-from enum import Enum
-from tabulate import tabulate
-from typing import Optional
+from triton import pynvshmem
 from triton.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import tid
+from triton.distributed.utils import dist_print, initialize_distributed
 
 
 @triton.jit
@@ -85,61 +80,63 @@ def ceil_div(a, b):
 
 FP8_MAX = tl.constexpr(torch.finfo(torch.float8_e4m3fn).max)
 FP8_MAX_INV = tl.constexpr(1 / 448.)
+RANK = int(os.environ.get("RANK", 0))
+WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
 
 
-# use static config for fast compile
+# use static config for fast compile in this tutorial
 @triton.autotune(configs=[triton.Config(kwargs={'BM': BM}, num_warps=w) for BM in [16] for w in [16]], key=[])
 @triton.jit
 def all_to_all_kernel(
     send_tensor,
-    send_scale,
     data_src,
     data_dst,
+    scale_src,
+    scale_dst,
     splits_src,
     splits_dst,
     signal,
     send_splits_cumsum,
     recv_offset,
-    scale_src,
-    scale_dst,
     rank: int,
     call_count: int,
     act_pos: int,
     MODE: tl.constexpr,
     ONLINE_QUANT_FP8: tl.constexpr,
     FP8_GSIZE: tl.constexpr,
-    WITH_SCALE: tl.constexpr,
     WORLD_SIZE: tl.constexpr,
     HIDDEN: tl.constexpr,
     MAX_M: tl.constexpr,
-    EXPERTS_PER_RANK: tl.constexpr,
     NUM_TOT_EXPERTS: tl.constexpr,
     BM: tl.constexpr,
     BN: tl.constexpr,
-    BN_SCALE: tl.constexpr,
-    ELEMENT_SIZE: tl.constexpr = 2,
-    SCALE_ELEMENT_SIZE: tl.constexpr = 4,
 ):
     """
     All-to-All kernel for the Dispatch and Combine phases.
 
+    - send_tensor: The tokens to be sent.
+    - data/scale/splits_src/dst: The source and destination symmetric buffers for communication.
+    - signal: signal buffer for communication.
+    - send_splits_cumsum: Cumulative sum of the token splits (expert-level) for the current rank.
+    - recv_offset: only used in combine mode, the base offset of the received tokens.
+    - call_count: as the unique ID used for signal operation.
+    - act_pos: The position of the active buffer (0 or 1) for double buffering.
+
     - MODE: Determines whether the operation is Dispatch (0) or Combine (1).
     - ONLINE_QUANT_FP8: A flag indicating whether FP8 quantization is used.
     - FP8_GSIZE: The group size for FP8 quantization.
-    - WITH_SCALE: A flag indicating whether to send scale (already computed).
     - WORLD_SIZE: number of EP ranks.
     - HIDDEN: The hidden size for each token.
     - MAX_M: The maximum number of tokens that can be processed per rank.
     - EXPERTS_PER_RANK: The number of experts handled by each rank.
     - NUM_TOT_EXPERTS: The total number of experts.
-    - BM, BN, BN_SCALE: Block size used to copy data to send buffer
-    - ELEMENT_SIZE: The size of each element in bytes.
-    - SCALE_ELEMENT_SIZE: The size of each scale in bytes.
+    - BM, BN: Block size used to copy data to send buffer
     """
     pid = tl.program_id(0)
     # Triton-distributed exposes `tid` that can be used to identify the thread index within a CTA
     threadidx = tid(axis=0)
     NUM_GROUPS: tl.constexpr = HIDDEN // FP8_GSIZE
+    EXPERTS_PER_RANK: tl.constexpr = NUM_TOT_EXPERTS // WORLD_SIZE
 
     # 1. Calculate the token range for the current program (rank), get the corresponding pointer
     exp_st = pid * EXPERTS_PER_RANK
@@ -187,6 +184,7 @@ def all_to_all_kernel(
         send_tensor_ptrs = send_tensor + m_st * HIDDEN + group_offs
         data_src_ptrs = tl.cast(data_src_ptr, tl.pointer_type(tl.float8e4nv)) + group_offs
         scale_src_ptrs = scale_src_ptr + off_m[:, None] * NUM_GROUPS + tl.arange(0, UNROLL_FACTOR)[None, :]
+        # online quant the input data to FP8
         for i in tl.range(ceil_div(num_rows_cur_block, BM)):
             group_mask = off_m[:, None] < num_rows_cur_block - i * BM
             for _ in tl.static_range(0, NUM_GROUPS, UNROLL_FACTOR):
@@ -195,7 +193,6 @@ def all_to_all_kernel(
                 quant = tl.reshape((group.to(tl.float32) / scale).to(tl.float8e4nv), (BM, UNROLL_FACTOR * FP8_GSIZE))
                 tl.store(data_src_ptrs, quant, group_mask)
                 tl.store(scale_src_ptrs, tl.reshape(scale, (BM, UNROLL_FACTOR)), group_mask)
-
                 send_tensor_ptrs += UNROLL_FACTOR * FP8_GSIZE
                 data_src_ptrs += UNROLL_FACTOR * FP8_GSIZE
                 scale_src_ptrs += UNROLL_FACTOR
@@ -206,27 +203,18 @@ def all_to_all_kernel(
         off_n = tl.arange(0, BN)
         send_tensor_ptrs = send_tensor + m_st * HIDDEN + off_m[:, None] * HIDDEN + off_n[None, :]
         data_src_ptrs = data_src_ptr + off_m[:, None] * HIDDEN + off_n[None, :]
-        if WITH_SCALE:
-            off_g = tl.arange(0, BN_SCALE)
-            send_scale_ptrs = send_scale + m_st * NUM_GROUPS + off_m[:, None] * NUM_GROUPS + off_g[None, :]
-            scale_src_ptrs = scale_src_ptr + off_m[:, None] * NUM_GROUPS + off_g[None, :]
         for i in tl.range(ceil_div(num_rows_cur_block, BM)):
             data_mask = (off_m[:, None] < num_rows_cur_block - i * BM) & (off_n[None, :] < HIDDEN)
             tl.store(data_src_ptrs, tl.load(send_tensor_ptrs, data_mask), data_mask)
             send_tensor_ptrs += BM * HIDDEN
             data_src_ptrs += BM * HIDDEN
-            if WITH_SCALE:
-                scale_mask = (off_m[:, None] < num_rows_cur_block - i * BM) & (off_g[None, :] < NUM_GROUPS)
-                tl.store(scale_src_ptrs, tl.load(send_scale_ptrs, scale_mask), scale_mask)
-                send_scale_ptrs += BM * NUM_GROUPS
-                scale_src_ptrs += BM * NUM_GROUPS
 
     # 3. Perform the memory copy operation using shared memory for inter-rank communication.
-    # the last argument is the peer id (id of target rank)
+    #   the last argument is the peer id (id of target rank)
     libshmem_device.putmem_nbi_block(
         data_dst_ptr,
         data_src_ptr,
-        num_rows_cur_block * HIDDEN * (1 if (ONLINE_QUANT_FP8 and MODE == 0) else ELEMENT_SIZE),
+        num_rows_cur_block * HIDDEN * (1 if (ONLINE_QUANT_FP8 and MODE == 0) else 2),
         pid,
     )
     if MODE == 0:
@@ -237,13 +225,12 @@ def all_to_all_kernel(
             (EXPERTS_PER_RANK + 1) * 4,  # now we use `int32` for splits
             pid,
         )
-    # If online quantization is enbaled or scale is calculated ahead of time,
-    # signal the target rank with the scale data
-    if WITH_SCALE or ONLINE_QUANT_FP8:
+    # If online quantization is enbaled, signal the target rank with the scale data
+    if ONLINE_QUANT_FP8:
         libshmem_device.putmem_signal_nbi_block(
             scale_dst_ptr,
             scale_src_ptr,
-            num_rows_cur_block * NUM_GROUPS * SCALE_ELEMENT_SIZE,
+            num_rows_cur_block * NUM_GROUPS * 4,  # assume `float32` for scale
             signal_ptr,
             call_count,
             libshmem_device.NVSHMEM_SIGNAL_SET,
@@ -254,7 +241,7 @@ def all_to_all_kernel(
     libshmem_device.fence()
     if threadidx == 0:
         # notify the target rank (here is the `pid`-th rank) that the data is ready by setting the signal
-        if not (WITH_SCALE or ONLINE_QUANT_FP8):
+        if not ONLINE_QUANT_FP8:
             libshmem_device.signal_op(
                 signal_ptr,
                 call_count,
@@ -269,218 +256,6 @@ def all_to_all_kernel(
         )
 
 
-def dtype_size_in_bytes(dtype: torch.dtype) -> int:
-    return {
-        torch.float32: 4,
-        torch.bfloat16: 2,
-        torch.float16: 2,
-        torch.float8_e4m3fn: 1,
-    }[dtype]
-
-
-class AllToAllContext:
-
-    def __init__(
-        self,
-        max_m: int,
-        hidden: int,
-        online_quant_fp8: bool,
-        rank: int,
-        num_tot_experts: int,
-        WORLD_SIZE: int,
-        FP8_GSIZE: int = 128,
-        dtype=torch.bfloat16,
-        scale_dtype=torch.float,
-    ):
-        """
-        params:
-            - max_m: max number of tokens per rank
-
-
-        - In this context, we pre-define the max number of tokens that can be sent from
-            one device `max_m`, which is typically 128 or 256, and reserve corresponding send/receive buffer size.
-
-        - We also need to allocate split_buffer and send splits information to record
-            the number of tokens received by each expert for subsequent calculations and communication.
-
-        - The signal buffer is used to notify the target rank that the data is already ready.
-            `pynvshmem.nvshmem_create_tensor` is the low-level API to create shared memory
-            between different devices (see [nvshmem](https://docs.nvidia.com/nvshmem/api/gen/mem-model.html#memory-model)).
-
-        - We record `call_count` of the kernel as the unique signal to notify target rank.
-        """
-        self.send_buf = pynvshmem.nvshmem_create_tensor([max_m, hidden], dtype)
-        self.recv_buf = pynvshmem.nvshmem_create_tensor([WORLD_SIZE * max_m * 2, hidden], dtype)
-        self.scale_send_buf = pynvshmem.nvshmem_create_tensor([max_m, hidden // FP8_GSIZE], scale_dtype)
-        self.scale_recv_buf = pynvshmem.nvshmem_create_tensor([WORLD_SIZE * max_m * 2, hidden // FP8_GSIZE],
-                                                              scale_dtype)
-        # `+WORLD_SIZE` because we need to send/receive the start offset in `send_buf` of the tokens dispatched at dispatch phase
-        self.split_send_buf = pynvshmem.nvshmem_create_tensor([num_tot_experts + WORLD_SIZE], torch.int32)
-        self.split_recv_buf = pynvshmem.nvshmem_create_tensor([(num_tot_experts + WORLD_SIZE) * 2], torch.int32)
-        self.signal_buf = pynvshmem.nvshmem_create_tensor([WORLD_SIZE * 2], torch.uint64)
-
-        self.max_m = max_m
-        self.hidden = hidden
-        self.online_quant_fp8 = online_quant_fp8
-        self.FP8_GSIZE = FP8_GSIZE
-        self.dtype = dtype
-        self.scale_dtype = scale_dtype
-        self.ele_size = dtype_size_in_bytes(self.dtype)
-        self.scale_ele_size = dtype_size_in_bytes(self.scale_dtype)
-
-        self.num_tot_experts = num_tot_experts
-        self.experts_per_rank = num_tot_experts // WORLD_SIZE
-
-        self.WORLD_SIZE = WORLD_SIZE
-        self.rank = rank
-
-        # start from 1, becase the initial values of signal buffer is 0
-        self.call_count = 1
-        # switch double buffer
-        self.act_pos = 0
-        self.MOD_VALUE = 1000000
-
-
-def next_power_of_2(x: int) -> int:
-    if x == 0:
-        return 1
-    return 1 << (x - 1).bit_length()
-
-
-class AllToAllMode(Enum):
-    DISPATCH = 0
-    COMBINE = 1
-
-
-def fast_all_to_all(
-    ctx: AllToAllContext,
-    mode: AllToAllMode,
-    send_tensor: torch.Tensor,
-    send_split_cumsum: torch.Tensor,
-    recv_offset: Optional[torch.Tensor],
-    send_scale: Optional[torch.Tensor],
-):
-    """
-    low-latency all-to-all communication
-
-    `mode`: dispatch / combine
-    `send_tensor`: [num_tokens, HIDDEN] input tensor
-    `send_split_cumsum`: [num_experts + 1] cumulative sum of the number of tokens
-    `recv_offset`: [WORLD_SIZE] used in combine mode, base offset of the received tokens
-    `send_scale`: [num_tokens] scale tensor. used for quantization
-    """
-    with_scale = send_scale is not None
-    online_quant = ctx.online_quant_fp8
-    assert not (online_quant == with_scale and with_scale), "`online_quant_fp8` and `with_scale` cannot be both True"
-    if online_quant or with_scale:
-        assert send_tensor.shape[
-            1] % ctx.FP8_GSIZE == 0, "the last dimension of `send_tensor` must be divisible by `ctx.FP8_GSIZE`"
-
-    num_tokens = send_tensor.shape[0]
-    if mode == AllToAllMode.DISPATCH:
-        assert num_tokens <= ctx.max_m
-        send_buf = ctx.send_buf
-        recv_buf = ctx.recv_buf
-        scale_send_buf = ctx.scale_send_buf
-        scale_recv_buf = ctx.scale_recv_buf
-        split_send_buf = ctx.split_send_buf
-        split_recv_buf = ctx.split_recv_buf
-        MODE = 0
-    else:
-        assert num_tokens <= ctx.WORLD_SIZE * ctx.max_m
-        send_buf = ctx.recv_buf
-        recv_buf = ctx.send_buf
-        scale_send_buf = ctx.scale_recv_buf
-        scale_recv_buf = ctx.scale_send_buf
-        split_send_buf = ctx.split_recv_buf
-        split_recv_buf = ctx.split_send_buf
-        MODE = 1
-
-    grid = (ctx.WORLD_SIZE, )
-    # TODO: adaptive block size
-    BN = next_power_of_2(send_tensor.shape[1])
-    BN_SCALE = next_power_of_2(send_tensor.shape[1] // ctx.FP8_GSIZE) if online_quant else BN
-    all_to_all_kernel[grid](
-        send_tensor,
-        send_scale,
-        data_src=send_buf,
-        data_dst=recv_buf,
-        splits_src=split_send_buf,
-        splits_dst=split_recv_buf,
-        signal=ctx.signal_buf,
-        send_splits_cumsum=send_split_cumsum,
-        recv_offset=recv_offset,
-        scale_src=scale_send_buf,
-        scale_dst=scale_recv_buf,
-        rank=ctx.rank,
-        call_count=ctx.call_count,
-        act_pos=ctx.act_pos,
-        MODE=MODE,
-        ONLINE_QUANT_FP8=online_quant,
-        FP8_GSIZE=ctx.FP8_GSIZE,
-        WITH_SCALE=with_scale,
-        WORLD_SIZE=ctx.WORLD_SIZE,
-        HIDDEN=ctx.hidden,
-        MAX_M=ctx.max_m,
-        EXPERTS_PER_RANK=ctx.experts_per_rank,
-        NUM_TOT_EXPERTS=ctx.num_tot_experts,
-        BN=BN,
-        BN_SCALE=BN_SCALE,
-        ELEMENT_SIZE=ctx.ele_size,
-        SCALE_ELEMENT_SIZE=ctx.scale_ele_size,
-    )
-
-    # for double buffer
-    split_buf_st = ctx.act_pos * (ctx.num_tot_experts + ctx.WORLD_SIZE)
-    split_buf_ed = split_buf_st + (ctx.num_tot_experts + ctx.WORLD_SIZE)
-    data_buf_st = ctx.act_pos * ctx.WORLD_SIZE * ctx.max_m
-    data_buf_ed = data_buf_st + ctx.WORLD_SIZE * ctx.max_m
-    scale_buf_st = ctx.act_pos * ctx.WORLD_SIZE * ctx.max_m
-    scale_buf_ed = scale_buf_st + ctx.WORLD_SIZE * ctx.max_m
-
-    out_lis: list[torch.Tensor] = []
-    if mode == AllToAllMode.DISPATCH:
-        out_lis.append(split_recv_buf[split_buf_st:split_buf_ed])
-        out_lis.append(recv_buf[data_buf_st:data_buf_ed, :])
-        out_lis.append(scale_recv_buf[scale_buf_st:scale_buf_ed, :] if (with_scale or online_quant) else None)
-    else:
-        out_lis.append(None)
-        out_lis.append(recv_buf)
-        out_lis.append(scale_recv_buf if with_scale else None)
-        ctx.act_pos ^= 1
-    ctx.call_count = (ctx.call_count + 1) % ctx.MOD_VALUE
-
-    return out_lis
-
-
-def all_to_all_post_process(
-    ctx: AllToAllContext,
-    input_splits: torch.Tensor,
-    recv_buffer: torch.Tensor,
-    scale_buffer: Optional[torch.Tensor] = None,
-):
-    with_scale = scale_buffer is not None
-    world_size = ctx.WORLD_SIZE
-    combine_offset = input_splits[torch.arange(1, world_size + 1) * (ctx.experts_per_rank + 1) - 1]
-    combine_send_splits = input_splits.reshape(world_size, -1)[:, :ctx.experts_per_rank].flatten()
-    num_tokens_from_each_rank = combine_send_splits.reshape(world_size, -1).sum(dim=1)
-
-    data_vec, scale_vec = [], []
-    for i in range(world_size):
-        n_token_from_tgt_rank = num_tokens_from_each_rank[i]
-        _start = i * ctx.max_m
-        if ctx.online_quant_fp8:
-            data_vec.append(recv_buffer.reshape(-1, ctx.hidden // 2)[_start * 2:_start * 2 + n_token_from_tgt_rank])
-        else:
-            data_vec.append(recv_buffer[_start:_start + n_token_from_tgt_rank])
-        if with_scale or ctx.online_quant_fp8:
-            scale_vec.append(scale_buffer[_start:_start + n_token_from_tgt_rank])
-    output = torch.concat(data_vec)
-    output_scale = torch.concat(scale_vec) if (with_scale or ctx.online_quant_fp8) else None
-
-    return combine_offset, combine_send_splits, output, output_scale
-
-
 def splits_to_cumsum(splits: torch.Tensor):
     out = torch.empty(splits.shape[0] + 1, dtype=splits.dtype, device=splits.device)
     out[0] = 0
@@ -488,12 +263,8 @@ def splits_to_cumsum(splits: torch.Tensor):
     return out
 
 
-def calc_scatter_index_stable(choosed_experts: torch.Tensor):
-    return (choosed_experts.flatten().argsort(stable=True).argsort().int().view(choosed_experts.shape))
-
-
 def calc_gather_index(
-    scatter_index: torch.Tensor,
+    exp_indices: torch.Tensor,
     row_start: int,
     row_end: int,
     BLOCK_SIZE: int = 1024,
@@ -520,6 +291,7 @@ def calc_gather_index(
         tl.store(gather_index + scatter_idx - row_start, token_idx, mask=token_idx_mask)
         tl.store(topk_index + scatter_idx - row_start, topk_idx, mask=token_idx_mask)
 
+    scatter_index = exp_indices.flatten().argsort(stable=True).argsort().int().view(exp_indices.shape)
     ntokens, topk = scatter_index.shape
     gather_index = torch.zeros(row_end - row_start, dtype=torch.int32, device=scatter_index.device)
     topk_index = torch.zeros(row_end - row_start, dtype=torch.int32, device=scatter_index.device)
@@ -535,12 +307,11 @@ def calc_gather_index(
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=BLOCK_SIZE // 32,
     )
-    return gather_index, topk_index
+    return gather_index
 
 
-@triton.autotune(configs=[triton.Config(kwargs={'BM': BM}, num_warps=w) for BM in [16] for w in [16]], key=[])
 @triton.jit
-def _quant_kernel(out, out_scale, t, m, N: tl.constexpr, FP8_GSIZE: tl.constexpr = 128, BM: tl.constexpr = 32):
+def _quant_kernel(out, out_scale, t, m, N: tl.constexpr, FP8_GSIZE: tl.constexpr = 128, BM: tl.constexpr = 16):
     pid = tl.program_id(0)
     FP8_MAX_INV = tl.constexpr(1 / 448.)
     NUM_GROUPS: tl.constexpr = N // FP8_GSIZE
@@ -550,21 +321,21 @@ def _quant_kernel(out, out_scale, t, m, N: tl.constexpr, FP8_GSIZE: tl.constexpr
     input_ptrs = t + off_m[:, None] * N + off_n[None, :]
     out_ptrs = tl.cast(out, tl.pointer_type(tl.float8e4nv)) + off_m[:, None] * N + off_n[None, :]
     out_scale_ptrs = out_scale + off_m[:, None] * NUM_GROUPS + tl.arange(0, UNROLL_FACTOR)[None, :]
-    for _ in tl.static_range(0, NUM_GROUPS, UNROLL_FACTOR):
-        group_mask = off_m[:, None] < m
-        group = tl.reshape(tl.load(input_ptrs, group_mask), (BM * UNROLL_FACTOR, FP8_GSIZE))
+    for i in tl.static_range(0, NUM_GROUPS, UNROLL_FACTOR):
+        group_mask = off_m[:, None] < m and (off_n[None, :] < N - i * FP8_GSIZE)
+        scale_mask = tl.arange(0, UNROLL_FACTOR)[None, :] < NUM_GROUPS - i
+        group = tl.reshape(tl.load(input_ptrs, group_mask, 0.), (BM * UNROLL_FACTOR, FP8_GSIZE))
         scale = tl.max(tl.abs(group), 1, keep_dims=True).to(tl.float32) * FP8_MAX_INV
         quant = (group.to(tl.float32) / scale).to(tl.float8e4nv)
         tl.store(out_ptrs, tl.reshape(quant, (BM, UNROLL_FACTOR * FP8_GSIZE)), mask=group_mask)
-        tl.store(out_scale_ptrs, tl.reshape(scale, (BM, UNROLL_FACTOR)), mask=group_mask)
+        tl.store(out_scale_ptrs, tl.reshape(scale, (BM, UNROLL_FACTOR)), mask=scale_mask)
         input_ptrs += UNROLL_FACTOR * FP8_GSIZE
         out_ptrs += UNROLL_FACTOR * FP8_GSIZE
         out_scale_ptrs += UNROLL_FACTOR
 
 
-@triton.autotune(configs=[triton.Config(kwargs={'BM': BM}, num_warps=w) for BM in [16] for w in [16]], key=[])
 @triton.jit
-def _dequant_kernel(out, input, scales, m, N: tl.constexpr, FP8_GSIZE: tl.constexpr = 128, BM: tl.constexpr = 32):
+def _dequant_kernel(out, input, scales, m, N: tl.constexpr, FP8_GSIZE: tl.constexpr = 128, BM: tl.constexpr = 16):
     pid = tl.program_id(0)
     NUM_GROUPS: tl.constexpr = N // FP8_GSIZE
     UNROLL_FACTOR: tl.constexpr = 4
@@ -573,10 +344,11 @@ def _dequant_kernel(out, input, scales, m, N: tl.constexpr, FP8_GSIZE: tl.conste
     input_ptrs = tl.cast(input, tl.pointer_type(tl.float8e4nv)) + off_m[:, None] * N + off_n[None, :]
     input_scale_ptrs = scales + off_m[:, None] * NUM_GROUPS + tl.arange(0, UNROLL_FACTOR)[None, :]
     out_ptrs = out + off_m[:, None] * N + off_n[None, :]
-    for _ in tl.static_range(0, NUM_GROUPS, UNROLL_FACTOR):
-        group_mask = off_m[:, None] < m
-        group = tl.reshape(tl.load(input_ptrs, group_mask), (BM * UNROLL_FACTOR, FP8_GSIZE))
-        scale = tl.reshape(tl.load(input_scale_ptrs, group_mask), (BM * UNROLL_FACTOR, 1))
+    for i in tl.static_range(0, NUM_GROUPS, UNROLL_FACTOR):
+        group_mask = off_m[:, None] < m and (off_n[None, :] < N - i * FP8_GSIZE)
+        scale_mask = off_m[:, None] < m and (tl.arange(0, UNROLL_FACTOR)[None, :] < NUM_GROUPS - i)
+        group = tl.reshape(tl.load(input_ptrs, group_mask, 0.), (BM * UNROLL_FACTOR, FP8_GSIZE))
+        scale = tl.reshape(tl.load(input_scale_ptrs, scale_mask, 0.), (BM * UNROLL_FACTOR, 1))
         deq = (group.to(tl.float32) * scale).to(tl.bfloat16)
         tl.store(out_ptrs, tl.reshape(deq, (BM, UNROLL_FACTOR * FP8_GSIZE)), mask=group_mask)
         input_ptrs += UNROLL_FACTOR * FP8_GSIZE
@@ -586,79 +358,19 @@ def _dequant_kernel(out, input, scales, m, N: tl.constexpr, FP8_GSIZE: tl.conste
 
 def quant_bf16_fp8(tensor: torch.Tensor, gsize: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
     m, N = tensor.shape
-    grid = lambda meta: (triton.cdiv(m, meta["BM"]), )
-    out = torch.empty((m, N // 2), dtype=torch.bfloat16, device="cuda")
-    out_scale = torch.empty(m, N // gsize, dtype=torch.float32, device="cuda")
+    grid = (triton.cdiv(m, 16), )
+    out = torch.empty((m, N // 2), dtype=torch.bfloat16, device=tensor.device)
+    out_scale = torch.empty(m, N // gsize, dtype=torch.float32, device=tensor.device)
     _quant_kernel[grid](out, out_scale, tensor, m, N)
     return out, out_scale
 
 
 def dequant_fp8_bf16(q_tensor: torch.Tensor, scales: torch.Tensor):
     m, N = q_tensor.shape
-    grid = lambda meta: (triton.cdiv(m, meta["BM"]), )
+    grid = (triton.cdiv(m, 16), )
     out = torch.empty([m, N * 2], dtype=torch.bfloat16, device=q_tensor.device)
     _dequant_kernel[grid](out, q_tensor, scales, m, N * 2)
     return out
-
-
-DTYPE_MAP = {
-    "bfloat16": torch.bfloat16,
-    "float8_e4m3fn": torch.float8_e4m3fn,
-}
-
-
-def init_seed(seed=0):
-    os.environ["NCCL_DEBUG"] = os.getenv("NCCL_DEBUG", "ERROR")
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
-    torch.use_deterministic_algorithms(True, warn_only=True)
-    torch.set_printoptions(precision=2)
-    torch.manual_seed(3 + seed)
-    torch.cuda.manual_seed_all(3 + seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
-    np.random.seed(3 + seed)
-    random.seed(3 + seed)
-
-
-EP_GROUP = None
-RANK = int(os.environ.get("RANK", 0))
-LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
-WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
-LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
-
-
-def initialize_distributed():
-    global EP_GROUP
-    assert EP_GROUP is None, "EP_GROUP has already been initialized"
-    torch.cuda.set_device(LOCAL_RANK)
-    torch.distributed.init_process_group(
-        backend="nccl",
-        world_size=WORLD_SIZE,
-        rank=RANK,
-        timeout=datetime.timedelta(seconds=1800),
-    )
-    assert torch.distributed.is_initialized()
-    EP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
-    init_seed(seed=RANK)
-    pynvshmem.init_nvshmem_by_uniqueid(EP_GROUP)
-    return EP_GROUP
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-M", type=int, default=8)
-    parser.add_argument("-N", type=int, default=7168)
-    parser.add_argument("-G", type=int, default=128)
-    parser.add_argument("--topk", type=int, default=8)
-    parser.add_argument("--bench_iters", default=1000, type=int, help="perf iterations")
-    parser.add_argument("--dtype", default="bfloat16", help="data type", choices=list(DTYPE_MAP.keys()))
-    parser.add_argument("--with_scale", action="store_true")
-    parser.add_argument("--quant_gsize", type=int, default=128, help="quantization group size")
-    parser.add_argument("--online_quant_fp8", action="store_true")
-    return parser.parse_args()
 
 
 def generate_random_exp_indices(token_num, total_num_experts, topk):
@@ -670,227 +382,166 @@ def generate_random_exp_indices(token_num, total_num_experts, topk):
     return torch.Tensor(exp_indices).int()
 
 
-def bench_func(f, bench_iters: int):
-    st = torch.cuda.Event(enable_timing=True)
-    ed = torch.cuda.Event(enable_timing=True)
-    torch.cuda._sleep(1000000000)
-    for _ in range(20):
-        f()
-    st.record()
-    for _ in range(bench_iters):
-        _ = f()
-    ed.record()
-    torch.cuda.synchronize()
-    return st.elapsed_time(ed) / args.bench_iters
-
-
-def perf_torch(input: torch.Tensor, scale_tensor: torch.Tensor, exp_indices: torch.Tensor):
-    # prepare the indexes
-    splits_gpu_cur_rank = torch.bincount(exp_indices.view(-1), minlength=args.G).to(torch.int32)
-    splits_cpu_cur_rank = splits_gpu_cur_rank.cpu()
-    # calculate the scatter and gather idx
-    scatter_idx_cur_rank = calc_scatter_index_stable(exp_indices)
-    gather_idx_cur_rank, _ = calc_gather_index(scatter_idx_cur_rank, 0, num_tokens * args.topk)
-    num_groups = input.shape[1] // args.quant_gsize
-    scattered_input = torch.empty((input.size(0) * args.topk, input.size(1)), dtype=input.dtype,
-                                  device=input.device).copy_(torch.index_select(input, dim=0,
-                                                                                index=gather_idx_cur_rank))
-    scattered_scale = torch.empty(
-        (scale_tensor.size(0) * args.topk, num_groups),
-        dtype=scale_tensor.dtype,
-        device=scale_tensor.device,
-    ).copy_(torch.index_select(scale_tensor, dim=0, index=gather_idx_cur_rank)) if args.with_scale else None
-
-    send_tensor, send_scale = scattered_input, scattered_scale
-    if args.online_quant_fp8:
-        send_tensor, send_scale = quant_bf16_fp8(scattered_input)
-
-    a2a_splits = torch.empty_like(splits_gpu_cur_rank)
-    torch.distributed.all_to_all_single(a2a_splits, splits_gpu_cur_rank, group=EP_GROUP)
-    a2a_splits_cpu = a2a_splits.cpu()
-    ep_size = EP_GROUP.size()
-    a2a_dispatch_output = torch.empty(
-        [a2a_splits_cpu.sum(), input.size(1) // (2 if args.online_quant_fp8 else 1)], dtype=send_tensor.dtype,
-        device=input.device)
-    a2a_dispatch_scale = torch.empty([a2a_splits_cpu.sum(), num_groups], dtype=torch.float32,
-                                     device=scale_tensor.device)
-    torch.cuda.synchronize()
-
-    dispatch_time, combine_time, quant_time = 0., 0., 0.
-
-    # 1. Dispatch
-    def _quant_input():
-        return quant_bf16_fp8(scattered_input)
-
-    if args.online_quant_fp8:
-        quant_time = bench_func(_quant_input, args.bench_iters)
-
-    def fwd():
-        torch.distributed.all_to_all_single(
-            output=a2a_dispatch_output,
-            input=send_tensor,
-            output_split_sizes=a2a_splits_cpu.reshape(ep_size, -1).sum(dim=-1).tolist(),
-            input_split_sizes=splits_cpu_cur_rank.reshape(ep_size, -1).sum(-1).tolist(),
-            group=EP_GROUP,
-        )
-        if args.with_scale or args.online_quant_fp8:
-            torch.distributed.all_to_all_single(
-                output=a2a_dispatch_scale,
-                input=send_scale,
-                output_split_sizes=a2a_splits_cpu.reshape(ep_size, -1).sum(dim=-1).tolist(),
-                input_split_sizes=splits_cpu_cur_rank.reshape(ep_size, -1).sum(-1).tolist(),
-                group=EP_GROUP,
-            )
-
-    dispatch_time = bench_func(fwd, args.bench_iters)
-
-    # 2. Combine
-    a2a_combine_output = torch.empty_like(scattered_input)
-    combine_input = a2a_dispatch_output
-    if args.online_quant_fp8:
-        combine_input = dequant_fp8_bf16(a2a_dispatch_output, a2a_dispatch_scale)
-
-    def cmb():
-        torch.distributed.all_to_all_single(
-            output=a2a_combine_output,
-            input=combine_input,
-            output_split_sizes=splits_cpu_cur_rank.reshape(ep_size, -1).sum(-1).tolist(),
-            input_split_sizes=a2a_splits_cpu.reshape(ep_size, -1).sum(dim=-1).tolist(),
-            group=EP_GROUP,
-        )
-
-    combine_time = bench_func(cmb, args.bench_iters)
-
-    comb_ref = (dequant_fp8_bf16(send_tensor, send_scale) if args.online_quant_fp8 else send_tensor)
-    torch.testing.assert_close(a2a_combine_output.float(), comb_ref.float(), rtol=1e-5, atol=1e-5)
-
-    return a2a_dispatch_output, a2a_dispatch_scale, quant_time, dispatch_time, combine_time
-
-
-def perf_triton(input: torch.Tensor, scale_tensor: torch.Tensor, exp_indices: torch.Tensor):
-    # 0. pre-process: duplicate the input tensor `topk` times then scatter
-
-    # splits_gpu_cur_rank: [num_experts]; indicates the number of tokens for each expert
-    splits_gpu_cur_rank = torch.bincount(exp_indices.view(-1), minlength=args.G).to(torch.int32)
-    # split_cumsum: [num_experts + 1]; cumulative sum of the number of tokens for each expert
-    split_cumsum = splits_to_cumsum(splits_gpu_cur_rank)
-
-    scatter_idx_cur_rank = calc_scatter_index_stable(exp_indices)
-    gather_idx_cur_rank, _ = calc_gather_index(scatter_idx_cur_rank, 0, num_tokens * args.topk)
-    scattered_input = torch.empty(input.size(0) * args.topk, input.size(1), dtype=input.dtype,
-                                  device=input.device).copy_(torch.index_select(input, dim=0,
-                                                                                index=gather_idx_cur_rank))
-    scattered_scale = torch.empty(
-        (scale_tensor.size(0) * args.topk, input.shape[1] // args.quant_gsize),
-        dtype=scale_tensor.dtype,
-        device=scale_tensor.device,
-    ).copy_(torch.index_select(scale_tensor, dim=0, index=gather_idx_cur_rank)) if args.with_scale else None
-
-    # 1. Dispatch
-    def fwd():
-        out = fast_all_to_all(all_to_all_ctx, AllToAllMode.DISPATCH, scattered_input, split_cumsum, None,
-                              scattered_scale)
-        # flip for test
-        all_to_all_ctx.act_pos ^= 1
-        return out
-
-    avg_time_dispatch = bench_func(fwd, args.bench_iters)
-
-    dispatch_splits, dis_token, dis_scale = fwd()
-    comb_offset, comb_send_splits, dis_token, dis_scale = all_to_all_post_process(all_to_all_ctx, dispatch_splits,
-                                                                                  dis_token, dis_scale)
-
-    # 2. Combine
-    combine_input = (dequant_fp8_bf16(dis_token, dis_scale) if args.online_quant_fp8 else dis_token)
-    combine_split_cumsum = splits_to_cumsum(comb_send_splits)
-
-    def comb():
-        return fast_all_to_all(all_to_all_ctx, AllToAllMode.COMBINE, combine_input, combine_split_cumsum, comb_offset,
-                               None)
-
-    _, combined_tokens, _ = comb()
-
-    # check the correctness of combine
-    combine_ref = (dequant_fp8_bf16(*quant_bf16_fp8(scattered_input)) if args.online_quant_fp8 else scattered_input)
-    torch.testing.assert_close(combined_tokens[:scattered_input.shape[0]].float(), combine_ref.float(), rtol=1e-5,
-                               atol=1e-5)
-
-    avg_time_combine = bench_func(comb, args.bench_iters)
-
-    return dis_token, dis_scale, avg_time_dispatch, avg_time_combine
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-M", type=int, default=8)
+    parser.add_argument("-N", type=int, default=7168)
+    parser.add_argument("-G", type=int, default=256)
+    parser.add_argument("--topk", type=int, default=8)
+    parser.add_argument("--online_quant_fp8", action="store_true")
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    EP_GROUP = initialize_distributed()
-
     assert (args.G % WORLD_SIZE == 0), f"args.G:{args.G} should be divisible by WORLD_SIZE:{WORLD_SIZE}"
-    experts_per_rank = args.G // WORLD_SIZE
+    initialize_distributed()
+    EXPERTS_PER_RANK = args.G // WORLD_SIZE
+    MAX_NUM_TOKENS = args.M * args.topk
+    ONLINE_QUANT = args.online_quant_fp8
+    DTYPE = torch.bfloat16
+    if ONLINE_QUANT:
+        assert args.N % 128 == 0, f"N:{args.N} should be divisible by 128 for online FP8 quantization"
+        NUM_GROUPS = args.N // 128
+
+    #####################
+    # Prepare the input data:
+    #   1. `input`: [num_tokens, HIDDEN] in each rank, which will be sent to other ranks
+    #   2. `exp_indices`: [num_tokens, topk] in each rank, which indicates the experts that each token will be sent to
+    #
+    # num_tokens = random.randint(args.M // 2, args.M)
     num_tokens = args.M
-    print(f"Rank-{RANK}: Received {num_tokens} tokens")
-
-    all_to_all_ctx = AllToAllContext(
-        args.M * args.topk,
-        args.N,
-        args.online_quant_fp8,
-        RANK,
-        args.G,
-        WORLD_SIZE,
-        args.quant_gsize,
-        DTYPE_MAP[args.dtype],
-        torch.float,
-    )
-
-    # exp_indices: [num_tokens, topk]
     exp_indices = generate_random_exp_indices(num_tokens, args.G, args.topk).to("cuda")
-    input = (torch.rand(num_tokens, args.N, dtype=torch.float32).to(DTYPE_MAP[args.dtype]).to("cuda"))
-    scale = torch.rand((num_tokens, args.N // args.quant_gsize), dtype=torch.float32).to("cuda")
+    input_tokens_cur_rank = torch.rand(MAX_NUM_TOKENS, args.N, dtype=torch.float32).to(DTYPE).to("cuda")
 
-    ref_out, ref_scale, torch_quant, torch_dis, torch_comb = perf_torch(input, scale, exp_indices)
-    torch.cuda.synchronize()
-    triton_out, triton_scale, triton_dis, triton_comb = perf_triton(input, scale, exp_indices)
-    torch.cuda.synchronize()
-    torch.distributed.barrier()
+    # The number of tokens for each expert; we use cumsum of the splits in the kernel
+    splits_gpu_cur_rank = torch.bincount(exp_indices.view(-1), minlength=args.G).to(torch.int32)
+    split_cumsum = splits_to_cumsum(splits_gpu_cur_rank)
 
-    # collect the results then print
-    def gather_benchmark(time_value):
-        tensor = torch.tensor(time_value, device="cuda")
-        gather_list = ([torch.zeros_like(tensor) for _ in range(WORLD_SIZE)] if RANK == 0 else None)
-        torch.distributed.gather(tensor, gather_list, dst=0)
-        return [t.item() for t in gather_list] if RANK == 0 else None
+    # gather `num_tokens * topk` input tokens according to `exp_indices`
+    gather_idx_cur_rank = calc_gather_index(exp_indices, 0, num_tokens * args.topk)
+    scattered_input_cur_rank = torch.empty(num_tokens * args.topk, args.N, dtype=DTYPE, device="cuda")
+    scattered_input_cur_rank.copy_(torch.index_select(input_tokens_cur_rank, dim=0, index=gather_idx_cur_rank))
+    #####################
 
-    torch_quant_ts = gather_benchmark(torch_quant)
-    torch_dis_ts = gather_benchmark(torch_dis)
-    torch_comb_ts = gather_benchmark(torch_comb)
-    triton_dis_ts = gather_benchmark(triton_dis)
-    triton_comb_ts = gather_benchmark(triton_comb)
-    if RANK == 0:
-        print("\n=== Results ===")
-        headers = [
-            "Rank", "Torch Quant (ms)", "Torch Dispatch (ms)", "Torch Combine (ms)", "Triton Dispatch (ms)",
-            "Triton Combine (ms)"
-        ]
-        rows = [[
-            r, f"{torch_quant_ts[r]:.3f}", f"{torch_dis_ts[r]:.3f}", f"{torch_comb_ts[r]:.3f}",
-            f"{triton_dis_ts[r]:.3f}", f"{triton_comb_ts[r]:.3f}"
-        ] for r in range(WORLD_SIZE)] + [[
-            "Avg", f"{sum(torch_quant_ts)/WORLD_SIZE:.3f}", f"{sum(torch_dis_ts)/WORLD_SIZE:.3f}",
-            f"{sum(torch_comb_ts)/WORLD_SIZE:.3f}", f"{sum(triton_dis_ts)/WORLD_SIZE:.3f}",
-            f"{sum(triton_comb_ts)/WORLD_SIZE:.3f}"
-        ]]
-        print(tabulate(rows, headers=headers, floatfmt=".3f", tablefmt="grid"))
-    torch.distributed.barrier()
+    #####################
+    # 1. we pre-define the max number of tokens that can be sent from one device `MAX_NUM_TOKENS`,
+    #   which is typically 128 or 256, and reserve corresponding send/receive buffer size.
+    #
+    # NOTE: the size of receive buffer should be `WORLD_SIZE * MAX_NUM_TOKENS` because for the
+    #   extremely imbalanced case: one single rank receive the data from all other ranks.
+    #   We use *double buffer* for recieve buffer to avoid possible race condition, so the total size
+    #   of receive buffer is `WORLD_SIZE * MAX_NUM_TOKENS * 2`.
+    #
+    #
+    # 2. We also need to allocate split_buffer and send splits information to record
+    #   the number of tokens received by each expert for subsequent calculations and communication.
+    #
+    # 3. The signal buffer is used to notify the target rank that the data is already ready.
+    #   `pynvshmem.nvshmem_create_tensor` is the low-level API to create shared memory
+    #   between different devices (see https://docs.nvidia.com/nvshmem/api/gen/mem-model.html#memory-model).
+    #   `WORLD_SIZE * 2` is for double buffer.
+    #
+    send_buf: torch.Tensor = pynvshmem.nvshmem_create_tensor([MAX_NUM_TOKENS, args.N], DTYPE)
+    recv_buf: torch.Tensor = pynvshmem.nvshmem_create_tensor([WORLD_SIZE * MAX_NUM_TOKENS * 2, args.N], DTYPE)
+    scale_send_buf: torch.Tensor = pynvshmem.nvshmem_create_tensor([MAX_NUM_TOKENS, NUM_GROUPS], torch.float32)
+    scale_recv_buf: torch.Tensor = pynvshmem.nvshmem_create_tensor([WORLD_SIZE * MAX_NUM_TOKENS * 2, NUM_GROUPS],
+                                                                   torch.float32)
+    split_send_buf: torch.Tensor = pynvshmem.nvshmem_create_tensor([args.G + WORLD_SIZE], torch.int32)
+    split_recv_buf: torch.Tensor = pynvshmem.nvshmem_create_tensor([(args.G + WORLD_SIZE) * 2], torch.int32)
+    signal_buf: torch.Tensor = pynvshmem.nvshmem_create_tensor([WORLD_SIZE * 2], torch.uint64)
+    #####################
 
-    # check the correctness
-    def check(out: torch.Tensor, ref: torch.Tensor, msg: str = "Triton"):
+    act_pos = 1
+    # test 3 rounds in this example
+    for round in range(1, 4):
+        # flip the `act_pos` in each iteration for double buffer
+        act_pos ^= 1
+        # we launch the kernel with `WORLD_SIZE` blocks, each block handles the traffic of one rank
+        grid = (WORLD_SIZE, )
+        kwargs = {
+            "ONLINE_QUANT_FP8": ONLINE_QUANT,  # whether to use online FP8 quantization
+            "FP8_GSIZE": 128,  # fixed quatization group size to 128 in this example
+            "WORLD_SIZE": WORLD_SIZE, "HIDDEN": args.N, "MAX_M": MAX_NUM_TOKENS, "NUM_TOT_EXPERTS": args.G,  #
+            "BN": 1 << (args.N - 1).bit_length(),  # block size for copy data to send buffer; next_power_of_2(N)
+        }
+        #####################
+        # 1. Dispatch
+        all_to_all_kernel[grid](
+            scattered_input_cur_rank,
+            send_buf,
+            recv_buf,
+            scale_send_buf,
+            scale_recv_buf,
+            split_send_buf,
+            split_recv_buf,
+            signal_buf,
+            split_cumsum,
+            recv_offset=None,  # not used in dispatch mode
+            rank=RANK,
+            call_count=round * 2,  # as we call the kernel twice in each iteration
+            act_pos=act_pos,  # flip for double buffer
+            MODE=0,  # dispatch mode
+            **kwargs,
+        )
+        # 1.1. Post-process the dispatch output
+        # this is for double buffer
+        split_buf_st, split_buf_size = act_pos * (args.G + WORLD_SIZE), args.G + WORLD_SIZE
+        data_buf_st, data_buf_size = act_pos * (WORLD_SIZE * MAX_NUM_TOKENS), WORLD_SIZE * MAX_NUM_TOKENS
+        dis_splits_buf = split_recv_buf[split_buf_st:split_buf_st + split_buf_size]
+        dis_tokens_buf = recv_buf[data_buf_st:data_buf_st + data_buf_size, :]
+        dis_scales_buf = scale_recv_buf[data_buf_st:data_buf_st + data_buf_size, :]
+
+        combine_offset = dis_splits_buf[torch.arange(1, WORLD_SIZE + 1) * (EXPERTS_PER_RANK + 1) - 1]
+        combine_send_splits = dis_splits_buf.reshape(WORLD_SIZE, -1)[:, :EXPERTS_PER_RANK].flatten()
+        num_tokens_from_each_rank = combine_send_splits.reshape(WORLD_SIZE, -1).sum(dim=1).tolist()
+        off, token_vec, scale_vec = 0, [], []
+        for ntk in num_tokens_from_each_rank:
+            if ONLINE_QUANT:
+                token_vec.append(dis_tokens_buf.reshape(-1, args.N // 2)[off * 2:off * 2 + ntk])
+                scale_vec.append(dis_scales_buf[off:off + ntk])
+            else:
+                token_vec.append(dis_tokens_buf[off:off + ntk])
+            off += MAX_NUM_TOKENS
+        dispatched_tokens, s = torch.concat(token_vec), torch.concat(scale_vec) if ONLINE_QUANT else None
+        #####################
+        # 2. compute, e.g. GroupGEMM(dispatched_tokens, disaptched_scales, ...) ...
+        if ONLINE_QUANT:
+            dispatched_tokens = dequant_fp8_bf16(dispatched_tokens, s)
+        #####################
+        # 3. Combine
+        combine_splits_cumsum = splits_to_cumsum(combine_send_splits)
+        all_to_all_kernel[grid](
+            dispatched_tokens,
+            recv_buf,
+            send_buf,  # we re-use the recv/send buffer in combine mode:
+            scale_recv_buf,
+            scale_send_buf,  # the recv buffer is used to store the input
+            split_recv_buf,
+            split_send_buf,  # and the send buffer is used to store the output
+            signal_buf,
+            combine_splits_cumsum,
+            recv_offset=combine_offset,  # get the base offset of the received tokens in combine phase from dispatch
+            rank=RANK,
+            call_count=round * 2 + 1,  # as we call the kernel twice in each iteration
+            act_pos=act_pos,  # flip for double buffer
+            MODE=1,  # combine mode
+            **kwargs,
+        )
+        combined_tokens = send_buf[:scattered_input_cur_rank.shape[0]]
+        #####################
+        # check the correctness of dispatch-combine
+        combine_ref = (dequant_fp8_bf16(
+            *quant_bf16_fp8(scattered_input_cur_rank)) if ONLINE_QUANT else scattered_input_cur_rank)
         try:
-            torch.testing.assert_close(out.float(), ref.float(), rtol=1e-5, atol=1e-5)
-            print(f"✅ RANK[{RANK}] check {msg} passed")
+            torch.testing.assert_close(combined_tokens.float(), combine_ref.float(), rtol=1e-5, atol=1e-5)
+            dist_print(f"✅ Round-{round} combine check passed!")
         except Exception as e:
-            print(f"❌ RANK[{RANK}] check {msg} failed")
+            dist_print(f"❌ Round-{round} combine check failed! {e}")
             raise e
 
-    check(triton_out, ref_out, "Triton out")
-    if args.with_scale or args.online_quant_fp8:
-        check(triton_scale, ref_scale, "Triton scale")
-    torch.distributed.destroy_process_group(EP_GROUP)
+    torch.distributed.destroy_process_group()
+
+# To run this tutorial
+# source ./scripts/sentenv.sh
+# bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/04-deepseek-infer-all2all.py
