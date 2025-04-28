@@ -168,7 +168,12 @@ def _make_const_sig(src: triton.compiler.ASTSource) -> str:
     indexed_constants = src.constants
     for i, params in enumerate(src.fn.params):
         if params.is_constexpr:
-            constants.append(indexed_constants[(i, )])
+            if (i, ) in indexed_constants:
+                constants.append(indexed_constants[(i, )])
+            elif i in indexed_constants:
+                constants.append(indexed_constants[i])
+            else:
+                raise RuntimeError("Don't know how to index", i, "in", indexed_constants)
     return "x".join([str(v) for v in constants])
 
 
@@ -191,7 +196,10 @@ def materialize_c_params(
     suffix = kernel_name_suffix(signature, const_sig, hints, num_stages, num_warps)
     func_name = f"{out_name}_{suffix}"
 
-    doc_string = [f"{kernel.arg_names[i[0]]}={constants[i]}" for i in constants]
+    doc_string = [
+        f"{kernel.arg_names[i[0]]}={constants[i]}" if isinstance(i, tuple) else f"{kernel.arg_names[i]}={constants[i]}"
+        for i in constants
+    ]
     doc_string += [f"num_warps={num_warps}", f"num_stages={num_stages}"]
 
     assert len(grid) == 3, f"{grid}"

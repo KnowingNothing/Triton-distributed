@@ -274,7 +274,6 @@ def calc_gather_index(
     def _kernel(
         scatter_index: torch.Tensor,
         gather_index: torch.Tensor,
-        topk_index: torch.Tensor,
         ntokens: int,
         topk: int,
         row_start: int,
@@ -286,20 +285,16 @@ def calc_gather_index(
         mask = offset < ntokens * topk
         scatter_idx = tl.load(scatter_index + offset, mask=mask, other=-1)
         token_idx = offset // topk
-        topk_idx = offset % topk
         token_idx_mask = (scatter_idx >= row_start) & (scatter_idx < row_end)
         tl.store(gather_index + scatter_idx - row_start, token_idx, mask=token_idx_mask)
-        tl.store(topk_index + scatter_idx - row_start, topk_idx, mask=token_idx_mask)
 
     scatter_index = exp_indices.flatten().argsort(stable=True).argsort().int().view(exp_indices.shape)
     ntokens, topk = scatter_index.shape
     gather_index = torch.zeros(row_end - row_start, dtype=torch.int32, device=scatter_index.device)
-    topk_index = torch.zeros(row_end - row_start, dtype=torch.int32, device=scatter_index.device)
     grid = lambda META: (triton.cdiv(ntokens * topk, META["BLOCK_SIZE"]), )
     _kernel[grid](
         scatter_index,
         gather_index,
-        topk_index,
         ntokens,
         topk,
         row_start,
@@ -384,9 +379,9 @@ def generate_random_exp_indices(token_num, total_num_experts, topk):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-M", type=int, default=8)
-    parser.add_argument("-N", type=int, default=7168)
-    parser.add_argument("-G", type=int, default=256)
+    parser.add_argument("-M", help="number of tokens per rank", type=int, default=8)
+    parser.add_argument("-N", help="hidden size", type=int, default=7168)
+    parser.add_argument("-G", help="number of experts", type=int, default=256)
     parser.add_argument("--topk", type=int, default=8)
     parser.add_argument("--online_quant_fp8", action="store_true")
     return parser.parse_args()
@@ -400,9 +395,9 @@ if __name__ == "__main__":
     MAX_NUM_TOKENS = args.M * args.topk
     ONLINE_QUANT = args.online_quant_fp8
     DTYPE = torch.bfloat16
-    if ONLINE_QUANT:
-        assert args.N % 128 == 0, f"N:{args.N} should be divisible by 128 for online FP8 quantization"
-        NUM_GROUPS = args.N // 128
+    GROUP_SIZE = 128
+    assert args.N % GROUP_SIZE == 0, f"N:{args.N} should be divisible by 128 for online FP8 quantization"
+    NUM_GROUPS = args.N // GROUP_SIZE
 
     #####################
     # Prepare the input data:
@@ -461,7 +456,7 @@ if __name__ == "__main__":
         grid = (WORLD_SIZE, )
         kwargs = {
             "ONLINE_QUANT_FP8": ONLINE_QUANT,  # whether to use online FP8 quantization
-            "FP8_GSIZE": 128,  # fixed quatization group size to 128 in this example
+            "FP8_GSIZE": GROUP_SIZE,  # fixed quatization group size to 128 in this example
             "WORLD_SIZE": WORLD_SIZE, "HIDDEN": args.N, "MAX_M": MAX_NUM_TOKENS, "NUM_TOT_EXPERTS": args.G,  #
             "BN": 1 << (args.N - 1).bit_length(),  # block size for copy data to send buffer; next_power_of_2(N)
         }

@@ -404,10 +404,11 @@ class CMakeExtension(Extension):
 
 def build_nvshmem(cap):
     nvshmem_bind_dir = os.path.join(get_base_dir(), "third_party", "nvshmem_bind")
-    nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem", "build")
+    nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem")
     if not os.path.exists(nvshmem_dir) or len(os.listdir(nvshmem_dir)) == 0:
         # for github version: download_nvshmem()
-        subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
+        # subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
+        raise RuntimeError("NVSHMEM is empty. Please `git submodule update --init --recursive`")
     if not os.path.exists(nvshmem_bind_dir):
         raise RuntimeError("NVSHMEM bind source directory not found")
 
@@ -418,9 +419,10 @@ def build_nvshmem(cap):
 
 def build_rocshmem(cap):
     rocshmem_bind_dir = os.path.join(get_base_dir(), "third_party", "rocshmem_bind")
-    rocshmem_dir = os.path.join(get_base_dir(), "third_party", "rocshmem", "build")
-    if not os.path.exists(rocshmem_dir):
-        subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
+    rocshmem_dir = os.path.join(get_base_dir(), "third_party", "rocshmem")
+    if not os.path.exists(rocshmem_dir) or len(os.listdir(rocshmem_dir)) == 0:
+        # subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
+        raise RuntimeError("ROCSHMEM is empty. Please `git submodule update --init --recursive`")
     if not os.path.exists(rocshmem_bind_dir):
         raise RuntimeError("ROCSHMEM bind source directory not found")
 
@@ -438,9 +440,9 @@ def build_shmem():
                 build_nvshmem(torch.cuda.get_device_capability())
             else:
                 build_rocshmem(torch.cuda.get_device_capability())  # (9, 4)
-    except Exception:
+    except Exception as e:
         print("Cannot import torch.")
-        pass
+        raise e
 
 
 class SHMEMBuildOnly(Command):
@@ -606,6 +608,7 @@ class CMakeBuild(TorchBuildExtension):
                         cmake_args += ["-DTRITON_BUILD_PYNVSHMEM=ON"]
                         nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem", "build", "install")
                         env["NVSHMEM_DIR"] = nvshmem_dir
+                        print("zhengsize:", env)
             except Exception:
                 print("Cannot import torch.")
                 pass
@@ -898,38 +901,6 @@ def get_git_version_suffix():
     else:
         return get_git_commit_hash()
 
-
-###################
-# PYNVSHMEM Related
-def pathlib_wrapper(func):
-
-    def wrapper(*kargs, **kwargs):
-        include_dirs, library_dirs, libraries = func(*kargs, **kwargs)
-        return map(str, include_dirs), map(str, library_dirs), map(str, libraries)
-
-    return wrapper
-
-
-@pathlib_wrapper
-def nvshmem_deps():
-    nvshmem_home = Path(os.path.join(get_base_dir(), "python", "triton", "_C", "nvshmem"))
-    include_dirs = [nvshmem_home / "include"]
-    library_dirs = [nvshmem_home / "lib"]
-    libraries = ["nvshmem_host", "nvshmem_device"]
-    return include_dirs, library_dirs, libraries
-
-
-@pathlib_wrapper
-def cuda_deps():
-    cuda_home = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda"))
-    include_dirs = [cuda_home / "include"]
-    library_dirs = [cuda_home / "lib64", cuda_home / "lib64/stubs"]
-    libraries = ["cuda", "cudart", "nvidia-ml"]
-    return include_dirs, library_dirs, libraries
-
-
-# End PYNVSHMEM Related
-#######################
 
 # set ext_modules
 ext_modules = [CMakeExtension("triton", "triton/_C/")]
