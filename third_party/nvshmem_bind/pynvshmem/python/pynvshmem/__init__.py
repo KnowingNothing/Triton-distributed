@@ -128,7 +128,7 @@ def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.Proce
 def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
     rank, nranks = group.rank(), group.size()
     if rank == 0:
-        unique_id: bytes = nvshmemx_get_uniqueid()  # noqa: F405
+        unique_id: bytes = bytearray(nvshmemx_get_uniqueid())  # noqa: F405
         unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).cpu().clone()
     else:
         # the default device("cpu") may be modified by set_default_device

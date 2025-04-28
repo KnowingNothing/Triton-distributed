@@ -43,6 +43,11 @@ jobs:
           - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096
           # gemm rs
           - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_gemm_rs_intra_node.py 8192 4096 12288
+          # tutorials
+          # 09
+          - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/tutorials/09-AMD-overlapping-allgather-gemm.py
+          # 10
+          - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/tutorials/10-AMD-overlapping-gemm-reduce-scatter.py
 
   triton-nvidia-pre-merge:
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
@@ -147,3 +152,21 @@ jobs:
           # - pytest ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv
           # - pytest ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent
           # - USE_TRITON_DISTRIBUTED_AOT=1 pytest ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent_aot
+          ############
+          # tutorials
+          # 01
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/01-distributed-notify-wait.py
+          # 02
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/02-intra-node-allgather.py
+          # 03
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/03-inter-node-allgather.py
+          # 04
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/04-deepseek-infer-all2all.py
+          # 05
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/05-intra-node-reduce-scatter.py
+          # 06
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/06-inter-node-reduce-scatter.py
+          # 07
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/07-overlapping-allgather-gemm.py
+          # 08
+          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/08-overlapping-gemm-reduce-scatter.py

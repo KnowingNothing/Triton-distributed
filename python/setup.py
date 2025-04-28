@@ -19,7 +19,7 @@ from distutils.command.clean import clean
 from pathlib import Path
 from typing import List, Optional
 
-from setuptools import Extension, setup
+from setuptools import Extension, setup, Command
 from setuptools.command.build_py import build_py
 from dataclasses import dataclass
 
@@ -402,6 +402,61 @@ class CMakeExtension(Extension):
         self.path = path
 
 
+def build_nvshmem(cap):
+    nvshmem_bind_dir = os.path.join(get_base_dir(), "third_party", "nvshmem_bind")
+    nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem", "build")
+    if not os.path.exists(nvshmem_dir) or len(os.listdir(nvshmem_dir)) == 0:
+        # for github version: download_nvshmem()
+        subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
+    if not os.path.exists(nvshmem_bind_dir):
+        raise RuntimeError("NVSHMEM bind source directory not found")
+
+    CUDA_ARCH = "".join([str(x) for x in cap])
+    extra_args = ["--arch", CUDA_ARCH] if CUDA_ARCH != "" else []
+    subprocess.check_call(["bash", f"{nvshmem_bind_dir}/build.sh"] + extra_args)
+
+
+def build_rocshmem(cap):
+    rocshmem_bind_dir = os.path.join(get_base_dir(), "third_party", "rocshmem_bind")
+    rocshmem_dir = os.path.join(get_base_dir(), "third_party", "rocshmem", "build")
+    if not os.path.exists(rocshmem_dir):
+        subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
+    if not os.path.exists(rocshmem_bind_dir):
+        raise RuntimeError("ROCSHMEM bind source directory not found")
+
+    ROCM_ARCH = "gfx942"  # hard-code for now
+    extra_args = ["--arch", ROCM_ARCH] if ROCM_ARCH != "" else []
+    subprocess.check_call(["bash", f"{rocshmem_bind_dir}/build.sh"] + extra_args)
+
+
+def build_shmem():
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            if torch.version.hip is None:
+                build_nvshmem(torch.cuda.get_device_capability())
+            else:
+                build_rocshmem(torch.cuda.get_device_capability())  # (9, 4)
+    except Exception:
+        print("Cannot import torch.")
+        pass
+
+
+class SHMEMBuildOnly(Command):
+    description = "Helper for SHMEM build only"
+    user_options = []
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        build_shmem()
+
+
 class CMakeBuild(TorchBuildExtension):
 
     user_options = TorchBuildExtension.user_options + \
@@ -413,24 +468,6 @@ class CMakeBuild(TorchBuildExtension):
 
     def finalize_options(self):
         TorchBuildExtension.finalize_options(self)
-
-    def build_nvshmem(self, cap):
-        nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem_bind")
-        if not os.path.exists(nvshmem_dir):
-            raise RuntimeError("NVSHMEM source directory not found")
-
-        CUDA_ARCH = "".join([str(x) for x in cap])
-        extra_args = ["--arch", CUDA_ARCH] if CUDA_ARCH != "" else []
-        subprocess.check_call(["bash", f"{nvshmem_dir}/build.sh"] + extra_args)
-
-    def build_rocshmem(self, cap):
-        rocshmem_dir = os.path.join(get_base_dir(), "third_party", "rocshmem_bind")
-        if not os.path.exists(rocshmem_dir):
-            raise RuntimeError("ROCSHMEM source directory not found")
-
-        ROCM_ARCH = "gfx942"  # hard-code for now
-        extra_args = ["--arch", ROCM_ARCH] if ROCM_ARCH != "" else []
-        subprocess.check_call(["bash", f"{rocshmem_dir}/build.sh"] + extra_args)
 
     def run(self):
         for ext in self.extensions:
@@ -464,17 +501,7 @@ class CMakeBuild(TorchBuildExtension):
         return cmake_args
 
     def build_extension_cmake(self, ext):
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                if torch.version.hip is None:
-                    self.build_nvshmem(torch.cuda.get_device_capability())
-                else:
-                    self.build_rocshmem(torch.cuda.get_device_capability())  # (9, 4)
-        except Exception:
-            print("Cannot import torch.")
-            pass
+        build_shmem()
 
         try:
             out = subprocess.check_output(["cmake", "--version"])
@@ -572,11 +599,16 @@ class CMakeBuild(TorchBuildExtension):
 
         env = os.environ.copy()
         if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):
-            if torch.cuda.is_available():
-                if torch.version.hip is None:
-                    cmake_args += ["-DTRITON_BUILD_PYNVSHMEM=ON"]
-                    nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem", "build", "install")
-                    env["NVSHMEM_DIR"] = nvshmem_dir
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    if torch.version.hip is None:
+                        cmake_args += ["-DTRITON_BUILD_PYNVSHMEM=ON"]
+                        nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem", "build", "install")
+                        env["NVSHMEM_DIR"] = nvshmem_dir
+            except Exception:
+                print("Cannot import torch.")
+                pass
 
         cmake_dir = get_cmake_dir()
         subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
@@ -923,6 +955,7 @@ setup(
         "develop": plugin_develop,
         "bdist_wheel": plugin_bdist_wheel,
         "egg_info": plugin_egginfo,
+        "build_shmem": SHMEMBuildOnly,
     },
     zip_safe=False,
     # for PyPI

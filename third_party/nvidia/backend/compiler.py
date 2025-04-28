@@ -135,8 +135,8 @@ def sm_arch_from_capability(capability: int):
 
 class NVSHMEMHelper:
 
-    @functools.lru_cache()
     @staticmethod
+    @functools.lru_cache()
     def get_nvshmem_home():
         return Path(
             os.environ.get(
@@ -149,14 +149,14 @@ class NVSHMEMHelper:
         )
 
 
-    @functools.lru_cache()
     @staticmethod
+    @functools.lru_cache()
     def get_nvshmem_lib():
         return NVSHMEMHelper.get_nvshmem_home() / "lib"
 
 
-    @functools.lru_cache()
     @staticmethod
+    @functools.lru_cache()
     def get_aot_nvshmem_cubin(capability):
         return (
             Path(__file__).parent / 'lib'
@@ -164,8 +164,8 @@ class NVSHMEMHelper:
         )
 
 
-    @functools.lru_cache()
     @staticmethod
+    @functools.lru_cache()
     def get_nvshmem_wrapper_src():
         return (
             Path(os.path.realpath(__file__)).parent.parent.parent
@@ -175,8 +175,8 @@ class NVSHMEMHelper:
         )
 
 
-    @functools.lru_cache()
     @staticmethod
+    @functools.lru_cache()
     def extract_nvshmem_functions() -> dict:
         file_path = NVSHMEMHelper.get_nvshmem_wrapper_src()
         functions = {}

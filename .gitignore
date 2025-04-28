@@ -107,3 +107,4 @@ python/*pynvshmem*
 python/triton/*pynvshmem*
 python/triton/_C/nvshmem
 python/triton/_C/_pynvshmem
+python/third_party
