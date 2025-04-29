@@ -610,7 +610,6 @@ def kernel_inter_node_p2p_for_same_local_rank(
     input,  # [M_per_rank * nnodes, N]
     output,  # [M_per_rank * nnodes, N]
     rs_per_node_signal,
-    elem_size: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
     rank = dl.rank()
@@ -620,6 +619,7 @@ def kernel_inter_node_p2p_for_same_local_rank(
     local_rank = rank % local_world_size
     num_pid = tl.num_programs(axis=0)
     nelem_per_rank = M_per_rank * N
+    elem_size = tl.constexpr(input.dtype.element_ty.primitive_bitwidth) // 8
 
     for i in range(pid, nnodes - 1, num_pid):
         remote_node_id = (i + 1 + node_id) % nnodes
@@ -786,7 +786,6 @@ def p2p_inter_node(
             input,
             output,
             rs_per_node_signal_buf,
-            input.dtype.itemsize,
             num_warps=16,
         )
         wait_eq(
