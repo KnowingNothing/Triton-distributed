@@ -159,7 +159,6 @@ class EPAll2AllLayer(torch.nn.Module):
             self.dtype.itemsize * self.hidden,
             self.experts_per_rank,
             self.local_world_size,
-            index_elem_size=self.top_indices_buf.element_size(),
             num_warps=32,
         )
 

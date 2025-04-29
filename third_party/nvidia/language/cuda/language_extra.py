@@ -541,15 +541,17 @@ def atomic_cas(
     semantic: core.constexpr,
     _builder=None,
 ):
+    constraint = _int_constaint(core.constexpr(ptr.dtype.element_ty.primitive_bitwidth), _builder=_builder).value
     return tl.inline_asm_elementwise(
-        asm=f"atom.{semantic.value}.{scope.value}.global.cas.b32 $0, [$1], $2, $3;",
-        constraints=("=r,l,r,r"),
+        asm=
+        f"atom.{semantic.value}.{scope.value}.global.cas.b{ptr.dtype.element_ty.primitive_bitwidth} $0, [$1], $2, $3;",
+        constraints=(f"={constraint},l,{constraint},{constraint}"),
         args=[
             ptr,
             value,
             target_value,
         ],
-        dtype=tl.int32,
+        dtype=ptr.dtype.element_ty,
         is_pure=False,
         pack=1,
         _builder=_builder,

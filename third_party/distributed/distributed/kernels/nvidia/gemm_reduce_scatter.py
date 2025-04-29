@@ -231,15 +231,9 @@ def create_gemm_rs_context(max_M, N, rank, world_size, local_world_size, output_
 
 ################### triton kernel ###################
 @triton.jit
-def kernel_inter_node_p2p_for_same_local_rank(
-    offset,
-    local_world_size,
-    M_per_rank,
-    N,
-    input,  # [M, N]
-    output,  # [M, N]
-    elem_size: tl.constexpr,
-):
+def kernel_inter_node_p2p_for_same_local_rank(offset, local_world_size, M_per_rank, N, input,  # [M, N]
+                                              output,  # [M, N]
+                                              ):
     rank = dl.rank()
     world_size = dl.num_ranks()
     node_id = rank // local_world_size
@@ -249,6 +243,7 @@ def kernel_inter_node_p2p_for_same_local_rank(
 
     remote_node_id = (offset + 1 + node_id) % nnodes
     remote_rank = local_rank + remote_node_id * local_world_size
+    elem_size = tl.constexpr(input.dtype.element_ty.primitive_bitwidth) // 8
     libshmem_device.putmem_block(
         output + node_id * nelem_per_rank,
         input + remote_node_id * nelem_per_rank,
@@ -609,7 +604,6 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
                             N,
                             rs_per_node_buf,
                             p2p_buf,
-                            input.dtype.itemsize,
                             num_warps=16,
                         )
 

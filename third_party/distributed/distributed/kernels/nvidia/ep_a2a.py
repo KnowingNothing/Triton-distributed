@@ -51,7 +51,6 @@ def kernel_dispatch_token(
     bytes_per_token: int,
     experts_per_rank: tl.constexpr,
     local_world_size: tl.constexpr,
-    index_elem_size: tl.constexpr,
     num_warps: tl.constexpr,
 ):
     WARP_SIZE = 32
@@ -66,7 +65,7 @@ def kernel_dispatch_token(
     warp_id = thread_idx // WARP_SIZE
     total_warps = num_warps * num_pid
     global_warp_id = pid * num_warps + warp_id
-
+    index_elem_size = tl.constexpr(topk_indices_buf.dtype.element_ty.primitive_bitwidth) // 8
     num_tokens = tl.load(num_input_tokens_per_rank + rank)
     for node_offset in range(0, nnodes):
         if node_offset != nnodes - 1:
@@ -251,7 +250,6 @@ def kernel_get_ag_splits_and_recv_offset(
     grid_sync_counter,  #[8,], zero init
     experts_per_rank,
     topk: int,
-    elem_size: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,  # larger than num_experts
     num_warps: tl.constexpr,
 ):
@@ -262,6 +260,7 @@ def kernel_get_ag_splits_and_recv_offset(
     thread_idx = tid(0)
     threads_per_block = num_warps * 32
     num_experts = experts_per_rank * world_size
+    elem_size = tl.constexpr(local_splits_buf.dtype.element_ty.primitive_bitwidth) // 8
     nbytes = num_experts * elem_size
     for remote_rank in range(pid, world_size, num_pid):
         libshmem_device.putmem_signal_nbi_block(
@@ -382,7 +381,6 @@ def get_ag_splits_and_recv_offset_for_dispatch(local_splits, full_splits_buf, sp
         counter_workspace,
         experts_per_rank,
         topk,
-        elem_size=local_splits.element_size(),
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=32,
     )
