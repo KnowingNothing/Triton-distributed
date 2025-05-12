@@ -1,0 +1,81 @@
+#!/bin/bash
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT=$(realpath ${SCRIPT_DIR})
+ARCH=""
+
+while [[ $# -gt 0 ]]; do
+  key="$1"
+
+  case $key in
+  --arch)
+    # Process the arch argument
+    ARCH="$2"
+    shift # Skip the argument value
+    shift # Skip the argument key
+    ;;
+  *)
+    # Unknown argument
+    echo "Unknown argument: $1"
+    shift # Skip the argument
+    ;;
+  esac
+done
+
+if [[ -n $ARCH ]]; then
+  build_args=" --arch ${ARCH}"
+fi
+
+function build_pynvshmem() {
+  pushd ${PROJECT_ROOT}/pynvshmem
+  NVSHMEM_HOME=${NVSHMEM_DIR} pip3 install .
+  popd
+}
+
+function set_arch() {
+  if [[ -z $ARCH ]]; then
+    export ARCH=$(python3 -c 'import torch; print("".join([str(x) for x in torch.cuda.get_device_capability()]))')
+    echo "using CUDA arch: ${ARCH}"
+  fi
+}
+
+function set_nvcc_gencode() {
+  NVCC_GENCODE="" # default none
+  arch_list=()
+  IFS=";" read -ra arch_list <<<"$ARCH"
+  for _arch in "${arch_list[@]}"; do
+    NVCC_GENCODE="-gencode=arch=compute_${_arch},code=sm_${_arch} ${NVCC_GENCODE}"
+  done
+}
+
+function download_libnvshmem_device_bc_byted() {
+  local dst_path=${PROJECT_ROOT}/../../3rdparty/triton/third_party/nvidia/backend/lib
+  lib_file=/tmp/libnvshmem_device.bc
+  wget -q --show-progress https://tosv.byted.org/obj/flux/dsit-triton/nvshmem/3.2.5-1/bc/libnvshmem_device.bc -O ${lib_file}
+  if ! mv -f $lib_file $dst_path; then
+    echo "File move failed" >&2
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+}
+
+function build_nvshmem_cubin() {
+  pushd ${PROJECT_ROOT}/runtime
+  nvcc -rdc=true -ccbin g++ $NVCC_GENCODE -I$NVSHMEM_DIR/include nvshmem_wrapper.cu -ptx -c -o nvshmem_wrapper.ptx
+  IFS=";" read -ra arch_list <<<"$ARCH"
+  for _arch in "${arch_list[@]}"; do
+    ${PROJECT_ROOT}/../../3rdparty/triton/third_party/nvidia/backend/bin/ptxas -c nvshmem_wrapper.ptx --gpu-name=sm_${_arch} -o nvshmem_wrapper.sm${_arch}.cubin
+    mv nvshmem_wrapper.sm${_arch}.cubin ${PROJECT_ROOT}/../../3rdparty/triton/third_party/nvidia/backend/lib
+  done
+  popd
+}
+
+set_arch
+set_nvcc_gencode
+
+export NVSHMEM_DIR=${PROJECT_ROOT}/3rdparty/nvshmem/build/install
+bash -x ${PROJECT_ROOT}/build_nvshmem.sh ${build_args}
+
+download_libnvshmem_device_bc_byted
+
+echo "done"

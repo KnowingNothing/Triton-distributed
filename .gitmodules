@@ -1,6 +1,9 @@
-[submodule "third_party/rocshmem"]
-	path = third_party/rocshmem
+[submodule "3rdparty/triton"]
+	path = 3rdparty/triton
+	url = https://github.com/triton-lang/triton.git
+[submodule "3rdparty/rocshmem"]
+	path = 3rdparty/rocshmem
 	url = https://github.com/ROCm/rocSHMEM.git
-[submodule "third_party/nvshmem"]
-	path = third_party/nvshmem
+[submodule "3rdparty/nvshmem"]
+	path = 3rdparty/nvshmem
 	url = git@code.byted.org:mlsys/nvshmem.git

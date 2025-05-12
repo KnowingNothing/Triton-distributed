@@ -30,9 +30,11 @@ from wheel.bdist_wheel import bdist_wheel
 
 import pybind11
 
-from build_helpers import get_base_dir, get_cmake_dir
+from build_helpers import get_base_dir, get_cmake_dir, copy_apply_patches
 
 from torch.utils.cpp_extension import BuildExtension as TorchBuildExtension
+
+copy_apply_patches()
 
 
 @dataclass
@@ -55,7 +57,7 @@ class BackendInstaller:
     def prepare(backend_name: str, backend_src_dir: str = None, is_external: bool = False):
         # Initialize submodule if there is one for in-tree backends.
         if not is_external:
-            root_dir = os.path.join(os.pardir, "third_party")
+            root_dir = os.path.join(get_base_dir(), "3rdparty", "triton", "third_party")
             assert backend_name in os.listdir(
                 root_dir), f"{backend_name} is requested for install but not present in {root_dir}"
 
@@ -83,7 +85,8 @@ class BackendInstaller:
         for file in ["compiler.py", "driver.py"]:
             assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
 
-        install_dir = os.path.join(os.path.dirname(__file__), "triton", "backends", backend_name)
+        install_dir = os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "python", "triton",
+                                   "backends", backend_name)
         package_data = [f"{os.path.relpath(p, backend_path)}/*" for p, _, _, in os.walk(backend_path)]
 
         language_package_data = []
@@ -231,7 +234,7 @@ def get_llvm_package_info():
         return Package("llvm", "LLVM-C.lib", "", "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH")
     # use_assert_enabled_llvm = check_env_flag("TRITON_USE_ASSERT_ENABLED_LLVM", "False")
     # release_suffix = "assert" if use_assert_enabled_llvm else "release"
-    llvm_hash_path = os.path.join(get_base_dir(), "cmake", "llvm-hash.txt")
+    llvm_hash_path = os.path.join(get_base_dir(), "3rdparty", "triton", "cmake", "llvm-hash.txt")
     with open(llvm_hash_path, "r") as llvm_hash_file:
         rev = llvm_hash_file.read(8)
     name = f"llvm-{rev}-{system_suffix}"
@@ -335,7 +338,8 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     url = url_func(supported[system], arch, version)
     src_path = src_func(supported[system], arch, version)
     tmp_path = os.path.join(triton_cache_path, "nvidia", name)  # path to cache the download
-    dst_path = os.path.join(base_dir, os.pardir, "third_party", "nvidia", "backend", dst_path)  # final binary path
+    dst_path = os.path.join(base_dir, os.pardir, "3rdparty", "triton", "third_party", "nvidia", "backend",
+                            dst_path)  # final binary path
     src_path = os.path.join(tmp_path, src_path)
     download = not os.path.exists(src_path)
     if os.path.exists(dst_path) and system == "Linux" and shutil.which(dst_path) is not None:
@@ -363,7 +367,7 @@ def download_nvshmem():
     tmp_path = os.path.join(triton_cache_path, "nvshmem")  # path to cache the download
     src_path = "nvshmem_src"
     src_path = os.path.join(tmp_path, src_path)
-    dst_path = os.path.join(base_dir, os.pardir, "third_party", "nvshmem")
+    dst_path = os.path.join(base_dir, os.pardir, "3rdparty", "triton", "third_party", "nvshmem")
     download = not os.path.exists(src_path)
     if download:
         print(f'downloading and extracting {url} ...')
@@ -403,8 +407,8 @@ class CMakeExtension(Extension):
 
 
 def build_nvshmem(cap):
-    nvshmem_bind_dir = os.path.join(get_base_dir(), "third_party", "nvshmem_bind")
-    nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem")
+    nvshmem_bind_dir = os.path.join(get_base_dir(), "shmem", "nvshmem_bind")
+    nvshmem_dir = os.path.join(get_base_dir(), "3rdparty", "nvshmem")
     if not os.path.exists(nvshmem_dir) or len(os.listdir(nvshmem_dir)) == 0:
         # for github version: download_nvshmem()
         # subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
@@ -418,8 +422,8 @@ def build_nvshmem(cap):
 
 
 def build_rocshmem(cap):
-    rocshmem_bind_dir = os.path.join(get_base_dir(), "third_party", "rocshmem_bind")
-    rocshmem_dir = os.path.join(get_base_dir(), "third_party", "rocshmem")
+    rocshmem_bind_dir = os.path.join(get_base_dir(), "shmem", "rocshmem_bind")
+    rocshmem_dir = os.path.join(get_base_dir(), "3rdparty", "rocshmem")
     if not os.path.exists(rocshmem_dir) or len(os.listdir(rocshmem_dir)) == 0:
         # subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
         raise RuntimeError("ROCSHMEM is empty. Please `git submodule update --init --recursive`")
@@ -472,6 +476,7 @@ class CMakeBuild(TorchBuildExtension):
         TorchBuildExtension.finalize_options(self)
 
     def run(self):
+        add_links()
         for ext in self.extensions:
             if isinstance(ext, CMakeExtension):
                 self.build_extension_cmake(ext)
@@ -494,11 +499,13 @@ class CMakeBuild(TorchBuildExtension):
         cmake_args += self.get_pybind11_cmake_args()
         cupti_include_dir = get_env_with_keys(["TRITON_CUPTI_INCLUDE_PATH"])
         if cupti_include_dir == "":
-            cupti_include_dir = os.path.join(get_base_dir(), "third_party", "nvidia", "backend", "include")
+            cupti_include_dir = os.path.join(get_base_dir(), "3rdparty", "triton", "third_party", "nvidia", "backend",
+                                             "include")
         cmake_args += ["-DCUPTI_INCLUDE_DIR=" + cupti_include_dir]
         roctracer_include_dir = get_env_with_keys(["TRITON_ROCTRACER_INCLUDE_PATH"])
         if roctracer_include_dir == "":
-            roctracer_include_dir = os.path.join(get_base_dir(), "third_party", "amd", "backend", "include")
+            roctracer_include_dir = os.path.join(get_base_dir(), "3rdparty", "triton", "third_party", "amd", "backend",
+                                                 "include")
         cmake_args += ["-DROCTRACER_INCLUDE_DIR=" + roctracer_include_dir]
         return cmake_args
 
@@ -606,9 +613,8 @@ class CMakeBuild(TorchBuildExtension):
                 if torch.cuda.is_available():
                     if torch.version.hip is None:
                         cmake_args += ["-DTRITON_BUILD_PYNVSHMEM=ON"]
-                        nvshmem_dir = os.path.join(get_base_dir(), "third_party", "nvshmem", "build", "install")
+                        nvshmem_dir = os.path.join(get_base_dir(), "3rdparty", "nvshmem", "build", "install")
                         env["NVSHMEM_DIR"] = nvshmem_dir
-                        print("zhengsize:", env)
             except Exception:
                 print("Cannot import torch.")
                 pass
@@ -619,7 +625,7 @@ class CMakeBuild(TorchBuildExtension):
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
 
 
-nvidia_version_path = os.path.join(get_base_dir(), "cmake", "nvidia-toolchain-version.json")
+nvidia_version_path = os.path.join(get_base_dir(), "3rdparty", "triton", "cmake", "nvidia-toolchain-version.json")
 with open(nvidia_version_path, "r") as nvidia_version_file:
     # parse this json file to get the version of the nvidia toolchain
     NVIDIA_TOOLCHAIN_VERSION = json.load(nvidia_version_file)
@@ -709,7 +715,9 @@ def add_link_to_backends():
         if backend.language_dir:
             # Link the contents of each backend's `language` directory into
             # `triton.language.extra`.
-            extra_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "triton", "language", "extra"))
+            extra_dir = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "python", "triton", "language",
+                             "extra"))
             for x in os.listdir(backend.language_dir):
                 src_dir = os.path.join(backend.language_dir, x)
                 install_dir = os.path.join(extra_dir, x)
@@ -718,7 +726,9 @@ def add_link_to_backends():
         if backend.tools_dir:
             # Link the contents of each backend's `tools` directory into
             # `triton.tools.extra`.
-            extra_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "triton", "tools", "extra"))
+            extra_dir = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "python", "triton", "tools",
+                             "extra"))
             for x in os.listdir(backend.tools_dir):
                 src_dir = os.path.join(backend.tools_dir, x)
                 install_dir = os.path.join(extra_dir, x)
@@ -726,28 +736,36 @@ def add_link_to_backends():
 
 
 def add_link_to_proton():
-    proton_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "proton", "proton"))
-    proton_install_dir = os.path.join(os.path.dirname(__file__), "triton", "profiler")
+    proton_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "third_party", "proton", "proton"))
+    proton_install_dir = os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "python", "triton",
+                                      "profiler")
     update_symlink(proton_install_dir, proton_dir)
 
 
 def add_link_to_distributed():
-    distributed_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), os.pardir, "third_party", "distributed", "distributed"))
-    distributed_install_dir = os.path.join(os.path.dirname(__file__), "triton", "distributed")
-    update_symlink(distributed_install_dir, distributed_dir)
+    for name in ["libtriton_distributed.so", "libtriton_distributed_kernel.so"]:
+        distributed_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "python", "triton", "_C", name))
+        distributed_install_dir = os.path.join(os.path.dirname(__file__), "triton_dist", "_C", name)
+        update_symlink(distributed_install_dir, distributed_dir)
+
+    triton_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "python", "triton"))
+    triton_install_dir = os.path.join(os.path.dirname(__file__), "triton")
+    update_symlink(triton_install_dir, triton_dir)
 
 
 def add_link_to_pynvshmem():
-    triton_root = Path(os.path.abspath(__file__)).parent.parent.absolute()
-    update_symlink(triton_root / "python" / "triton" / "pynvshmem",
-                   triton_root / "third_party" / "nvshmem_bind" / "pynvshmem" / "python" / "pynvshmem")
+    triton_dist_root = Path(os.path.abspath(__file__)).parent.parent.absolute()
+    update_symlink(triton_dist_root / "python" / "triton_dist" / "pynvshmem",
+                   triton_dist_root / "shmem" / "nvshmem_bind" / "pynvshmem" / "python" / "pynvshmem")
     # update pyi
-    update_symlink(triton_root / "python" / "triton" / "_C" / "_pynvshmem",
-                   triton_root / "third_party" / "nvshmem_bind" / "pynvshmem" / "python" / "_pynvshmem")
+    update_symlink(triton_dist_root / "python" / "triton_dist" / "_C" / "_pynvshmem",
+                   triton_dist_root / "shmem" / "nvshmem_bind" / "pynvshmem" / "python" / "_pynvshmem")
     # link nvshmem lib
-    update_symlink(triton_root / "python" / "triton" / "_C" / "nvshmem",
-                   triton_root / "third_party" / "nvshmem" / "build" / "install")
+    update_symlink(triton_dist_root / "python" / "triton_dist" / "_C" / "nvshmem",
+                   triton_dist_root / "3rdparty" / "nvshmem" / "build" / "install")
 
 
 def add_links():
@@ -848,17 +866,16 @@ def get_packages():
         packages += ["triton/profiler"]
     if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):  # Default ON
         packages += [
-            "triton/distributed", "triton/distributed/kernels", "triton/distributed/kernels/nvidia",
-            "triton/distributed/kernels/amd", "triton/distributed/layers/nvidia", "triton/distributed/tools",
-            "triton/distributed/test"
+            "triton_dist/_C", "triton_dist/kernels", "triton_dist/kernels/nvidia", "triton_dist/kernels/amd",
+            "triton_dist/layers/nvidia", "triton_dist/tools", "triton_dist/test"
         ]
         try:
             import torch
 
             if torch.cuda.is_available():
                 if torch.version.hip is None:
-                    packages += ["triton/pynvshmem"]
-                    packages += ["triton/_C/_pynvshmem"]
+                    packages += ["triton_dist/pynvshmem"]
+                    packages += ["triton_dist/_C/_pynvshmem"]
                 else:
                     pass
         except Exception:
@@ -903,14 +920,17 @@ def get_git_version_suffix():
 
 
 # set ext_modules
-ext_modules = [CMakeExtension("triton", "triton/_C/")]
+ext_modules = [
+    CMakeExtension(f"{get_base_dir()}/3rdparty/triton/python/triton",
+                   f"{get_base_dir()}/3rdparty/triton/python/triton/_C/")
+]
 
 setup(
-    name=os.environ.get("TRITON_WHEEL_NAME", "triton-dist"),
+    name=os.environ.get("TRITON_WHEEL_NAME", "triton_dist"),
     version="3.3.0" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", ""),
-    author="Philippe Tillet",
-    author_email="phil@openai.com",
-    description="A language and compiler for custom Deep Learning operations",
+    author="ByteDance Seed",
+    author_email="zheng.size@bytedance.com",
+    description="Triton language and compiler extension for distributed deep learning systems",
     long_description="",
     install_requires=["setuptools>=40.8.0"],
     packages=get_packages(),

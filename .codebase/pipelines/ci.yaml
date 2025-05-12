@@ -9,8 +9,8 @@ jobs:
     name: Triton-distributed CI for amd backend.
     image: rocm/bytedance-private:bkc24.13_torch2.5.1_ub22.04_aterV4
     envs:
-      PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/third_party/rocshmem_bind/python/
-      # LD_LIBRARY_PATH:$LD_LIBRARY_PATH
+      PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
+      LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/home/code/shmem/rocshmem_bind/ompi_build/install/ompi/lib
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       # no_proxy: '.byted.org'
@@ -24,8 +24,8 @@ jobs:
           - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43
           - pip3 install pytest
           - pip3 install chardet
-          - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
-          - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
+          # - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
+          # - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
           - python3 scripts/check_license.py
 
@@ -34,26 +34,28 @@ jobs:
           - python3 -m pip install cmake==3.26 ninja wheel lit numpy plotly pandas pytest scipy==1.10.1 matplotlib tabulate pybind11 setuptools tqdm
           - python3 -m pip install -i https://test.pypi.org/simple hip-python>=6.3.0
           - git submodule update --init --recursive
-          - bash third_party/rocshmem_bind/build.sh
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          - bash shmem/rocshmem_bind/build.sh
+          # - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          - python3 python/setup.py build_ext
+          # - source scripts/setenv.sh
 
       - name: distributed tests
         commands:
           # ag gemm
-          - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096
+          - bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096
           # gemm rs
-          - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_gemm_rs_intra_node.py 8192 4096 12288
+          - bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_gemm_rs_intra_node.py 8192 4096 12288
           # tutorials
           # 09
-          - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/tutorials/09-AMD-overlapping-allgather-gemm.py
+          - bash ./scripts/launch_amd.sh ./tutorials/09-AMD-overlapping-allgather-gemm.py
           # 10
-          - bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/tutorials/10-AMD-overlapping-gemm-reduce-scatter.py
+          - bash ./scripts/launch_amd.sh ./tutorials/10-AMD-overlapping-gemm-reduce-scatter.py
 
   triton-nvidia-pre-merge:
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
     envs:
-      PYTHONPATH: /home/code/python:/home/code/third_party/nvshmem_bind/python/:$PYTHONPATH
-      LD_LIBRARY_PATH: /home/code/third_party/nvshmem/build/install/lib:$LD_LIBRARY_PATH
+      PYTHONPATH: $PYTHONPATH:/home/code/python
+      LD_LIBRARY_PATH: /home/code/3rdparty/nvshmem/build/install/lib:$LD_LIBRARY_PATH
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
@@ -69,8 +71,8 @@ jobs:
           - pip3 install cuda-python==12.4
           - pip3 install pytest
           - pip3 install chardet
-          - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
-          - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
+          # - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
+          # - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
           - python3 scripts/check_license.py
 
@@ -91,82 +93,85 @@ jobs:
           - git submodule update --init --recursive
           - pip3 install ninja cmake wheel pybind11
           - export USE_TRITON_DISTRIBUTED_AOT=0
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          # - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          - python3 python/setup.py build_ext
+          # - source ./scripts/setenv.sh
           - bash ./scripts/gen_aot_code.sh
           - export USE_TRITON_DISTRIBUTED_AOT=1
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          # - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          - python3 python/setup.py build_ext
       - name: unit tests
         commands:
-          - python3 ./third_party/distributed/distributed/test/nvidia/test_language_extra.py
+          - python3 ./python/triton_dist/test/nvidia/test_language_extra.py
       - name: distributed tests
         commands:
           #############
           # ad-hoc test
           #############
           # basic
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_distributed_wait.py --case correctness
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_distributed_wait.py --case correctness_tma
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_distributed_wait.py --case correctness_tma_multi_barrier
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma_multi_barrier
           # ag gemm
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_autotune
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm_intra_node.py --case correctness
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm_intra_node.py --case correctness_autotune
 
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_inter_node.py --M 8192
-          - CUBLAS_WORKSPACE_CONFIG=":16:8" bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_inter_node.py --M 80 # very small and not perfect shape
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm_inter_node.py --M 8192
+          - CUBLAS_WORKSPACE_CONFIG=":16:8" bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm_inter_node.py --M 80 # very small and not perfect shape
           # gemm rs
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568 --check
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568 --check
           # allgather
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_small_msg.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_all_gather.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_fast_allgather.py   --iters 10   --warmup_iters 20   --mode push_2d_ll   --minbytes 4096   --maxbytes 8192
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_small_msg.py
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_all_gather.py
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_fast_allgather.py   --iters 10   --warmup_iters 20   --mode push_2d_ll   --minbytes 4096   --maxbytes 8192
           # all-to-all
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_all_to_all.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ep_moe_inference.py
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_all_to_all.py
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ep_moe_inference.py
           # nvshmem related
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_nvshmem_api.py
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ring_put.py
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_nvshmem_api.py
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ring_put.py
           # flash decoding
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py --case perf_8k
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py --case perf_8k_persistent
-          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py --case perf_8k_persistent_aot
-          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py --case perf_8k_aot
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_sp_decode_attn.py --case perf
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_sp_decode_attn.py --case correctness
-          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_sp_decode_attn.py --case correctness
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_persistent
+          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_persistent_aot
+          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_aot
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case perf
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
+          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
           # ag moe
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 2048
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 2048 --autotune
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe_inter_node.py --M 2048
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe.py --M 2048
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --autotune
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe_inter_node.py --M 2048
           # moe rs
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check --autotune
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check --autotune
           # ep a2a
-          - NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8 --check
-          - NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8
+          - NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8 --check
+          - NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8
           #############
           # pytest (disabled)
           #############
           # flash decoding
-          # - pytest ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv
-          # - pytest ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent
-          # - USE_TRITON_DISTRIBUTED_AOT=1 pytest ./third_party/distributed/distributed/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent_aot
+          # - pytest ./python/triton_dist/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv
+          # - pytest ./python/triton_dist/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent
+          # - USE_TRITON_DISTRIBUTED_AOT=1 pytest ./python/triton_dist/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent_aot
           ############
           # tutorials
           # 01
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/01-distributed-notify-wait.py
+          - bash ./scripts/launch.sh ./tutorials/01-distributed-notify-wait.py
           # 02
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/02-intra-node-allgather.py
+          - bash ./scripts/launch.sh ./tutorials/02-intra-node-allgather.py
           # 03
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/03-inter-node-allgather.py
+          - bash ./scripts/launch.sh ./tutorials/03-inter-node-allgather.py
           # 04
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/04-deepseek-infer-all2all.py
+          - bash ./scripts/launch.sh ./tutorials/04-deepseek-infer-all2all.py
           # 05
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/05-intra-node-reduce-scatter.py
+          - bash ./scripts/launch.sh ./tutorials/05-intra-node-reduce-scatter.py
           # 06
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/06-inter-node-reduce-scatter.py
+          - bash ./scripts/launch.sh ./tutorials/06-inter-node-reduce-scatter.py
           # 07
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/07-overlapping-allgather-gemm.py
+          - bash ./scripts/launch.sh ./tutorials/07-overlapping-allgather-gemm.py
           # 08
-          - bash ./third_party/distributed/launch.sh ./third_party/distributed/tutorials/08-overlapping-gemm-reduce-scatter.py
+          - bash ./scripts/launch.sh ./tutorials/08-overlapping-gemm-reduce-scatter.py

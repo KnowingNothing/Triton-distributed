@@ -1,39 +1,5 @@
-# Triton builds
-build/
-build-*/
-
-# Triton Python module builds
-python/build/
-python/dist/
-python/triton*.egg-info/
-
-python/triton/_C/*.pyd
-python/triton/_C/*.so
-python/triton/_C/*.dylib
-python/triton/_C/*.pdb
-python/triton/_C/*.exe
-python/triton/_C/*.ilk
-
-# Backends copied from submodules
-python/triton/backends/
-!python/triton/backends/__init__.py
-!python/triton/backends/compiler.py
-!python/triton/backends/driver.py
-
-# Language extras
-python/triton/language/extra
-
-# Tools extras
-python/triton/tools/extra
-
-# Proton
-python/triton/profiler
-
 # Pytest
 pytest.ini
-
-# Instrumentation
-python/triton/instrumentation
 
 # Python caches
 __pycache__/
@@ -53,32 +19,10 @@ venv.bak/
 .idea
 cmake-build-*
 
-# Third-party binaries
-cuobjdump
-nvdisasm
-ptxas
-nvlink
-
-# Third-party include
-third_party/nvidia/backend/include
-third_party/nvidia/backend/lib/cupti
-third_party/nvidia/backend/lib/libnvshmem_device.bc
-
-# Docs
-docs/_build/
-docs/python-api/generated/
-docs/dialects/
-docs/getting-started/tutorials
-docs/sg_execution_times.rst
-!python/tutorials/*.py
-!python/tutorials/*.rst
-
 # clangd index. (".clangd" is a config file now, thus trailing slash)
 .clangd/
 .cache
 /compile_commands.json
-.vscode
-.vs
 
 # Vim
 *.swp
@@ -89,22 +33,33 @@ docs/sg_execution_times.rst
 # .triton and cache
 .triton
 .triton_cache
+triton_cache/*
 
 # log files
 trace*.log
 prof
 
 # distributed
-python/triton/distributed
 triton_aot_generated
 rank-*.log
 python/*.egg-info
-third_party/rocshmem_bind/runtime/*.o
-third_party/rocshmem_bind/rocshmem_build
-third_party/rocshmem_bind/ompi_build
-third_party/rocshmem_bind/pyrocshmem/build/
-python/*pynvshmem*
-python/triton/*pynvshmem*
-python/triton/_C/nvshmem
-python/triton/_C/_pynvshmem
-python/third_party
+shmem/rocshmem_bind/runtime/*.o
+shmem/rocshmem_bind/rocshmem_build
+shmem/rocshmem_bind/ompi_build
+shmem/rocshmem_bind/pyrocshmem/build/
+shmem/rocshmem_bind/pyrocshmem/python/*.egg-info
+shmem/rocshmem_bind/pyrocshmem/dist
+3rdparty/triton/python/*pynvshmem*
+3rdparty/triton/python/triton/*pynvshmem*
+3rdparty/triton/python/triton/_C/nvshmem
+3rdparty/triton/python/triton/_C/_pynvshmem
+
+build
+python/triton_dist/_C/*.so
+python/triton_dist/*nvshmem
+python/triton_dist/_C/*nvshmem
+
+# conflicts
+temp_conflicts
+temp_merge_repo
+conflict_list.txt

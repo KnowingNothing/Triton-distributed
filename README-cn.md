@@ -42,12 +42,12 @@ Triton-distributed是基于OpenAI Triton构建的分布式编译器，专为计�
 ## 快速入门
 ### 源码安装
 
-[安装指导](docs/distributed/build.md)
+[安装指导](docs/build.md)
 
 ### 如何使用 Triton-distributed
 Triton-distributed 提供了一套易于使用的原语，用于支持开发计算-通信融合的分布式kernel。这些原语分为低层次原语和高层次原语。目前，我们已经发布了低层次原语，并计划在未来发布高层次原语。
 
-[Triton-distributed 原语](docs/distributed/primitives.md)
+[Triton-distributed 原语](docs/primitives.md)
 
 使用这些原语，用户可以轻松编写通信kernel。例如，以下展示了一个低延迟的AllToAll通信操作（在推理场景下，其延迟表现优于[DeepEP](https://github.com/deepseek-ai/DeepEP)）。这个例子在32卡H800集群中性能是137微秒（每个卡128 token, topk=8, hidden_size=7168, 数据类型是fp8），DeepEP是182微秒（DeepEP推理不用NVLink）
 ```py
@@ -159,7 +159,7 @@ Triton-distributed 可以达到和手写分布式算子库接近的性能，有�
 ![flash-decode-inter-node](asset/flash-decode-scaling.png)
 
 ### 其他平台性能
-[AMD GPUs](docs/distributed/amd-perf.md)
+[AMD GPUs](docs/amd-perf.md)
 
 ## Roadmaps
 ### 功能

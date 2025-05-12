@@ -46,25 +46,26 @@ if [ -f "pre-commit" ]; then
   cp pre-commit ./.git/hooks/pre-commit
 fi
 
+# 生成要检查的文件列表，排除3rdparty目录
 files_to_check=()
 if [ "$format_all" -eq 1 ]; then
-  files_to_check=($(git ls-files --exclude-standard | grep -v "$(git config --file .gitmodules --get-regexp path | awk '{ print $2 }' | xargs -I {} echo -n '\|{}' | cut -c 3-)"))
+  # 排除3rdparty目录下的所有文件
+  files_to_check=($(git ls-files --exclude-standard | grep -v '^3rdparty/' | grep -v "$(git config --file .gitmodules --get-regexp path | awk '{ print $2 }' | xargs -I {} echo -n '\|{}' | cut -c 3-)"))
 else
-  # exclude submodules such as nvshmem here. hopes your git supports --ignore-submodules too
-  files_to_check=($(git diff $base $target --name-only --diff-filter=ACMRT --ignore-submodules))
+  # 排除3rdparty目录下的所有修改
+  files_to_check=($(git diff $base $target --name-only --diff-filter=ACMRT --ignore-submodules | grep -v '^3rdparty/'))
 fi
 
 current_dir="$PWD"
-# find ! -path does not work anyway. maybe a BUG for find. filter in files_to_check instead
-# neither `! -path` or `-path xxx -prune` works here.
-files_to_check_cpp=$(find "${files_to_check[@]}" -type f \
+
+# 使用正确的方式传递文件列表给find命令，并排除3rdparty目录
+files_to_check_cpp=$(printf "%s\n" "${files_to_check[@]}" | xargs -I {} find {} -type f \
   -regextype posix-extended \
   -regex ".*\.(c|cpp|cc|h|hpp|cu|cuh)$" \
-  ! -path "${current_dir}/third_party/amd/backend/include/hip/*" \
-  ! -path "${current_dir}/third_party/amd/backend/include/*" \
-  ! -path "${current_dir}/third_party/f2reduce/*")
-files_to_check_py=$(printf "%s\n" "${files_to_check[@]}" | grep "\.\(py\)$")
-files_to_check_pyi=$(printf "%s\n" "${files_to_check[@]}" | grep "\.\(pyi\)$")
+  ! -path "${current_dir}/3rdparty/*" 2>/dev/null)
+
+files_to_check_py=$(printf "%s\n" "${files_to_check[@]}" | grep -v '^3rdparty/' | grep "\.\(py\)$")
+files_to_check_pyi=$(printf "%s\n" "${files_to_check[@]}" | grep -v '^3rdparty/' | grep "\.\(pyi\)$")
 
 if [ "$files_to_check_cpp" = "" ] && [ "$files_to_check_py" = "" ] && [ "$files_to_check_pyi" = "" ]; then
   exit 0
@@ -75,20 +76,12 @@ if ! clang-format -version >/dev/null; then
   exit 1
 fi
 
-# TODO: (hupuyun)
-# We don't use black because Triton doesn't use black.
-# For future, when Triton switches to black, we will enable this
-
-# if ! black --version >/dev/null; then
-#   echo "error: black not found, can be installed by: pip3 install black"
-#   exit 1
-# fi
-
 if ! command -v yapf &> /dev/null
 then
     echo "yapf not found, can be installed by: pip3 install yapf"
     exit 1
 fi
+
 # 检查 ruff 是否安装
 if ! command -v ruff &> /dev/null
 then
@@ -97,6 +90,7 @@ then
 fi
 
 if [ "$show_only" -eq 1 ]; then
+  has_diff=0
   # cpp files
   for f in $files_to_check_cpp; do
     if [ -L $f ]; then
@@ -114,7 +108,6 @@ if [ "$show_only" -eq 1 ]; then
     if [ -L $f ]; then
       continue
     fi
-    # result=$(diff <(git show :$f) <(git show :$f | black -q -))
     result=$(diff <(git show :$f) <(git show :$f | yapf $f))
     if [ "$result" != "" ]; then
       echo "yapf ===== $f ====="
@@ -133,13 +126,6 @@ if [ "$show_only" -eq 1 ]; then
     if [ -L $f ]; then
       continue
     fi
-    # result=$(diff <(git show :$f) <(git show :$f | black --pyi -q -))
-    # result=$(diff <(git show :$f) <(git show :$f | yapf -))
-    # if [ "$result" != "" ]; then
-    #   echo "yapf ===== $f ====="
-    #   echo -e "$result"
-    #   has_diff=1
-    # fi
     ruff_result=$(ruff check --diff $f)
     if [ "$ruff_result" != "" ]; then
       echo "ruff ===== $f ====="
@@ -152,18 +138,6 @@ else
     echo "Formatting cpp files by clang-format..."
     echo $files_to_check_cpp | xargs clang-format -i --style=file
   fi
-  # TODO: (hupuyun)
-  # We don't use black because Triton doesn't use black.
-  # For future, when Triton switches to black, we will enable this
-
-  # if [[ ! -z $files_to_check_py ]]; then
-  #   echo "Formatting py files by black..."
-  #   echo $files_to_check_py | xargs black -q
-  # fi
-  # if [[ ! -z $files_to_check_pyi ]]; then
-  #   echo "Formatting pyi files by black..."
-  #   echo $files_to_check_pyi | xargs black --pyi -q
-  # fi
   if [[ ! -z $files_to_check_py ]]; then
     echo "Formatting py files by yapf..."
     for f in $files_to_check_py; do

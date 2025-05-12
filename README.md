@@ -44,12 +44,12 @@ Feel free to contact us if you want to use Triton-distributed on your own hardwa
 ## Getting started
 ### Install Triton-distributed from source
 
-[Build Guide](docs/distributed/build.md)
+[Build Guide](docs/build.md)
 
 ### How to use Triton-distributed
 Triton-distributed provides a set of easy-to use primitives to support the development of distributed compute-communication overlapping kernels. The primitives are divided into low-level primitives and high-level primitives. Currently, we have released our low-level primitives, and we plan to release high-level primitives in future.
 
-[Triton-distributed Primitives](docs/distributed/primitives.md)
+[Triton-distributed Primitives](docs/primitives.md)
 
 Using these primitives, users can program communication kernels easily. For example, a low-latency AllToAll (with better latency than [DeepEP](https://github.com/deepseek-ai/DeepEP) for inference) is shown below.
 The performance of this example on 32 H800 GPUs is 137us (128 tokens per rank, topk=8, hidden_size=7168, dtype=fp8), while DeepEP is 182 us (note: DeepEP doesn't use NVLink for inference).
@@ -163,7 +163,7 @@ The batch size is 1 (one query) for decoding.
 ![flash-decode-inter-node](asset/flash-decode-scaling.png)
 
 ### Performance on Other Platforms
-[AMD GPUs](docs/distributed/amd-perf.md)
+[AMD GPUs](docs/amd-perf.md)
 
 
 ## Roadmaps
