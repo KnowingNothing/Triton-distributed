@@ -210,3 +210,6 @@ and see the following (reduced) output
 torchrun --node_rank=0 --nproc_per_node=8 --nnodes=1 ./third_party/distributed/distributed/test/amd/test_ag_gemm_intra_node.py 8192 8192 29568
 ✅ Triton and Torch match
 ```
+
+## How to update Triton code?
+See [instructions](update-upstream.md)
