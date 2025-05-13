@@ -920,10 +920,7 @@ def get_git_version_suffix():
 
 
 # set ext_modules
-ext_modules = [
-    CMakeExtension(f"{get_base_dir()}/3rdparty/triton/python/triton",
-                   f"{get_base_dir()}/3rdparty/triton/python/triton/_C/")
-]
+ext_modules = [CMakeExtension("3rdparty/triton/python/triton", "triton/_C/")]
 
 setup(
     name=os.environ.get("TRITON_WHEEL_NAME", "triton_dist"),

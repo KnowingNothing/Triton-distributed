@@ -45,7 +45,7 @@ import triton_dist.language as dl
 from typing import Optional, List
 from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.common_ops import wait_eq, barrier_all_on_stream
-from triton_dist.kernels.nvidia.gemm_reduce_scatter import ring_reduce
+from triton_dist.kernels.nvidia.reduce_scatter import ring_reduce
 from triton.language.extra import libshmem_device
 
 import os
@@ -73,6 +73,7 @@ class ReduceScatter2DContext:
     # barrier bufs
     signal_bufs: List[torch.Tensor]  # need reset: signal_buf =  scatter_signal | rs_per_node_signal
     sync_buf: torch.Tensor  # no need to reset
+    sync_target_value: int
 
     # stream
     reduction_stream: torch.cuda.Stream
@@ -184,8 +185,8 @@ def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dt
     ctx = ReduceScatter2DContext(max_M=max_M, N=N, rank=rank, world_size=world_size, local_world_size=local_world_size,
                                  dtype=dtype, overlap_with_gemm=overlap_with_gemm, scatter_bufs=scatter_bufs,
                                  rs_per_node_bufs=rs_per_node_bufs, p2p_bufs=p2p_bufs, signal_bufs=signal_bufs,
-                                 sync_buf=sync_buf, reduction_stream=reduction_stream, p2p_stream=p2p_stream,
-                                 num_sync_sms=num_sync_sms, num_p2p_sms=num_p2p_sms,
+                                 sync_buf=sync_buf, sync_target_value=1, reduction_stream=reduction_stream,
+                                 p2p_stream=p2p_stream, num_sync_sms=num_sync_sms, num_p2p_sms=num_p2p_sms,
                                  num_reduction_sms=num_reduction_sms)
     return ctx
 
@@ -280,16 +281,18 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
 
             rs_buf_cur_node = rs_per_node_buf[M_per_rank * cur_node_id:(cur_node_id + 1) * M_per_rank]
             # step1-2: perform barrier_all, wait for all peers within the node to complete the scatter operation
-            barrier_all_on_stream(stream, is_intra_node=True, barrier_all_buf=ctx.sync_buf,
-                                  local_world_size=local_world_size)
-            reduction_stream.wait_stream(stream)
-            # step1-3: perform reduction operation to get the result of the intra-node reduce-scatter.
-            ring_reduce(scatter_bufs_intra_node[local_rank], rs_buf_cur_node, local_rank, local_world_size,
-                        reduction_stream, num_sms=-1 if n == nnodes - 1 else num_reduction_sms)
+            barrier_all_on_stream(stream, is_intra_node=True, symm_barrier_buf=ctx.sync_buf,
+                                  local_world_size=local_world_size, barrier_value=ctx.sync_target_value)
+            ctx.sync_target_value += 1
 
-            # step2: inter node p2p, send result to the same local rank on the node `(n + 1 + node_id) % nnodes`.
-            if nnodes > 1:
-                with torch.cuda.stream(reduction_stream):
+            reduction_stream.wait_stream(stream)
+            with torch.cuda.stream(reduction_stream):
+                # step1-3: perform reduction operation to get the result of the intra-node reduce-scatter.
+                ring_reduce(scatter_bufs_intra_node[local_rank], rs_buf_cur_node, local_rank, local_world_size,
+                            num_sms=-1 if n == nnodes - 1 else num_reduction_sms)
+
+                # step2: inter node p2p, send result to the same local rank on the node `(n + 1 + node_id) % nnodes`.
+                if nnodes > 1:
                     if n == nnodes - 1:
                         p2p_buf[M_per_rank * node_id:M_per_rank * (node_id + 1)].copy_(
                             rs_per_node_buf[M_per_rank * node_id:M_per_rank * (node_id + 1)])
@@ -332,7 +335,8 @@ def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
     """
     Step 2: After receiving data sent via P2P from all nodes, perform a reduction to get the final result.
     """
-    ring_reduce(rs_resutl_per_node, output, ctx.node_id, ctx.nnodes, stream)
+    with torch.cuda.stream(stream):
+        ring_reduce(rs_resutl_per_node, output, ctx.node_id, ctx.nnodes)
     return output
 
 

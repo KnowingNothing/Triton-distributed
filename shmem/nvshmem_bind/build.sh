@@ -49,14 +49,16 @@ function set_nvcc_gencode() {
 }
 
 function download_libnvshmem_device_bc_byted() {
+  echo "download pre-built libnvshmem_device bc from byted..."
   local dst_path=${PROJECT_ROOT}/../../3rdparty/triton/third_party/nvidia/backend/lib
   lib_file=/tmp/libnvshmem_device.bc
-  wget -q --show-progress https://tosv.byted.org/obj/flux/dsit-triton/nvshmem/3.2.5-1/bc/libnvshmem_device.bc -O ${lib_file}
+  wget -q https://tosv.byted.org/obj/flux/dsit-triton/nvshmem/3.2.5-1/bc/libnvshmem_device.bc -O ${lib_file}
   if ! mv -f $lib_file $dst_path; then
     echo "File move failed" >&2
     rm -rf "$tmp_dir"
     return 1
   fi
+  echo "download done."
 }
 
 function build_nvshmem_cubin() {

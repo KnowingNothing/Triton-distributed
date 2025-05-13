@@ -662,7 +662,7 @@ def p2p_native_atomic_required(fn):
     def wrapper(*args, **kwargs):
         if not check_p2p_native_atomic_supported():
             warnings.warn(
-                "function {fn.__name__} requires P2P native atomic support but you are running on a platform that does not support it. this may cause undefined behavior"
+                f"⚠️ function {fn.__name__} requires P2P native atomic support but you are running on a platform that does not support it. this may cause undefined behavior"
             )
         return fn(*args, **kwargs)
 

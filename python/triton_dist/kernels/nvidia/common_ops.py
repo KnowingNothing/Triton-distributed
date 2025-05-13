@@ -40,7 +40,7 @@ from triton.language.extra.cuda.language_extra import (
 )
 
 from triton_dist import pynvshmem
-from triton_dist.utils import p2p_native_atomic_required
+from triton_dist.utils import check_p2p_native_atomic_supported
 
 
 @triton.jit
@@ -159,19 +159,20 @@ def barrier_all_intra_node_non_atomic(rank, num_ranks, symm_flags, target_value)
     barrier_on_this_grid(symm_flags + 2 * num_ranks)
 
 
-@p2p_native_atomic_required
-def barrier_all_on_stream(
-    stream,
-    is_intra_node=False,
-    barrier_all_buf=None,
-    local_world_size=0,
-):
+def barrier_all_on_stream(stream, is_intra_node=False, symm_barrier_buf=None, local_world_size=0, barrier_value=1,  #
+                          ):
+    # TODO(houqi.1993) make a sync context and do the barrier_value inc inner the funtion
     if not is_intra_node:
         pynvshmem.nvshmemx_barrier_all_on_stream(stream.cuda_stream)
     else:
-        assert barrier_all_buf is not None and local_world_size > 0
-        with torch.cuda.stream(stream):
-            barrier_all_intra_node_atomic_cas_block[(1, )](pynvshmem.nvshmem_my_pe(), local_world_size, barrier_all_buf)
+        assert symm_barrier_buf is not None and local_world_size > 0
+        if check_p2p_native_atomic_supported():
+            with torch.cuda.stream(stream):
+                barrier_all_intra_node_atomic_cas_block[(1, )](pynvshmem.nvshmem_my_pe(), local_world_size,
+                                                               symm_barrier_buf)
+        else:
+            barrier_all_intra_node_non_atomic[(1, )](pynvshmem.nvshmem_my_pe(), local_world_size, symm_barrier_buf,
+                                                     barrier_value)
 
 
 def wait_eq(ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=False):

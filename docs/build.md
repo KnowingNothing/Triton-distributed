@@ -122,7 +122,7 @@ bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distribut
 #### GEMM ReduceScatter example on single node
 This example runs on a single node with 8 H800 GPUs.
 ```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568
+bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs.py 8192 8192 29568
 ```
 For AMD CDNA3 GPUs:
 ```sh
@@ -145,8 +145,8 @@ bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/t
 
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_inter_node.py --M 8192
 # gemm rs
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_multi_node.py 8192 8192 29568
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs_multi_node.py 8192 8192 29568 --check
+bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs.py 8192 8192 29568
+bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs.py 8192 8192 29568 --check
 # allgather
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_small_msg.py
 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_gather.py

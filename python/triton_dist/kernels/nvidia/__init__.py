@@ -39,7 +39,7 @@ from .flash_decode import (gqa_fwd_batch_decode_persistent, kernel_gqa_fwd_batch
                            gqa_fwd_batch_decode_persistent_aot, gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot,
                            gqa_fwd_batch_decode_intra_rank_aot, get_triton_combine_kv_algo_info,
                            gqa_fwd_batch_decode_intra_rank, kernel_inter_rank_gqa_fwd_batch_decode_combine_kv)
-from .gemm_reduce_scatter import create_gemm_rs_context, gemm_rs_multi_node
+from .gemm_reduce_scatter import create_gemm_rs_context, gemm_rs
 from .low_latency_all_to_all import create_all_to_all_context, fast_all_to_all, all_to_all_post_process
 from .moe_reduce_rs import create_moe_rs_context, select_experts, moe_reduce_rs
 
@@ -71,7 +71,7 @@ __all__ = [
     "AllGatherMethod",
     "cp_engine_producer_all_gather_intra_node",
     "inter_node_allgather",
-    "gemm_rs_multi_node",
+    "gemm_rs",
     "gemm_persistent",
     "gemm_non_persistent",
     "get_triton_combine_kv_algo_info",

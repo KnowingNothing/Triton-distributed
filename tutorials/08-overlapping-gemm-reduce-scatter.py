@@ -51,7 +51,7 @@ from typing import Optional, List
 import triton_dist
 from triton_dist import pynvshmem
 # The implementation of reduce_scatter_2d_op is the same as that in 06-intern-node-reudce-scatter.py.
-from triton_dist.kernels.nvidia.gemm_reduce_scatter import ReduceScatter2DContext, create_reduce_scater_2d_ctx, reduce_scatter_2d_op
+from triton_dist.kernels.nvidia.reduce_scatter import ReduceScatter2DContext, create_reduce_scater_2d_ctx, reduce_scatter_2d_op
 
 import os
 
@@ -425,6 +425,11 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     M, N, K = 16384, 12288, 49152
     local_K = K // TP_GROUP.size()
+
+    if torch.cuda.get_device_capability()[0] <= 9:
+        print("Skip the test because the device is not sm90 or higher")
+        import sys
+        sys.exit()
 
     # gen input
     input_dtype = torch.bfloat16

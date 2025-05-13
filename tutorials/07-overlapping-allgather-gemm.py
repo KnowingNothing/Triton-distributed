@@ -403,6 +403,11 @@ if __name__ == "__main__":
     world_size = TP_GROUP.size()
     LOCAL_WORLD_SIZE = 8
 
+    if torch.cuda.get_device_capability()[0] <= 9:
+        print("Skip the test because the device is not sm90 or higher")
+        import sys
+        sys.exit()
+
     M = 8192
     N = 49152
     K = 12288

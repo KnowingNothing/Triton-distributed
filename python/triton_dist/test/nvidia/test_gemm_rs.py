@@ -25,7 +25,7 @@
 import torch
 import random
 
-from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs_multi_node
+from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs
 
 import argparse
 import os
@@ -37,12 +37,7 @@ from functools import partial
 
 from triton_dist import pynvshmem
 
-from triton_dist.utils import (
-    generate_data,
-    get_torch_prof_ctx,
-    perf_func,
-    dist_print,
-)
+from triton_dist.utils import (generate_data, perf_func, dist_print, group_profile, assert_allclose)
 
 
 def torch_gemm_rs(
@@ -61,7 +56,7 @@ def torch_gemm_rs(
     return rs_output
 
 
-class GemmRSMultiNode(torch.nn.Module):
+class GemmRS(torch.nn.Module):
 
     def __init__(
         self,
@@ -95,11 +90,12 @@ class GemmRSMultiNode(torch.nn.Module):
         self,
         input: torch.Tensor,  # [M, local_K]
         weight: torch.Tensor,  # [N, local_K]
-        bias: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
+        persistent: bool = True,
     ):
         assert input.shape[0] <= self.max_M and weight.shape[0] == self.N
 
-        return gemm_rs_multi_node(input, weight, self.ctx)
+        return gemm_rs(input, weight, self.ctx, persistent)
 
 
 DTYPE_MAP = {
@@ -124,13 +120,15 @@ def parse_args():
     parser.add_argument("M", type=int)
     parser.add_argument("N", type=int)
     parser.add_argument("K", type=int)
-    parser.add_argument("--warmup", default=5, type=int, help="warmup iterations")
-    parser.add_argument("--iters", default=10, type=int, help="perf iterations")
+    parser.add_argument("--warmup", default=20, type=int, help="warmup iterations")
+    parser.add_argument("--iters", default=100, type=int, help="perf iterations")
     parser.add_argument("--dtype", default="bfloat16", type=str, help="data type")
 
     parser.add_argument("--profile", default=False, action="store_true", help="dump torch.profiler.profile")
     parser.add_argument("--check", default=False, action="store_true", help="correctness check")
     parser.add_argument("--verify-iters", default=10, type=int)
+    parser.add_argument("--persistent", action=argparse.BooleanOptionalAction,
+                        default=torch.cuda.get_device_capability() >= (9, 0))
 
     parser.add_argument(
         "--transpose_weight",
@@ -165,6 +163,9 @@ if __name__ == "__main__":
     TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
     torch.distributed.barrier(TP_GROUP)
 
+    if torch.cuda.get_device_capability()[0] < 9:
+        assert not args.persistent, "persistent is not supported on cuda < 9.0"
+
     torch.use_deterministic_algorithms(False, warn_only=True)
     torch.set_printoptions(precision=2)
     torch.manual_seed(3 + RANK)
@@ -177,7 +178,6 @@ if __name__ == "__main__":
     np.random.seed(3 + RANK)
     random.seed(args.seed)
 
-    current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
     pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
 
@@ -203,7 +203,7 @@ if __name__ == "__main__":
         input, weight, bias = next(generator)
         return input, weight, bias
 
-    dist_gemm_rs_op = GemmRSMultiNode(TP_GROUP, args.M, args.N, args.K, input_dtype, output_dtype, LOCAL_WORLD_SIZE)
+    gemm_rs_op = GemmRS(TP_GROUP, args.M, args.N, args.K, input_dtype, output_dtype, LOCAL_WORLD_SIZE)
 
     if args.check:
         for n in range(args.iters):
@@ -225,43 +225,31 @@ if __name__ == "__main__":
 
             # dist triton impl
             for input, weight, bias in input_list:
-                dist_out = dist_gemm_rs_op.forward(input, weight, bias)
+                dist_out = gemm_rs_op.forward(input, weight, bias, args.persistent)
                 dist_out_list.append(dist_out)
-            # torch.cuda.synchronize()
             # verify
             for idx, (torch_out, dist_out) in enumerate(zip(torch_out_list, dist_out_list)):
-                # if RANK == 0:
-                #     print(f"shape = {torch_out.shape}, {torch_out[0]} {dist_out[0]}")
-                try:
-                    torch.testing.assert_close(torch_out, dist_out, atol=atol, rtol=rtol)
-                except Exception as e:
-                    raise e
+                assert_allclose(torch_out, dist_out, atol=atol, rtol=rtol, verbose=False)
         print(f"RANK[{RANK}]: pass.")
         exit(0)
 
-    ctx = get_torch_prof_ctx(args.profile)
     input, weight, bias = _make_data(args.M)
-    with ctx:
-        torch_output, torch_perf = perf_func(partial(torch_gemm_rs, input, weight, bias, TP_GROUP), iters=100,
-                                             warmup_iters=20)
+    with group_profile(f"gemm_rs_{os.environ['TORCHELASTIC_RUN_ID']}", args.profile, group=TP_GROUP):
+        torch_output, torch_perf = perf_func(partial(torch_gemm_rs, input, weight, bias, TP_GROUP), iters=args.iters,
+                                             warmup_iters=args.warmup)
 
         pynvshmem.nvshmem_barrier_all()
         torch.cuda.synchronize()
 
-        dist_triton_output, dist_triton_perf = perf_func(partial(dist_gemm_rs_op.forward, input, weight, bias),
-                                                         iters=100, warmup_iters=20)
+        dist_triton_output, dist_triton_perf = perf_func(
+            partial(gemm_rs_op.forward, input, weight, bias, args.persistent), iters=args.iters,
+            warmup_iters=args.warmup)
 
     pynvshmem.nvshmem_barrier_all()
     torch.cuda.synchronize()
 
-    if args.profile:
-        run_id = os.environ["TORCHELASTIC_RUN_ID"]
-        prof_dir = f"prof/{run_id}"
-        os.makedirs(prof_dir, exist_ok=True)
-        ctx.export_chrome_trace(f"{prof_dir}/trace_rank{TP_GROUP.rank()}.json.gz")
-
     atol, rtol = THRESHOLD_MAP[input_dtype], THRESHOLD_MAP[input_dtype]
-    torch.testing.assert_close(torch_output, dist_triton_output, atol=atol, rtol=rtol)
+    assert_allclose(torch_output, dist_triton_output, atol=atol, rtol=rtol)
     torch.cuda.synchronize()
 
     dist_print(f"dist-triton #{RANK}", dist_triton_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))

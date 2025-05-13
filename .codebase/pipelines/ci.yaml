@@ -31,12 +31,11 @@ jobs:
 
       - name: build
         commands:
-          - python3 -m pip install cmake==3.26 ninja wheel lit numpy plotly pandas pytest scipy==1.10.1 matplotlib tabulate pybind11 setuptools tqdm
+          - python3 -m pip install cmake==3.26 ninja wheel lit numpy plotly pandas pytest scipy==1.10.1 matplotlib tabulate pybind11 setuptools==69.0.0 tqdm
           - python3 -m pip install -i https://test.pypi.org/simple hip-python>=6.3.0
           - git submodule update --init --recursive
           - bash shmem/rocshmem_bind/build.sh
-          # - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
-          - python3 python/setup.py build_ext
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
           # - source scripts/setenv.sh
 
       - name: distributed tests
@@ -67,7 +66,7 @@ jobs:
     steps:
       - name: code-format-check
         commands:
-          - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43
+          - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43 setuptools==69.0.0
           - pip3 install cuda-python==12.4
           - pip3 install pytest
           - pip3 install chardet
@@ -93,13 +92,11 @@ jobs:
           - git submodule update --init --recursive
           - pip3 install ninja cmake wheel pybind11
           - export USE_TRITON_DISTRIBUTED_AOT=0
-          # - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
-          - python3 python/setup.py build_ext
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
           # - source ./scripts/setenv.sh
           - bash ./scripts/gen_aot_code.sh
           - export USE_TRITON_DISTRIBUTED_AOT=1
-          # - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
-          - python3 python/setup.py build_ext
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
       - name: unit tests
         commands:
           - python3 ./python/triton_dist/test/nvidia/test_language_extra.py
@@ -119,8 +116,8 @@ jobs:
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm_inter_node.py --M 8192
           - CUBLAS_WORKSPACE_CONFIG=":16:8" bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm_inter_node.py --M 80 # very small and not perfect shape
           # gemm rs
-          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568
-          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs_multi_node.py 8192 8192 29568 --check
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568 --check
           # allgather
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_small_msg.py
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_all_gather.py
