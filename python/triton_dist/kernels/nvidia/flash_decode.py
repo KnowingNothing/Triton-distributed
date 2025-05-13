@@ -58,7 +58,7 @@ else:
 if use_aot:
     from triton._C.libtriton_distributed import distributed
 
-from triton.language.extra.cuda.language_extra import (__syncthreads, ld_acquire, red_release, tid)
+from triton_dist.kernels.nvidia.common_ops import barrier_on_this_grid
 
 
 @triton.jit
@@ -716,15 +716,7 @@ def kernel_gqa_fwd_batch_decode_split_kv_persistent(
         offs_log = bid * stride_o_bs + cur_head * stride_o_h + split_kv_id * stride_o_split + V_DIM
         tl.store(output_ptr + offs_log, e_max + tl.log(e_sum), mask=mask_h)
 
-    tx = tid(0)
-    if tx == 0:
-        red_release(workspace_ptr + sm_id, 1, "gpu")
-    __syncthreads()
-
-    if tx < num_sms:
-        while ld_acquire(workspace_ptr + tx, "gpu") != 1:
-            pass
-    __syncthreads()
+    barrier_on_this_grid(workspace_ptr)
 
     if sm_id < batch * q_head_num:
 
@@ -766,9 +758,6 @@ def kernel_gqa_fwd_batch_decode_split_kv_persistent(
             acc / e_sum,
             mask=mask_d,
         )
-    __syncthreads()
-    if tx == 0:
-        red_release(workspace_ptr + sm_id, -1, "gpu")
 
 
 def gqa_fwd_batch_decode(q, k_cache, v_cache, workspace, q_lens, kv_lens, block_table, scale, soft_cap=0.0,

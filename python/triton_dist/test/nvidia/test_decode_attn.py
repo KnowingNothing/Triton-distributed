@@ -236,7 +236,7 @@ def test_triton_decode_with_paged_kv_persistent(
     key_value_cache = torch.randn(NUM_BLOCKS, 2, block_size, num_kv_heads, head_size, dtype=dtype)
     key_cache = key_value_cache[:, 0, :, :, :].contiguous()
     value_cache = key_value_cache[:, 1, :, :, :].contiguous()
-    workspace = torch.zeros([num_seqs * num_query_heads * 32], dtype=torch.int32)
+    workspace = torch.zeros([1], dtype=torch.int32)
 
     max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
     block_tables = torch.randint(0, NUM_BLOCKS, (num_seqs, max_num_blocks_per_seq), dtype=torch.int32)
@@ -278,7 +278,7 @@ def test_triton_decode_with_paged_kv_persistent_aot(
     key_value_cache = torch.randn(NUM_BLOCKS, 2, block_size, num_kv_heads, head_size, dtype=dtype)
     key_cache = key_value_cache[:, 0, :, :, :].contiguous()
     value_cache = key_value_cache[:, 1, :, :, :].contiguous()
-    workspace = torch.zeros([num_seqs * num_query_heads * 32], dtype=torch.int32)
+    workspace = torch.zeros([1], dtype=torch.int32)
 
     max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
     block_tables = torch.randint(0, NUM_BLOCKS, (num_seqs, max_num_blocks_per_seq), dtype=torch.int32)
@@ -435,7 +435,7 @@ def perf_8k_decode_persistent(args):
 
         key_cache = torch.randn(NUM_BLOCKS, block_size, num_kv_heads, head_size, dtype=dtype)
         value_cache = torch.randn(NUM_BLOCKS, block_size, num_kv_heads, head_size, dtype=dtype)
-        workspace = torch.zeros([num_seqs * num_query_heads * 32], dtype=torch.int32)
+        workspace = torch.zeros([1], dtype=torch.int32)
 
         kv_split = 32
         output_split = torch.empty([num_seqs, num_query_heads, kv_split, head_size + 1], dtype=query.dtype)
@@ -493,7 +493,7 @@ def perf_8k_decode_persistent_aot(args):
 
         key_cache = torch.randn(NUM_BLOCKS, block_size, num_kv_heads, head_size, dtype=dtype)
         value_cache = torch.randn(NUM_BLOCKS, block_size, num_kv_heads, head_size, dtype=dtype)
-        workspace = torch.zeros([num_seqs * num_query_heads * 32], dtype=torch.int32)
+        workspace = torch.zeros([1], dtype=torch.int32)
 
         kv_split = 32
         output_split = torch.empty([num_seqs, num_query_heads, kv_split, head_size + 1], dtype=query.dtype)
