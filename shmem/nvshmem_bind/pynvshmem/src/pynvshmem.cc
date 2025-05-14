@@ -104,97 +104,7 @@ void check_nvshmem_init() {
 NVSHMEMI_REPT_FOR_STANDARD_RMA_TYPES(NVSHMEMI_TYPENAME_P_IMPL_PYBIND)
 #undef NVSHMEMI_TYPENAME_P_IMPL_PYBIND
 
-// https://numba.readthedocs.io/en/stable/cuda/cuda_array_interface.html
-// free pynvshmem from torch dependency
-class symm_cuda_buffer {
-public:
-  symm_cuda_buffer(size_t size) : size_(size), ptr_(nullptr), own_data_(true) {
-    CUDA_CHECK(cudaGetDevice(&device_index_));
-    check_nvshmem_init();
-    ptr_ = nvshmem_malloc(size);
-    rank_ = nvshmem_my_pe();
-    PYNVSHMEM_CHECK(ptr_ != nullptr);
-  }
-
-  symm_cuda_buffer(size_t size, int rank, void *ptr)
-      : size_(size), rank_(rank), ptr_(ptr), own_data_(false) {}
-
-  symm_cuda_buffer(const symm_cuda_buffer &) = delete;
-  symm_cuda_buffer &operator=(const symm_cuda_buffer &) = delete;
-  symm_cuda_buffer(symm_cuda_buffer &&other) noexcept
-      : size_(other.size_), rank_(other.rank_), ptr_(other.ptr_),
-        own_data_(other.own_data_), device_index_(other.device_index_) {
-    other.ptr_ = nullptr;
-    other.own_data_ = false;
-  }
-
-  ~symm_cuda_buffer() noexcept(false) {
-    if (ptr_ && own_data_) {
-      int current_device = -1;
-      CUDA_CHECK(cudaGetDevice(&current_device));
-
-      if (device_index_ != current_device) {
-        static std::once_flag flag;
-        std::call_once(flag, [&]() {
-          fprintf(stderr,
-                  "Warning: nvshmem_free is called from a different device "
-                  "than the one that allocated the memory. This may lead "
-                  "to undefined behavior. temporarily switch to device %d from "
-                  "%d\n",
-                  device_index_, current_device);
-        });
-        CUDA_CHECK(cudaSetDevice(device_index_));
-      }
-      CUDA_CHECK(cudaDeviceSynchronize());
-      nvshmem_free(ptr_);
-      CUDA_CHECK(cudaDeviceSynchronize());
-      ptr_ = nullptr;
-      if (device_index_ != current_device) {
-        CUDA_CHECK(cudaSetDevice(current_device));
-      }
-    }
-  }
-
-  symm_cuda_buffer symm_at(int rank) {
-    PYNVSHMEM_CHECK(rank != rank_);
-    void *ptr = nvshmem_ptr(ptr_, rank);
-    PYNVSHMEM_CHECK(ptr != nullptr);
-    return symm_cuda_buffer(size_, rank, ptr); // don't own data.
-  }
-
-  void *data_ptr() const { return ptr_; }
-
-  size_t nbytes() const { return size_; }
-
-private:
-  size_t size_;
-  int rank_;
-  void *ptr_;
-  bool own_data_ = false;
-  int device_index_ = -1;
-};
-
-py::dict get_cuda_array_interface(const symm_cuda_buffer &buf) {
-  py::dict interface;
-  interface["data"] =
-      py::make_tuple(reinterpret_cast<uintptr_t>(buf.data_ptr()), false);
-  interface["shape"] = py::make_tuple(buf.nbytes());
-  interface["typestr"] = "<i1";      // uint8 data type
-  interface["strides"] = py::none(); // Contiguous memory
-  interface["version"] = 3;
-  return interface;
-}
-
 PYBIND11_MODULE(_pynvshmem, m) {
-
-  py::class_<symm_cuda_buffer>(m, "symm_cuda_buffer")
-      .def(py::init<size_t>())
-      .def("data_ptr", &symm_cuda_buffer::data_ptr)
-      .def("nbytes", &symm_cuda_buffer::nbytes)
-      .def("symm_at", &symm_cuda_buffer::symm_at)
-      .def_property_readonly("__cuda_array_interface__",
-                             &get_cuda_array_interface);
-
   m.def("nvshmem_my_pe", []() -> int {
     check_nvshmem_init();
     return nvshmem_my_pe();
@@ -224,7 +134,12 @@ PYBIND11_MODULE(_pynvshmem, m) {
     }
     return (intptr_t)ptr;
   });
+  m.def("nvshmem_free", [](intptr_t ptr) {
+    check_nvshmem_init();
+    nvshmem_free((void *)ptr);
+  });
   m.def("nvshmem_ptr", [](intptr_t ptr, int peer) {
+    check_nvshmem_init();
     return (intptr_t)nvshmem_ptr((void *)ptr, peer);
   });
   m.def("nvshmemx_mc_ptr", [](nvshmemx_team_t team, intptr_t ptr) {

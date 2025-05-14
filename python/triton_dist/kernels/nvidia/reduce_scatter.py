@@ -35,8 +35,9 @@ from triton_dist import pynvshmem
 from triton.language.extra import libshmem_device
 
 import triton_dist.language as dl
-from triton_dist.kernels.nvidia.common_ops import (barrier_all_on_stream, set_signal, wait_eq)
+from triton_dist.kernels.nvidia.common_ops import (barrier_all_on_stream, set_signal, wait_eq, barrier_on_this_grid)
 from triton_dist.utils import (CUDA_CHECK, get_has_nvlink)
+from triton.language.extra.cuda.language_extra import tid, __syncthreads, ld, st
 
 SIGNAL_DTYPE = torch.uint64
 
@@ -183,7 +184,7 @@ def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dt
 
 
 @triton.jit
-def add_continous_kernel(
+def add_continuous_kernel(
     lhs,
     rhs,
     out,
@@ -230,7 +231,45 @@ def add_continous_kernel(
         out_block_ptr = tl.advance(out_block_ptr, [BLOCK_SIZE * num_pid])
 
 
-def add_continous(
+@triton.jit
+def copy_continuous_kernel(
+    src_ptr,
+    dst_ptr,
+    N,
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(axis=0)
+    block_start = pid * BLOCK_SIZE
+    n_blocks = tl.cdiv(N, BLOCK_SIZE)
+    num_pid = tl.num_programs(axis=0)
+
+    src_block_ptr = tl.make_block_ptr(
+        base=src_ptr,
+        shape=(N, ),
+        strides=(1, ),
+        offsets=(block_start, ),
+        block_shape=(BLOCK_SIZE, ),
+        order=(0, ),
+    )
+    dst_block_ptr = tl.make_block_ptr(
+        base=dst_ptr,
+        shape=(N, ),
+        strides=(1, ),
+        offsets=(block_start, ),
+        block_shape=(BLOCK_SIZE, ),
+        order=(0, ),
+    )
+    for _ in range(pid, n_blocks, num_pid):
+        tl.store(
+            dst_block_ptr,
+            tl.load(src_block_ptr, boundary_check=(0, )),
+            boundary_check=(0, ),
+        )
+        src_block_ptr = tl.advance(src_block_ptr, [BLOCK_SIZE * num_pid])
+        dst_block_ptr = tl.advance(dst_block_ptr, [BLOCK_SIZE * num_pid])
+
+
+def add_continuous(
     lhs: torch.Tensor,
     rhs: torch.Tensor,
     out: Optional[torch.Tensor],
@@ -240,7 +279,7 @@ def add_continous(
     assert lhs.dtype == rhs.dtype and lhs.numel() == rhs.numel()
     if out is None:
         out = torch.empty_like(lhs)
-    add_continous_kernel[(num_ctas, )](  # local memory bw is very high. use many blocks
+    add_continuous_kernel[(num_ctas, )](  # local memory bw is very high. use many blocks
         lhs, rhs, out, out.numel(), num_warps=num_warps,
         BLOCK_SIZE=num_warps * 32 * 8 * 4,  # per thread has 8*4 elements
     )
@@ -287,7 +326,7 @@ def reduce_scatter_ring_push_1d_intra_node_ce(
                 )
                 buffer = symm_reduce_tensors[rank][M_start:M_end]
                 output = output if output is not None and stage == num_ranks - 1 else buffer
-                add_continous(src, buffer, output)  # directly reduce to output
+                add_continuous(src, buffer, output)  # directly reduce to output
             if stage == num_ranks - 1:
                 return output
             if stage == 0:
@@ -300,6 +339,91 @@ def reduce_scatter_ring_push_1d_intra_node_ce(
                 stream,
                 if_64bit_flag,
             )
+
+
+@triton.jit(do_not_specialize=["rank", "num_ranks"])
+def reduce_scatter_ring_push_1d_intra_node_kernel(
+    rank,
+    num_ranks,
+    input_ptr,
+    symm_input_flag_ptr,
+    symm_reduce_ptr,
+    symm_reduce_flag_ptr,
+    grid_barrier_ptr,  # use this to sync many grids
+    output_ptr,
+    elems_per_rank,
+    BLOCK_SIZE: tl.constexpr,
+):
+    to_rank = (rank - 1 + num_ranks) % num_ranks
+    peer_reduce_ptr = dl.symm_at(symm_reduce_ptr, to_rank)
+    peer_symm_reduce_flag_ptr = dl.symm_at(symm_reduce_flag_ptr, to_rank)
+    thread_idx = tid(0)
+    pid = tl.program_id(0)
+
+    for stage in range(num_ranks):
+        segment = (rank + stage + 1) % num_ranks
+        src_ptr = input_ptr + segment * elems_per_rank
+        dst_ptr = peer_reduce_ptr + segment * elems_per_rank
+
+        # wait by many CTA's is OK
+        # wait for data ready
+        if thread_idx == 0:
+            while ld(symm_input_flag_ptr + segment, semantic="acquire", scope="gpu") != 1:
+                pass
+        __syncthreads()
+
+        if stage == 0:
+            copy_continuous_kernel(src_ptr, dst_ptr, elems_per_rank, BLOCK_SIZE)
+        else:
+            # wait for reduce ready
+            if thread_idx == 0:
+                while ld(symm_reduce_flag_ptr + segment, semantic="acquire", scope="sys") != 1:
+                    pass
+            __syncthreads()
+
+            reduce_buffer_ptr = symm_reduce_ptr + elems_per_rank * segment
+            add_continuous_kernel(src_ptr, reduce_buffer_ptr, output_ptr if stage == num_ranks - 1 else dst_ptr,
+                                  elems_per_rank, BLOCK_SIZE)  # directly reduce to output
+
+        barrier_on_this_grid(grid_barrier_ptr)
+        # set flag only after all CTAs done memcpy/reduce
+        if pid == 0 and thread_idx == 0:
+            st(peer_symm_reduce_flag_ptr + segment, 1, semantic="release", scope="sys")
+        __syncthreads()
+    if pid == 0:
+        libshmem_device.barrier_all_block()
+
+
+def reduce_scatter_ring_push_1d_intra_node_sm(
+    rank,
+    num_ranks,
+    input_tensor: torch.Tensor,
+    input_flag: torch.Tensor,
+    symm_reduce_tensor: torch.Tensor,
+    symm_reduce_flag: torch.Tensor,
+    grid_barrier: torch.Tensor,
+    output: Optional[torch.Tensor] = None,
+    num_sms=1,
+):
+    M, _ = input_tensor.shape
+    M_per_rank = M // num_ranks
+    output = output if output is not None else torch.empty(
+        (M_per_rank, _), dtype=input_tensor.dtype, device=input_tensor.device)
+    num_warps = 32
+    reduce_scatter_ring_push_1d_intra_node_kernel[(num_sms, )](
+        rank,
+        num_ranks,
+        input_tensor,
+        input_flag,
+        symm_reduce_tensor,
+        symm_reduce_flag,
+        grid_barrier,
+        output,
+        input_tensor.numel() // num_ranks,
+        BLOCK_SIZE=32 * num_warps * 16 // input_tensor.dtype.itemsize,  # each thread copy a uint4
+        num_warps=num_warps,
+    )
+    return output
 
 
 ################### triton kernel ###################

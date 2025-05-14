@@ -29,6 +29,7 @@ import torch
 import torch.distributed
 
 try:
+    from triton._C._pynvshmem import nvshmem_malloc, nvshmem_free, nvshmem_ptr, nvshmem_team_n_pes, nvshmem_team_my_pe, nvshmem_my_pe, nvshmemx_get_uniqueid, nvshmemx_init_attr_with_uniqueid, nvshmem_barrier_all
     from triton._C._pynvshmem import *  # noqa: F403
 except Exception as e:
     print(
@@ -89,30 +90,58 @@ NVSHMEMI_AMO_COMPARE_SWAP = 19
 NVSHMEMI_AMO_OP_SENTINEL = sys.maxsize
 
 
+class SymmCudaBuffer:
+
+    def __init__(self, ptr, nbytes, dtype: torch.dtype, own_data: bool = True):
+        self.ptr = ptr
+        self.nbytes = nbytes
+        self.dtype = dtype
+        self.own_data = own_data
+        self._device = torch.cuda.current_device()
+        # https://numba.readthedocs.io/en/stable/cuda/cuda_array_interface.html
+        self.__cuda_array_interface__ = {
+            "data": (self.ptr, False),
+            "shape": tuple((self.nbytes, )),
+            "typestr": "<i1",  # uint8 data type
+            "strides": None,  # Contiguous memory
+            "version": 3,
+        }
+
+    def __del__(self):
+        if self.own_data:
+            with torch.cuda.device(self._device):
+                torch.cuda.synchronize()
+                nvshmem_free(self.ptr)
+                torch.cuda.synchronize()
+
+
+def symm_tensor(tensor: torch.Tensor, peer: int) -> torch.Tensor:
+    """
+        tensor.data_ptr() should be the nvshmem_malloc() pointer with no offset
+    """
+    assert getattr(tensor, "__symm_tensor__", False), "tensor is not a symm_tensor"
+    if peer == nvshmem_my_pe():
+        return tensor
+    buffer = SymmCudaBuffer(ptr=nvshmem_ptr(tensor.data_ptr(), peer), nbytes=tensor.nbytes, dtype=tensor.dtype,
+                            own_data=False)
+    return torch.as_tensor(buffer, device="cuda").view(tensor.dtype).view(tensor.shape)
+
+
 def nvshmem_create_tensor(shape: Sequence[int], dtype: torch.dtype) -> torch.Tensor:
     nbytes = torch.Size(shape).numel() * dtype.itemsize
     torch.cuda.synchronize()
-    buffer = symm_cuda_buffer(nbytes)  # noqa: F405
-    return torch.as_tensor(buffer, device="cuda").view(dtype).view(shape)
+    buffer = SymmCudaBuffer(ptr=nvshmem_malloc(nbytes), nbytes=nbytes, dtype=dtype, own_data=True)
+    t = torch.as_tensor(buffer, device="cuda").view(dtype).view(shape)
+    setattr(t, "__symm_tensor__", True)  # only those who owns data is marked as __symm_tensor__
+    return t
 
 
 def nvshmem_create_tensor_list_intra_node(shape: Sequence[int], dtype: torch.dtype) -> torch.Tensor:
-    nbytes = torch.Size(shape).numel() * dtype.itemsize
-    torch.cuda.synchronize()
-    buffer = symm_cuda_buffer(nbytes)  # noqa: F405
-    local_world_size = nvshmem_team_n_pes(NVSHMEMX_TEAM_NODE)  # noqa: F405
-    local_rank = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE)  # noqa: F405
-    rank = nvshmem_my_pe()  # noqa: F405
+    t = nvshmem_create_tensor(shape, dtype)
+    local_rank = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE)
+    rank = nvshmem_my_pe()
     rank_offset = rank - local_rank
-
-    def _as_tensor(i):
-        i += rank_offset
-        if i == rank:
-            return torch.as_tensor(buffer, device="cuda").view(dtype).view(shape)
-        else:
-            return torch.as_tensor(buffer.symm_at(i), device="cuda").view(dtype).view(shape)
-
-    return [_as_tensor(i) for i in range(local_world_size)]
+    return [symm_tensor(t, i + rank_offset) for i in range(nvshmem_team_n_pes(NVSHMEMX_TEAM_NODE))]
 
 
 def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup):
@@ -128,7 +157,7 @@ def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.Proce
 def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
     rank, nranks = group.rank(), group.size()
     if rank == 0:
-        unique_id: bytes = bytearray(nvshmemx_get_uniqueid())  # noqa: F405
+        unique_id: bytes = bytearray(nvshmemx_get_uniqueid())
         unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).cpu().clone()
     else:
         # the default device("cpu") may be modified by set_default_device
@@ -137,6 +166,6 @@ def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
     broadcast_cpu(tensor=unique_id, group=group, src=0)
 
     unique_id = unique_id.cpu().numpy().tobytes()
-    nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)  # noqa: F405
-    nvshmem_barrier_all()  # noqa: F405
+    nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)
+    nvshmem_barrier_all()
     torch.cuda.synchronize()
