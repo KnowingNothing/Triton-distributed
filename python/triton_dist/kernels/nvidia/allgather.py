@@ -549,7 +549,7 @@ def cp_engine_producer_all_gather_full_mesh_pull_inter_node(
     intranode_ag_stream.wait_stream(internode_ag_stream)
 
 
-def inter_node_allgather(
+def cp_engine_producer_all_gather_inter_node(
     local_tensor: torch.Tensor,
     ag_buffer: list[torch.Tensor],
     signal_buffer: list[torch.Tensor],
@@ -559,66 +559,33 @@ def inter_node_allgather(
     world_size,
     intranode_ag_stream=None,
     internode_ag_stream=None,
-    cpengine_dispatch=False,
-    all_gather_method: AllGatherMethod = AllGatherMethod.All2All_InterNode,
     for_correctness: bool = False,
+    all_gather_method: AllGatherMethod = AllGatherMethod.All2All_InterNode,
 ):
-    local_rank = rank % local_world_size
-    n_nodes = world_size // local_world_size
-    M_per_rank, N = local_tensor.shape
     if all_gather_method == AllGatherMethod.All2All_InterNode:
-        if not cpengine_dispatch:
-            with torch.cuda.stream(internode_ag_stream):
-                grid = lambda META: (int(local_world_size + n_nodes - 2), )
-                nvshmem_device_producer_all_gather_2d_put_block_kernel[grid](
-                    ag_buffer[local_rank],
-                    signal_buffer[local_rank],
-                    M_per_rank * N,
-                    local_tensor.element_size(),
-                    signal_target,
-                    rank,
-                    local_world_size,
-                    world_size,
-                    tl.constexpr(local_world_size - 1),
-                    tl.constexpr(n_nodes - 1),
-                    num_warps=32,
-                )
-        else:
-            cp_engine_producer_all_gather_full_mesh_pull_inter_node(
-                rank,
-                local_world_size,
-                world_size,
-                local_tensor,
-                ag_buffer,
-                signal_buffer,
-                intranode_ag_stream,
-                internode_ag_stream,
-                signal_target=signal_target,
-                for_correctness=for_correctness,
-            )
+        cp_engine_producer_all_gather_full_mesh_pull_inter_node(
+            rank,
+            local_world_size,
+            world_size,
+            local_tensor,
+            ag_buffer,
+            signal_buffer,
+            intranode_ag_stream,
+            internode_ag_stream,
+            signal_target=signal_target,
+            for_correctness=for_correctness,
+        )
+    elif all_gather_method == AllGatherMethod.Ring2D_InterNode:
+        cp_engine_producer_all_gather_ring_push_2d_inter_node(
+            rank,
+            local_world_size,
+            world_size,
+            local_tensor,
+            ag_buffer,
+            signal_buffer,
+            intranode_ag_stream,
+            None,
+            for_correctness=for_correctness,
+        )
     else:
-        if local_world_size == world_size:
-            return cp_engine_producer_all_gather_intra_node(
-                rank,
-                world_size,
-                local_tensor,
-                ag_buffer,
-                signal_buffer,
-                intranode_ag_stream,
-                for_correctness=for_correctness,
-                all_gather_method=all_gather_method,
-            )
-        elif all_gather_method == AllGatherMethod.Ring2D_InterNode:
-            cp_engine_producer_all_gather_ring_push_2d_inter_node(
-                rank,
-                local_world_size,
-                world_size,
-                local_tensor,
-                ag_buffer,
-                signal_buffer,
-                intranode_ag_stream,
-                internode_ag_stream,
-                for_correctness=for_correctness,
-            )
-        else:
-            raise Exception(f"Unsupported allgather method: {all_gather_method}")
+        raise Exception(f"Unsupported allgather method: {all_gather_method}")

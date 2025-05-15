@@ -22,8 +22,8 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-from .allgather import get_auto_all_gather_method, AllGatherMethod, cp_engine_producer_all_gather_intra_node, inter_node_allgather
-from .allgather_gemm import ag_gemm_intra_node, create_ag_gemm_intra_node_context, ag_gemm_inter_node, create_ag_gemm_inter_node_context, gemm_persistent, gemm_non_persistent
+from .allgather import get_auto_all_gather_method, AllGatherMethod, cp_engine_producer_all_gather_intra_node, cp_engine_producer_all_gather_inter_node
+from .allgather_gemm import ag_gemm, create_ag_gemm_context, gemm_persistent, gemm_non_persistent
 from .low_latency_allgather import (fast_allgather, create_fast_allgather_context, _forward_pull_kernel,
                                     _forward_push_2d_kernel, _forward_push_3d_kernel, _forward_push_2d_ll_kernel,
                                     _forward_push_2d_ll_multimem_kernel, _forward_push_numa_2d_ll_kernel,
@@ -52,13 +52,11 @@ __all__ = [
     "_forward_push_numa_2d_kernel",
     "_forward_push_numa_2d_ll_kernel",
     "_forward_push_numa_2d_ll_multinode_kernel",
-    "ag_gemm_inter_node",
-    "ag_gemm_intra_node",
+    "ag_gemm",
     "ag_group_gemm_inter_node",
     "ag_group_gemm_intra_node",
     "all_to_all_post_process",
-    "create_ag_gemm_inter_node_context",
-    "create_ag_gemm_intra_node_context",
+    "create_ag_gemm_context",
     "create_ag_group_gemm_inter_node_context",
     "create_ag_group_gemm_intra_node_context",
     "create_all_to_all_context",
@@ -70,7 +68,7 @@ __all__ = [
     "get_auto_all_gather_method",
     "AllGatherMethod",
     "cp_engine_producer_all_gather_intra_node",
-    "inter_node_allgather",
+    "cp_engine_producer_all_gather_inter_node",
     "gemm_rs",
     "gemm_persistent",
     "gemm_non_persistent",

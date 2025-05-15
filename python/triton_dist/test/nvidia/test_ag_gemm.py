@@ -24,7 +24,7 @@
 ################################################################################
 import torch
 from triton_dist.autotuner import contextual_autotune
-from triton_dist.kernels.nvidia import ag_gemm_intra_node, create_ag_gemm_intra_node_context
+from triton_dist.kernels.nvidia import ag_gemm, create_ag_gemm_context
 
 import argparse
 import os
@@ -75,7 +75,7 @@ run: python {os.path.abspath(__file__)} --case XXX
 
 
 @register_test("correctness")
-def test_ag_gemm_intra_node(args, autotune=False):
+def test_ag_gemm(args, autotune=False):
     device = "cuda"
     dtype = torch.float16
     rank = args.rank
@@ -94,21 +94,15 @@ def test_ag_gemm_intra_node(args, autotune=False):
 
     debug = args.debug
 
-    ag_stream = torch.cuda.Stream()
-    gemm_stream = torch.cuda.Stream()
-
-    ctx = create_ag_gemm_intra_node_context(A, B, rank, num_ranks, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
-                                            for_correctness=debug, ag_stream=ag_stream, gemm_stream=gemm_stream,
-                                            serial=False, autotune=False)
+    ctx = create_ag_gemm_context(A, B, rank, num_ranks, max_M=M, for_correctness=debug)
     if rank == 0:
         print(f"all gather with: {ctx.all_gather_method}")
 
     def func():
-        return ag_gemm_intra_node(A, B, ctx=ctx, persistent=args.persistent)
+        return ag_gemm(A, B, ctx=ctx, persistent=args.persistent, autotune=autotune)
 
     if autotune:
         _func = func
-        ctx.autotune = True
         func = contextual_autotune(is_dist=True)(lambda: _func())
 
     if rank == 0 and debug:
@@ -118,12 +112,12 @@ def test_ag_gemm_intra_node(args, autotune=False):
         os.environ["TRITON_ALWAYS_COMPILE"] = "0"
         os.environ["MLIR_ENABLE_DUMP"] = "0"
 
-    with group_profile("ag_gemm_intra_node_{os.environ['TORCHELASTIC_RUN_ID']}", args.profile, group=TP_GROUP):
+    with group_profile("ag_gemm_{os.environ['TORCHELASTIC_RUN_ID']}", args.profile, group=TP_GROUP):
         for i in range(5):
             # every time, use a new input data to check correctness
             A.random_()
             B.random_()
-            ctx.workspace_tensors[rank][:M].random_()
+            ctx.workspace_tensor[:M].random_()
             C = func()
 
     ag_A = torch.empty([M, K], dtype=dtype, device=device)
@@ -149,7 +143,7 @@ def test_ag_gemm_intra_node(args, autotune=False):
                 print("Pass!")
 
 
-register_test("correctness_autotune")(lambda args: test_ag_gemm_intra_node(args, autotune=True))
+register_test("correctness_autotune")(lambda args: test_ag_gemm(args, autotune=True))
 
 configs = {
     "LLaMA-7B": {"M": 8192, "N": 11008, "K": 4096, "BM": 128, "BN": 128, "BK": 64, "Stage": 5},
@@ -162,7 +156,7 @@ configs = {
 
 
 @register_test("perf")
-def test_perf_ag_gemm_tma_intra_node(args, autotune=False):
+def test_perf_ag_gemm_tma(args, autotune=False):
     device = "cuda"
     dtype = torch.float16
     rank = args.rank
@@ -184,38 +178,26 @@ def test_perf_ag_gemm_tma_intra_node(args, autotune=False):
     A = torch.randn([M_per_rank, K], dtype=dtype, device=device)
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
 
-    ag_stream = torch.cuda.Stream(priority=-1)
+    ag_intranode_stream = torch.cuda.Stream(priority=-1)
     gemm_stream = torch.cuda.Stream()
 
-    ctx = create_ag_gemm_intra_node_context(A, B, rank, num_ranks, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
-                                            stages=stages, for_correctness=False, ag_stream=ag_stream,
-                                            gemm_stream=gemm_stream, serial=False, autotune=False)
+    ctx = create_ag_gemm_context(A, B, rank, num_ranks, max_M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
+                                 stages=stages, for_correctness=False, ag_intranode_stream=ag_intranode_stream,
+                                 gemm_stream=gemm_stream)
 
     def func():
-        return ag_gemm_intra_node(A, B, ctx=ctx, persistent=args.persistent)
+        return ag_gemm(A, B, ctx=ctx, persistent=args.persistent, autotune=autotune)
 
     if autotune:
         _func = func
-        ctx.autotune = True
         func = contextual_autotune(is_dist=True)(lambda: _func())
 
     C, duration_ms = perf_func(func, iters=10, warmup_iters=5)
     dist_print(f"rank{RANK}: {duration_ms:0.2f} ms/iter", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
-    with torch.profiler.profile(
-            activities=[
-                torch.profiler.ProfilerActivity.CUDA,
-                torch.profiler.ProfilerActivity.CPU,
-            ],
-            record_shapes=True,
-            profile_memory=True,
-    ) as profiler:
+    with group_profile("ag_gemm_perf_{os.environ['TORCHELASTIC_RUN_ID']}", args.profile, group=TP_GROUP):
         for i in range(20):
             func()
-
-    prof_dir = "prof/trace_ag_gemm_intra_node"
-    os.makedirs(prof_dir, exist_ok=True)
-    profiler.export_chrome_trace(f"{prof_dir}/rank{RANK}.json")
     ag_A = torch.empty([M, K], dtype=dtype, device=device)
     torch.distributed.all_gather_into_tensor(
         ag_A,
@@ -227,7 +209,7 @@ def test_perf_ag_gemm_tma_intra_node(args, autotune=False):
     return duration_ms
 
 
-register_test("perf_tma_autotune")(lambda args: test_perf_ag_gemm_tma_intra_node(args, autotune=True))
+register_test("perf_tma_autotune")(lambda args: test_perf_ag_gemm_tma(args, autotune=True))
 
 if __name__ == "__main__":
     RANK = int(os.environ.get("RANK", 0))
