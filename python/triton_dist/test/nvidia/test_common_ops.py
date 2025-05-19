@@ -72,7 +72,7 @@ def test_barrier_all_intra_node_non_atomic():
     for n in range(1000):
         _random_sleep()
         # print(f"iter {n}", flush=True)
-        barrier_all_intra_node_non_atomic[(random.randint(1, 1024), )](LOCAL_RANK, LOCAL_WORLD_SIZE,
+        barrier_all_intra_node_non_atomic[(random.randint(1, 1024), )](LOCAL_RANK, RANK, LOCAL_WORLD_SIZE,
                                                                        symm_flags[LOCAL_RANK], n + 1)
 
     print("✅ barrier_all_intra_node_non_atomic passed")
@@ -84,13 +84,13 @@ def test_barrier_all_intra_node():
         return
 
     print(">> barrier_all_intra_node_atomic_cas_block start...")
-    symm_flags = pynvshmem.nvshmem_create_tensor_list_intra_node((LOCAL_WORLD_SIZE, ), torch.int32)
-    symm_flags[LOCAL_RANK].fill_(0)
+    symm_flag = pynvshmem.nvshmem_create_tensor((LOCAL_WORLD_SIZE, ), torch.int32)
+    symm_flag.fill_(0)
     pynvshmem.nvshmem_barrier_all()
 
     for n in range(1000):
         _random_sleep()
-        barrier_all_intra_node_atomic_cas_block[(1, )](LOCAL_RANK, LOCAL_WORLD_SIZE, symm_flags[LOCAL_RANK])
+        barrier_all_intra_node_atomic_cas_block[(1, )](LOCAL_RANK, RANK, LOCAL_WORLD_SIZE, symm_flag)
 
     print("✅ barrier_all_intra_node_atomic_cas_block passed")
 

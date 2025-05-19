@@ -14,7 +14,7 @@ from triton.runtime import _allocation
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
 
-dirname = os.path.dirname(os.path.realpath(__file__))
+dirname = os.path.dirname(os.path.abspath(__file__))
 include_dir = [os.path.join(dirname, "include")]
 libdevice_dir = os.path.join(dirname, "lib")
 libraries = ['cuda']
@@ -597,10 +597,10 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas
       launch_attribute[0].val.clusterDim.x = clusterDimX;
       launch_attribute[0].val.clusterDim.y = clusterDimY;
       launch_attribute[0].val.clusterDim.z = clusterDimZ;
-      
+
       launch_attribute[1].id = cudaLaunchAttributeClusterSchedulingPolicyPreference;
       launch_attribute[1].val.clusterSchedulingPolicyPreference = cudaClusterSchedulingPolicySpread;
-      
+
       if (0 != launch_cooperative_grid) {{
           launch_attribute[2].id = cudaLaunchAttributeCooperative;
           launch_attribute[2].val.cooperative = true;

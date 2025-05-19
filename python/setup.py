@@ -30,11 +30,11 @@ from wheel.bdist_wheel import bdist_wheel
 
 import pybind11
 
-from build_helpers import get_base_dir, get_cmake_dir, copy_apply_patches
+from build_helpers import create_symlink_rel, get_base_dir, get_cmake_dir, softlink_apply_patches
 
 from torch.utils.cpp_extension import BuildExtension as TorchBuildExtension
 
-copy_apply_patches()
+softlink_apply_patches()
 
 
 @dataclass
@@ -277,7 +277,8 @@ def update_symlink(link_path, source_path):
 
     print(f"creating symlink: {link_path} -> {source_path}", file=sys.stderr)
     link_path.absolute().parent.mkdir(parents=True, exist_ok=True)  # Ensure link's parent directory exists
-    link_path.symlink_to(source_path, target_is_directory=True)
+    base_dir = Path(__file__).parent.parent
+    create_symlink_rel(source_path, link_path, base_dir)
 
 
 def get_thirdparty_packages(packages: list):

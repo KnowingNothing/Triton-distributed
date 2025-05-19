@@ -195,7 +195,7 @@ def reducer_scatter_intra_node(input, scatter_bufs, sync_buf, local_rank, local_
     intra_node_scatter(input, scatter_bufs, local_rank, stream)
 
     # step 2: waits for all ranks to complete the scatter.
-    barrier_all_intra_node_atomic_cas_block[(1, )](local_rank, local_world_size, sync_buf)
+    barrier_all_intra_node_atomic_cas_block[(1, )](local_rank, local_rank, local_world_size, sync_buf)
     # step 3: perform reduction to get the result of the intra-node reduce-scatter.
     ring_reduce(scatter_bufs[local_rank], output, local_rank, local_world_size, stream)
     return output
@@ -219,6 +219,8 @@ if __name__ == "__main__":
     LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
     TP_GROUP = triton_dist.utils.initialize_distributed()
     torch.cuda.synchronize()
+
+    assert LOCAL_WORLD_SIZE == WORLD_SIZE, "runs on 1 node expected."
 
     dtype = torch.bfloat16
     M, N = 8192, 16384

@@ -10,6 +10,7 @@ from triton.language.extra.cuda.language_extra import (
     ffs,
     __ballot_sync,
     st,
+    tid,
 )
 
 
@@ -25,9 +26,22 @@ def warp_prefix_sum_kernel(value, lane_id, len):
     return value
 
 
+@triton.jit
+def swizzle_tiled_m_with_padding(pid_m, num_pid_m_per_rank, node_id, rank, LOCAL_WORLD_SIZE, NNODES):
+    m_rank = pid_m // num_pid_m_per_rank
+    pid_m_intra_rank = pid_m - m_rank * num_pid_m_per_rank
+    m_node_id = m_rank // LOCAL_WORLD_SIZE
+    m_local_rank = m_rank % LOCAL_WORLD_SIZE
+    swizzle_m_node_id = (m_node_id + node_id + 1) % NNODES
+    swizzle_m_local_rank = (m_local_rank + rank + 1) % LOCAL_WORLD_SIZE
+    swizzle_m_rank = swizzle_m_node_id * LOCAL_WORLD_SIZE + swizzle_m_local_rank
+    # rank swizzle
+    pid_m = swizzle_m_rank * num_pid_m_per_rank + pid_m_intra_rank
+    return pid_m
+
+
 @triton.jit(do_not_specialize=["rank"])
 def threadblock_swizzle_gemm_reduce_scatter_kernel(
-    output,
     tiled_m,
     M,
     rank,
@@ -112,15 +126,31 @@ def threadblock_swizzle_gemm_reduce_scatter_kernel(
 
     # map rank
     tiled_m_intra_node_new = (tiled_m_intra_node + rank_offset) % tile_size
-    st(output, swizzled_node_offset + tiled_m_intra_node_new)
+    return swizzled_node_offset + tiled_m_intra_node_new
 
 
 def threadblock_swizzle_gemm_reduce_scatter_triton(tiled_m, M, rank, WORLD_SIZE, NNODES, BLOCK_SIZE_M):
     import torch
 
+    @triton.jit
+    def _threadblock_swizzle_run(
+        output,
+        tiled_m,
+        M,
+        rank,
+        WORLD_SIZE: tl.constexpr,
+        NNODES: tl.constexpr,
+        BLOCK_SIZE_M: tl.constexpr,
+        DEBUG: tl.constexpr = False,
+    ):
+        thread_idx = tid(0)
+        tiled_m_new = threadblock_swizzle_gemm_reduce_scatter_kernel(tiled_m, M, rank, WORLD_SIZE, NNODES, BLOCK_SIZE_M,
+                                                                     DEBUG)
+        if thread_idx == 0:
+            st(output, tiled_m_new)
+
     output = torch.empty((1, ), dtype=torch.int32, device="cuda")
-    threadblock_swizzle_gemm_reduce_scatter_kernel[(1, )](output, tiled_m, M, rank, WORLD_SIZE, NNODES, BLOCK_SIZE_M,
-                                                          num_warps=1)
+    _threadblock_swizzle_run[(1, )](output, tiled_m, M, rank, WORLD_SIZE, NNODES, BLOCK_SIZE_M, num_warps=1)
     return int(output.item())
 
 

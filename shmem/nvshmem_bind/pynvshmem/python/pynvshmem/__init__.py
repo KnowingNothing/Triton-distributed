@@ -27,6 +27,7 @@ from typing import Sequence
 
 import torch
 import torch.distributed
+import weakref
 
 try:
     from triton._C._pynvshmem import nvshmem_malloc, nvshmem_free, nvshmem_ptr, nvshmem_team_n_pes, nvshmem_team_my_pe, nvshmem_my_pe, nvshmemx_get_uniqueid, nvshmemx_init_attr_with_uniqueid, nvshmem_barrier_all
@@ -106,13 +107,15 @@ class SymmCudaBuffer:
             "strides": None,  # Contiguous memory
             "version": 3,
         }
+        self._finializer = weakref.finalize(self, self._finialize)
 
-    def __del__(self):
+    def _finialize(self):
         if self.own_data:
             with torch.cuda.device(self._device):
                 torch.cuda.synchronize()
                 nvshmem_free(self.ptr)
                 torch.cuda.synchronize()
+            self.own_data = False
 
 
 def symm_tensor(tensor: torch.Tensor, peer: int) -> torch.Tensor:

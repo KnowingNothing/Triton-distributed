@@ -111,6 +111,34 @@ def n_pes(_builder=None):
 
 
 @core.extern
+def team_my_pe(team, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team],
+        {
+            (tl.int32, ): ("nvshmem_team_my_pe", core.dtype("int32")),
+        },
+        is_pure=True,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def team_n_pes(team, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team],
+        {
+            (tl.int32, ): ("nvshmem_team_n_pes", core.dtype("int32")),
+        },
+        is_pure=True,
+        _builder=_builder,
+    )
+
+
+@core.extern
 def int_p(dest, value, pe, _builder=None):
     # force have a return value, even not used.
     return extern_call(
@@ -182,6 +210,20 @@ def remote_mc_ptr(team, ptr, _builder=None):
 
 
 @core.extern
+def barrier(team, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team],
+        {
+            (tl.int32, ): ("nvshmem_barrier", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
 def barrier_all(_builder=None):
     return extern_call(
         "libnvshmem_device",
@@ -196,6 +238,20 @@ def barrier_all(_builder=None):
 
 
 @core.extern
+def barrier_block(team, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team],
+        {
+            (tl.int32, ): ("nvshmemx_barrier_block", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
 def barrier_all_block(_builder=None):
     return extern_call(
         "libnvshmem_device",
@@ -203,6 +259,20 @@ def barrier_all_block(_builder=None):
         [],
         {
             (): ("nvshmemx_barrier_all_block", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def barrier_warp(team, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team],
+        {
+            (tl.int32, ): ("nvshmemx_barrier_warp", ()),
         },
         is_pure=False,
         _builder=_builder,
@@ -259,6 +329,48 @@ def sync_all_warp(_builder=None):
         [],
         {
             (): ("nvshmemx_sync_all_warp", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def sync(team, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team],
+        {
+            (tl.int32, ): ("nvshmem_sync", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def team_sync_block(team, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team],
+        {
+            (tl.int32, ): ("nvshmemx_team_sync_block", ()),
+        },
+        is_pure=False,
+        _builder=_builder,
+    )
+
+
+@core.extern
+def team_sync_warp(team, _builder=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [team],
+        {
+            (tl.int32, ): ("nvshmemx_team_sync_warp", ()),
         },
         is_pure=False,
         _builder=_builder,

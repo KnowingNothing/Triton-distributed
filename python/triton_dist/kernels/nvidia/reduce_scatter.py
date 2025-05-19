@@ -776,6 +776,7 @@ def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
         rs_result_per_node = reducer_scatter_for_each_node_ring(input, stream, ctx)
     else:
         rs_result_per_node = reducer_scatter_for_each_node(input, stream, ctx)
+
     barrier_all_on_stream(stream)
     output = torch.empty((M_per_rank, N), dtype=input.dtype, device=input.device)
     with torch.cuda.stream(stream):

@@ -25,16 +25,54 @@
 import triton
 import triton.language as tl
 from triton.language.extra import libshmem_device
-from triton.language.extra.cuda.language_extra import tid, ntid, __syncthreads, multimem_st_b64, load_v2_b64
+from triton.language.extra.cuda import libnvshmem_device
+from triton.language.extra.cuda.language_extra import tid, ntid, __syncthreads, multimem_st_b64, load_v2_b64, st
 import torch
 import torch.distributed
 from triton_dist import pynvshmem
 import os
 import datetime
 
+from triton_dist.test.nvidia.test_ep_a2a import LOCAL_WORLD_SIZE
+
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
 RANK = int(os.environ.get("RANK", 0))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
+
+
+def test_nvshmem_basic():
+
+    @triton.jit
+    def _nvshmem_basic(output):
+        thread_idx = tid(axis=0)
+        if thread_idx == 0:
+            st(output, libnvshmem_device.my_pe())
+            output += 1
+            st(output, libnvshmem_device.team_my_pe(libnvshmem_device.NVSHMEM_TEAM_WORLD))
+            output += 1
+            st(output, libnvshmem_device.team_my_pe(libnvshmem_device.NVSHMEMX_TEAM_NODE))
+            output += 1
+
+            st(output, libnvshmem_device.n_pes())
+            output += 1
+            st(output, libnvshmem_device.team_n_pes(libnvshmem_device.NVSHMEM_TEAM_WORLD))
+            output += 1
+            st(output, libnvshmem_device.team_n_pes(libnvshmem_device.NVSHMEMX_TEAM_NODE))
+
+    print("nvshmem basic start...")
+    output = pynvshmem.nvshmem_create_tensor((6, ), torch.int32)
+    _nvshmem_basic[(1, )](output)
+    pynvshmem.nvshmem_barrier_all()
+    try:
+        torch.testing.assert_close(
+            output,
+            torch.tensor([RANK, RANK, LOCAL_RANK, WORLD_SIZE, WORLD_SIZE, LOCAL_WORLD_SIZE], dtype=torch.int32,
+                         device="cuda")), output
+    except Exception as e:
+        print(" ❌ nvshmem basic failed")
+        raise (e)
+    else:
+        print("✅ nvshmem basic pass")
 
 
 def test_nvshmemx_getmem_with_scope(N, dtype: torch.dtype = torch.int8):
@@ -261,10 +299,18 @@ def test_nvshmem_signal():
 
     print("test nvshmemx_signal with pingpong...")
     t = pynvshmem.nvshmem_create_tensor((1, ), torch.uint64)
+    t.fill_(0)
+    pynvshmem.nvshmem_barrier_all()
     _pingpong[(1, )](t, 100, num_warps=1)
     pynvshmem.nvshmem_barrier_all()
-    print(t)
-    torch.cuda.synchronize()
+    if pynvshmem.nvshmem_my_pe() == 0:
+        try:
+            torch.testing.assert_close(t.to(torch.int32), torch.ones([1], dtype=torch.int32, device="cuda") * 100)
+        except Exception as e:
+            print("❌ nvshmemx_signal with pingpong failed")
+            raise e
+        else:
+            print("✅ nvshmemx_signal with pingpong pass")
 
 
 def test_nvshmemx_putmem_signal_with_scope(N, dtype: torch.dtype = torch.int8):
@@ -410,10 +456,28 @@ def test_nvshmem_barrier_sync_quiet_fence():
         libshmem_device.quiet()
         libshmem_device.fence()
 
+    @triton.jit
+    def _nvshmem_barrier_sync_quiet_fence_with_team(team):
+        pid = tl.program_id(axis=0)
+        thread_idx = tid(axis=0)
+        if pid == 0:
+            libshmem_device.barrier_block(team)
+            libshmem_device.team_sync_block(team)
+
+            if thread_idx / 32 == 0:
+                libshmem_device.barrier_warp(team)
+                libshmem_device.team_sync_warp(team)
+
+            if thread_idx == 0:
+                libshmem_device.barrier(team)
+
     print("test nvshmem_barrier/nvshmem_sync/nvshmem_quiet/nvshmem_fence all in one...")
     _nvshmem_barrier_sync_quiet_fence[(1, )](num_warps=4)
     torch.cuda.synchronize()
-    print("✅ nvshmem_barrier/nvshmem_sync/nvshmem_quiet/nvshmem_fence pased...")
+    print("✅ nvshmem_barrier_all/nvshmem_sync/nvshmem_quiet/nvshmem_fence pased...")
+    _nvshmem_barrier_sync_quiet_fence_with_team[(1, )](pynvshmem.NVSHMEMX_TEAM_NODE, num_warps=4)
+    torch.cuda.synchronize()
+    print("✅ nvshmem_barrier/nvshmemx_team_sync pased...")
 
 
 def test_nvshmem_broadcast(N, dtype: torch.dtype = torch.int8):
@@ -583,6 +647,7 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
 
+    test_nvshmem_basic()
     test_nvshmemx_getmem_with_scope(31 * WORLD_SIZE, torch.int8)
     test_nvshmemx_putmem_with_scope(16 * WORLD_SIZE, torch.int8)
     test_nvshmemx_putmem_signal_with_scope(20 * WORLD_SIZE, torch.int8)

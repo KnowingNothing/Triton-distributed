@@ -57,6 +57,18 @@ def barrier_all_warp():
     ...
 
 
+def barrier(team):
+    ...
+
+
+def barrier_block(team):
+    ...
+
+
+def barrier_warp(team):
+    ...
+
+
 def sync_all():
     ...
 
@@ -66,6 +78,14 @@ def sync_all_block():
 
 
 def sync_all_warp():
+    ...
+
+
+def team_sync_block(team):
+    ...
+
+
+def team_sync_warp(team):
     ...
 
 

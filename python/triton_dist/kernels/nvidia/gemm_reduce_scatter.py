@@ -34,6 +34,7 @@ from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add
 from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.reduce_scatter import (ReduceScatter2DContext, create_reduce_scater_2d_ctx,
                                                        reduce_scatter_2d_op)
+from triton_dist.kernels.nvidia.gemm_rs_threadblock_swizzle import threadblock_swizzle_gemm_reduce_scatter_kernel
 
 
 ################### context ###################
@@ -95,20 +96,6 @@ def swizzle_2d(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M: tl.constexpr):
     return pid_m, pid_n
 
 
-@triton.jit
-def swizzle_tiled_m_with_padding(pid_m, num_pid_m_per_rank, node_id, rank, LOCAL_WORLD_SIZE, NNODES):
-    m_rank = pid_m // num_pid_m_per_rank
-    pid_m_intra_rank = pid_m - m_rank * num_pid_m_per_rank
-    m_node_id = m_rank // LOCAL_WORLD_SIZE
-    m_local_rank = m_rank % LOCAL_WORLD_SIZE
-    swizzle_m_node_id = (m_node_id + node_id + 1) % NNODES
-    swizzle_m_local_rank = (m_local_rank + rank + 1) % LOCAL_WORLD_SIZE
-    swizzle_m_rank = swizzle_m_node_id * LOCAL_WORLD_SIZE + swizzle_m_local_rank
-    # rank swizzle
-    pid_m = swizzle_m_rank * num_pid_m_per_rank + pid_m_intra_rank
-    return pid_m
-
-
 # TMA related test
 def _matmul_launch_metadata(grid, kernel, args):
     ret = {}
@@ -150,7 +137,6 @@ def kernel_gemm_rs_producer_persistent(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
     num_tiles = num_pid_m * num_pid_n
-    node_id = rank // LOCAL_WORLD_SIZE
     NNODES = WORLD_SIZE // LOCAL_WORLD_SIZE
 
     a_desc = tl.make_tensor_descriptor(
@@ -188,20 +174,17 @@ def kernel_gemm_rs_producer_persistent(
     offs_bn = 0
 
     M_per_rank = M // WORLD_SIZE
-    # M_per_rank % BLOCK_SIZE_M == 0 is guaranteed by the caller
-    num_pid_m_per_rank = M_per_rank // BLOCK_SIZE_M
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    pid_m_offset = rank * M_per_rank // BLOCK_SIZE_M
+    pid_m_offset = (rank + 1) * M_per_rank // BLOCK_SIZE_M
 
     for _ in range(0, k_tiles * tiles_per_SM):
         ki = tl.where(ki == k_tiles - 1, 0, ki + 1)
         if ki == 0:
             tile_id += NUM_SMS
             pid_m, pid_n = swizzle_2d(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
-
-            if NNODES != 1:  # with padding
-                pid_m = swizzle_tiled_m_with_padding(pid_m, num_pid_m_per_rank, node_id, rank, LOCAL_WORLD_SIZE, NNODES)
+            if NNODES != 1:  # with complex threadblock swizzle logic
+                pid_m = threadblock_swizzle_gemm_reduce_scatter_kernel(pid_m, M, rank, WORLD_SIZE, NNODES, BLOCK_SIZE_M)
             else:
                 pid_m = (pid_m + pid_m_offset) % num_pid_m
 
@@ -283,7 +266,6 @@ def kernel_gemm_rs_producer_non_persistent(
     # IS_FP8 = tl.constexpr(a_dtype == tl.float8e4nv) or tl.constexpr(a_dtype == tl.float8e5)
 
     rank = dl.rank()
-    node_id = rank // LOCAL_WORLD_SIZE
     NNODES = WORLD_SIZE // LOCAL_WORLD_SIZE
 
     pid = tl.program_id(axis=0)
@@ -291,14 +273,13 @@ def kernel_gemm_rs_producer_non_persistent(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
 
     M_per_rank = M // WORLD_SIZE
-    num_pid_m_per_rank = tl.cdiv(M_per_rank, BLOCK_SIZE_M)
     # TODO(houqi.1993) M_per_rank % BLOCK_SIZE_M == 0 is guaranteed by the caller for multi-node
     pid_m, pid_n = swizzle_2d(pid, num_pid_m, num_pid_n, GROUP_SIZE_M)
 
-    if NNODES != 1:  # with padding
-        pid_m = swizzle_tiled_m_with_padding(pid_m, num_pid_m_per_rank, node_id, rank, LOCAL_WORLD_SIZE, NNODES)
+    if NNODES != 1:  # with complex threadblock swizzle logic
+        pid_m = threadblock_swizzle_gemm_reduce_scatter_kernel(pid_m, M, rank, WORLD_SIZE, NNODES, BLOCK_SIZE_M)
     else:
-        pid_m_offset = rank * M_per_rank // BLOCK_SIZE_M
+        pid_m_offset = (rank + 1) * M_per_rank // BLOCK_SIZE_M
         pid_m = (pid_m + pid_m_offset) % num_pid_m
 
     # ----------------------------------------------------------
@@ -369,11 +350,6 @@ def gemm_rs_producer_persistent(a, b, c, barrier, workspace, world_size, local_w
     M, local_K = a.shape
     N, local_K = b.shape
 
-    M_per_rank = M // world_size
-
-    if world_size != local_world_size:
-        assert M_per_rank % triton_config["BLOCK_SIZE_M"] == 0
-
     current_stream = torch.cuda.current_stream()
     gemm_stream.wait_stream(current_stream)
 
@@ -405,11 +381,6 @@ def gemm_rs_producer_non_persistent(a, b, c, barrier, workspace, world_size, loc
 
     M, local_K = a.shape
     N, local_K = b.shape
-
-    M_per_rank = M // world_size
-
-    if world_size != local_world_size:
-        assert M_per_rank % triton_config.kwargs["BLOCK_SIZE_M"] == 0
 
     current_stream = torch.cuda.current_stream()
     gemm_stream.wait_stream(current_stream)
@@ -491,8 +462,6 @@ def gemm_rs_op(input, weight, ctx: GEMMReduceScatterTensorParallelContext, persi
 
     orig_M = input.shape[0]
     orig_M_per_rank = orig_M // world_size
-    if ctx.rs_ctx.nnodes != 1:
-        input = padded_to_BLOCK_M(input, world_size, ctx.BLOCK_M)
     M, local_K = input.shape
     N = weight.shape[0]
     assert N == ctx.rs_ctx.N

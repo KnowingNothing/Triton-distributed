@@ -69,8 +69,9 @@ def copy_kernel(
     tl.store(dst_ptr, data, mask=mask_dst)
 
 
-@triton.jit(do_not_specialize=["rank", "num_ranks", "flag_value"])
-def copy_and_barrier_all_inter_node_kernel(
+@triton.jit(do_not_specialize=["local_rank", "rank", "num_ranks", "flag_value"])
+def copy_and_barrier_all_intra_node_kernel(
+    local_rank,
     rank,
     num_ranks,
     local_buf_ptr,
@@ -87,22 +88,23 @@ def copy_and_barrier_all_inter_node_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
 ):
-    barrier_all_intra_node_non_atomic(rank, num_ranks, symm_sync_ptr, flag_value)
+    barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_sync_ptr, flag_value)
     copy_kernel(rank, local_buf_ptr, global_buf_ptr, M_per_rank, N, stride_local_m, stride_local_n, stride_global_m,
                 stride_global_n, BLOCK_SIZE_M, BLOCK_SIZE_N)
     thread_idx = tid(0)
     if thread_idx < num_ranks:  # set symm barrier
         st(symm_barrier_ptr + thread_idx, 1 if thread_idx == rank else 0)
-    barrier_all_intra_node_non_atomic(rank, num_ranks, symm_sync_ptr, flag_value + 1)
+    barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_sync_ptr, flag_value + 1)
 
 
-def local_copy_and_barrier_all(rank, num_ranks, local_data, global_data, comm_buf, barrier_ptr, M_per_rank, N, phase,
-                               is_internode: bool = False):
+def local_copy_and_barrier_all(local_rank, rank, num_ranks, local_data, global_data, comm_buf, barrier_ptr, M_per_rank,
+                               N, phase, is_internode: bool = False):
     if not is_internode:
         grid = lambda META: (triton.cdiv(M_per_rank, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
-        copy_and_barrier_all_inter_node_kernel[grid](rank, num_ranks, local_data, global_data, barrier_ptr, comm_buf,
-                                                     M_per_rank, N, local_data.stride(0), local_data.stride(1),
-                                                     global_data.stride(0), global_data.stride(1), phase, 128, 256)
+        copy_and_barrier_all_intra_node_kernel[grid](local_rank, rank, num_ranks, local_data,
+                                                     global_data, barrier_ptr, comm_buf, M_per_rank, N,
+                                                     local_data.stride(0), local_data.stride(1), global_data.stride(0),
+                                                     global_data.stride(1), phase, 128, 256)
 
     else:
         pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
@@ -545,7 +547,7 @@ def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext = None, rank=None, num
         ctx: (AllGatherGEMMTensorParallelContext, Optional): if not provided, created immediately
         rank (int, Optional): current rank, used for creating AllGatherGEMMTensorParallelContext
         num_ranks (int, Optional): total number of ranks, used for creating AllGatherGEMMTensorParallelContext
-        persistent (bool, Optional): whether to use persistent GEMM kernel 
+        persistent (bool, Optional): whether to use persistent GEMM kernel
         autotune(bool, Optional): whether to use autotuned GEMM kernel
 
     Returns:
@@ -571,8 +573,8 @@ def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext = None, rank=None, num
 
     C = torch.empty([ctx.num_ranks * M_per_rank, N_per_rank], dtype=a.dtype, device=a.device)
 
-    local_copy_and_barrier_all(ctx.rank, ctx.num_ranks, a, ctx.workspace_tensor, ctx.comm_buf, ctx.barrier_tensor,
-                               M_per_rank, K, ctx.phase, is_internode=ctx.is_multinode)
+    local_copy_and_barrier_all(ctx.local_rank, ctx.rank, ctx.num_ranks, a, ctx.workspace_tensor, ctx.comm_buf,
+                               ctx.barrier_tensor, M_per_rank, K, ctx.phase, is_internode=ctx.is_multinode)
     ctx.phase += 2
 
     rowise_ag_gemm_dispatcher(a, b, C, ctx, persistent=persistent, autotune=autotune)
