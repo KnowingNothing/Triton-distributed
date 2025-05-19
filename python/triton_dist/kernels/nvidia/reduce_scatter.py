@@ -36,7 +36,7 @@ from triton.language.extra import libshmem_device
 
 import triton_dist.language as dl
 from triton_dist.kernels.nvidia.common_ops import (barrier_all_on_stream, set_signal, wait_eq, barrier_on_this_grid)
-from triton_dist.utils import (CUDA_CHECK, get_has_nvlink)
+from triton_dist.utils import (CUDA_CHECK, get_has_fullmesh_nvlink)
 from triton.language.extra.cuda.language_extra import tid, __syncthreads, ld, st
 
 SIGNAL_DTYPE = torch.uint64
@@ -772,7 +772,7 @@ def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
     M, N = input.shape
     M_per_rank = M // ctx.world_size
     ctx.p2p_stream.wait_stream(stream)
-    if not get_has_nvlink():
+    if not get_has_fullmesh_nvlink():
         rs_result_per_node = reducer_scatter_for_each_node_ring(input, stream, ctx)
     else:
         rs_result_per_node = reducer_scatter_for_each_node(input, stream, ctx)

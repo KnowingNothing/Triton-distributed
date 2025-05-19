@@ -234,7 +234,8 @@ if __name__ == "__main__":
         exit(0)
 
     input, weight, bias = _make_data(args.M)
-    with group_profile(f"gemm_rs_{os.environ['TORCHELASTIC_RUN_ID']}", args.profile, group=TP_GROUP):
+    with group_profile(f"gemm_rs_{args.M}x{args.N}x{args.K}_{os.environ['TORCHELASTIC_RUN_ID']}", args.profile,
+                       group=TP_GROUP):
         torch_output, torch_perf = perf_func(partial(torch_gemm_rs, input, weight, bias, TP_GROUP), iters=args.iters,
                                              warmup_iters=args.warmup)
 

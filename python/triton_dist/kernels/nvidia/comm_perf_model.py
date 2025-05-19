@@ -1,0 +1,82 @@
+import functools
+
+import torch
+import os
+import subprocess
+
+from triton_dist.utils import get_has_fullmesh_nvlink
+
+
+@functools.lru_cache()
+def get_network_interfaces(no_local_and_loopbacks=True):
+    """Get list of all network interfaces using sysfs"""
+
+    def _is_local_interface(interface):
+        return (interface.startswith("lo") or interface.startswith("docker") or interface.startswith("carma_br")
+                or interface.startswith("veth") or interface.startswith("br-") or interface.startswith("tun")
+                or interface.startswith("lxc") or interface.startswith("qemu"))
+
+    nics = os.listdir("/sys/class/net/")
+    if no_local_and_loopbacks:
+        nics = [nic for nic in nics if not _is_local_interface(nic)]
+    return nics
+
+
+@functools.lru_cache(maxsize=16)
+def get_max_nic_bandwidth_gpbs(interface="eth0"):
+    """
+    Get maximum theoretical bandwidth of a NIC (in Gbps).
+    Returns -1 if unknown.
+    """
+    # Linux sysfs method
+    if os.path.exists(f"/sys/class/net/{interface}/speed"):
+        try:
+            with open(f"/sys/class/net/{interface}/speed", "r") as f:
+                speed_mbps = int(f.read().strip())
+                return speed_mbps / 1000  # Convert Mbps to Gbps
+        except Exception:
+            pass
+
+    # Linux ethtool fallback
+    try:
+        result = subprocess.run(["ethtool", interface], capture_output=True, text=True, check=True)
+        for line in result.stdout.split("\n"):
+            if "Speed:" in line:
+                speed_str = line.split("Speed:")[1].strip()
+                if "Gb/s" in speed_str:
+                    return float(speed_str.replace("Gb/s", "").strip())
+                elif "Mb/s" in speed_str:
+                    return float(speed_str.replace("Mb/s", "").strip()) / 1000
+    except Exception:
+        pass
+
+    raise Exception(f"Could not determine max bandwidth for {interface}")
+
+
+@functools.lru_cache()
+def get_nic_bandwidth_per_gpu():
+    interfaces = get_network_interfaces()
+    bws = [get_max_nic_bandwidth_gpbs(interface) for interface in interfaces]
+    # suppose use the max speed ones only
+    max_bw = max(bws)
+    outs = [(interface, bw) for interface, bw in zip(interfaces, bws) if bw == max_bw]
+    total_bw = sum([x[1] for x in outs]) / 8  # from Gbps => GB/s
+    return total_bw / torch.cuda.device_count()
+
+
+def estimate_reduce_scatter_time(nbytes, world_size, local_world_size, intranode_bw, internode_bw):
+    """
+    return in ms
+    """
+    if world_size != local_world_size:
+        assert world_size % local_world_size == 0
+        nnodes = world_size // local_world_size
+        intra_node_ms = nbytes / world_size * (local_world_size - 1) / 1e9 / intranode_bw
+        inter_node_ms = nbytes / world_size / 1e9 / internode_bw
+        if get_has_fullmesh_nvlink():
+            # with nvlink full mesh, intra/inter node overlaps
+            return min(intra_node_ms, inter_node_ms) * (nnodes - 1) + intra_node_ms
+        else:
+            return (intra_node_ms + inter_node_ms) * (nnodes - 1) + intra_node_ms
+
+    return nbytes / 1e9 / local_world_size * (local_world_size - 1) / intranode_bw

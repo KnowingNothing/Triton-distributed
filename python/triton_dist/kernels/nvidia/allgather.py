@@ -36,7 +36,7 @@ import triton
 import triton.language as tl
 from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.common_ops import set_signal, wait_eq
-from triton_dist.utils import CUDA_CHECK, get_numa_world_size, get_has_nvlink
+from triton_dist.utils import CUDA_CHECK, get_numa_world_size, get_has_fullmesh_nvlink
 from triton.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import __syncthreads, tid
 
@@ -53,7 +53,7 @@ class AllGatherMethod(Enum):
 
 @functools.lru_cache()
 def get_auto_all_gather_method(num_ranks, num_local_ranks):
-    if (get_has_nvlink()):  # TODO(houqi.1993) should provide a better way for hardware with NVLink but no NVSwitch
+    if get_has_fullmesh_nvlink():
         if num_ranks == num_local_ranks:
             return AllGatherMethod.All2All_IntraNode
         else:

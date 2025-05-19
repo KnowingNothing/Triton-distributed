@@ -10,6 +10,10 @@ from triton.language.extra.cuda.language_extra import (
     atomic_add,
     atomic_add_per_warp,
     __shfl_up_sync_i32,
+    __shfl_down_sync_i32,
+    __shfl_sync_i32,
+    __shfl_xor_sync_i32,
+    __ballot_sync,
     __syncthreads,
 )
 
@@ -122,6 +126,142 @@ def test_atomic_add():
 def test_shfl_sync():
 
     @triton.jit
+    def shfl_sync_kernel(input, output, index, width):
+        thread_idx = tid(0)
+        x = ld(input + thread_idx, scope="gpu", semantic="relaxed")
+        y = __shfl_sync_i32(0xFFFFFFFF, x, index)
+        st(output + thread_idx, y, scope="gpu", semantic="relaxed")
+
+    output = torch.zeros(64, device="cuda", dtype=torch.int32)
+    delta = 5
+    shfl_sync_kernel[(1, )](
+        torch.arange(64, device="cuda", dtype=torch.int32),
+        output,
+        delta,
+        32,
+        num_warps=2,
+    )
+
+    assert torch.allclose(
+        output,
+        torch.cat((
+            torch.ones(32, dtype=torch.int32) * delta,
+            torch.ones(32, dtype=torch.int32) * (delta + 32),
+        )).cuda()), output
+    print("✅ [shfl_sync] passed.")
+
+
+def test_shfl_up_sync():
+
+    @triton.jit
+    def shfl_up_sync_kernel(input, output, delta, width):
+        thread_idx = tid(0)
+        x = ld(input + thread_idx, scope="gpu", semantic="relaxed")
+        y = __shfl_up_sync_i32(0xFFFFFFFF, x, delta)
+        st(output + thread_idx, y, scope="gpu", semantic="relaxed")
+
+    output = torch.zeros(64, device="cuda", dtype=torch.int32)
+    shfl_up_sync_kernel[(1, )](
+        torch.arange(64, device="cuda", dtype=torch.int32),
+        output,
+        1,
+        32,
+        num_warps=2,
+    )
+
+    assert torch.allclose(
+        output,
+        torch.cat((torch.max(0 * torch.ones(32, dtype=torch.int32),
+                             torch.arange(32, dtype=torch.int32) - 1),
+                   torch.max(32 * torch.ones(32, dtype=torch.int32),
+                             torch.arange(32, 64, dtype=torch.int32) - 1))).cuda())
+    print("✅ [shfl_up_sync] passed.")
+
+
+def test_shfl_down_sync():
+
+    @triton.jit
+    def shfl_down_sync_kernel(input, output, delta, width):
+        thread_idx = tid(0)
+        x = ld(input + thread_idx, scope="gpu", semantic="relaxed")
+        y = __shfl_down_sync_i32(0xFFFFFFFF, x, delta)
+        st(output + thread_idx, y, scope="gpu", semantic="relaxed")
+
+    output = torch.zeros(64, device="cuda", dtype=torch.int32)
+    shfl_down_sync_kernel[(1, )](
+        torch.arange(64, device="cuda", dtype=torch.int32),
+        output,
+        1,
+        32,
+        num_warps=2,
+    )
+
+    assert torch.allclose(
+        output,
+        torch.cat((
+            torch.min(torch.arange(1, 33, dtype=torch.int32),
+                      torch.ones(32, dtype=torch.int32) * 31),
+            torch.min(torch.arange(33, 65, dtype=torch.int32),
+                      torch.ones(32, dtype=torch.int32) * 63),
+        )).cuda(),
+    )
+    print("✅ [shfl_down_sync] passed.")
+
+
+def test_shfl_xor_sync():
+
+    @triton.jit
+    def shfl_xor_sync_kernel(input, output, delta, width):
+        thread_idx = tid(0)
+        x = ld(input + thread_idx, scope="gpu", semantic="relaxed")
+        y = __shfl_xor_sync_i32(0xFFFFFFFF, x, delta)
+        st(output + thread_idx, y, scope="gpu", semantic="relaxed")
+
+    input = torch.arange(64, device="cuda", dtype=torch.int32)
+    output = torch.zeros(64, device="cuda", dtype=torch.int32)
+    shfl_xor_sync_kernel[(1, )](
+        input,
+        output,
+        1,
+        32,
+        num_warps=2,
+    )
+
+    assert torch.allclose(output, input.reshape((32, 2)).flip(1).reshape((64, )))
+    print("✅ [shfl_xor_sync] passed.")
+
+
+def test_ballot_sync():
+
+    @triton.jit
+    def ballot_vote_kernel(input, output, value):
+        thread_idx = tid(0)
+        x = ld(input + thread_idx, scope="gpu", semantic="relaxed")
+        y = __ballot_sync(0xffffffff, x < 32)
+        st(output + thread_idx, y, scope="gpu", semantic="relaxed")
+
+    print("[ballot_vote] start...")
+    input = torch.arange(64, device="cuda", dtype=torch.int32)
+    output = torch.zeros(64, device="cuda", dtype=torch.int32)
+    ballot_vote_kernel[(1, )](
+        input,
+        output,
+        1,
+        num_warps=2,
+    )
+    assert torch.allclose(
+        output,
+        torch.cat((
+            torch.ones(32, dtype=torch.int32) * 0xFFFFFFFF,
+            torch.ones(32, dtype=torch.int32) * 0x00000000,
+        )).cuda(),
+    )
+    print("✅ [ballot_vote] passed.")
+
+
+def test_warp_prefix():
+
+    @triton.jit
     def warp_prefix_sum_kernel(input, output):
         i = 1
         thread_idx = tl.cast(tid(axis=0), tl.int32)
@@ -145,7 +285,7 @@ def test_shfl_sync():
     grid = (1, 1, 1)
     warp_prefix_sum_kernel[grid](in_tensor, out_tensor, num_warps=N // 32)
     assert torch.allclose(gt_tensor, out_tensor), (gt_tensor, out_tensor, in_tensor)
-    print("✅ [shfl_up_sync] done.")
+    print("✅ [warp_prefix] done.")
 
 
 def test_atomic_add_per_warp():
@@ -208,6 +348,11 @@ if __name__ == "__main__":
     test_sreg()
     test_ld_st()
     test_atomic_add()
+    test_warp_prefix()
     test_shfl_sync()
+    test_shfl_up_sync()
+    test_shfl_down_sync()
+    test_shfl_xor_sync()
+    test_ballot_sync()
     test_atomic_add_per_warp()
     test_may_hang()

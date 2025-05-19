@@ -557,15 +557,102 @@ def ensure_nvml_initialized():
                 _pynvml_initialized = True
 
 
+@functools.lru_cache(maxsize=16)
+def get_active_nvlinks_pynvml(gpu_index):
+    ensure_nvml_initialized()
+    import pynvml
+
+    handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
+    values = pynvml.nvmlDeviceGetFieldValues(handle, [pynvml.NVML_FI_DEV_NVLINK_LINK_COUNT])
+    return values[0].value.siVal
+
+
+def parse_nvml_field_value(fv):
+    import pynvml
+    if fv.valueType == pynvml.NVML_VALUE_TYPE_DOUBLE:
+        return fv.value.dVal
+    if fv.valueType == pynvml.NVML_VALUE_TYPE_UNSIGNED_INT:
+        return fv.value.uiVal
+    if fv.valueType == pynvml.NVML_VALUE_TYPE_UNSIGNED_LONG:
+        return fv.value.ulVal
+    if fv.valueType == pynvml.NVML_VALUE_TYPE_SIGNED_LONG_LONG:
+        return fv.value.llVal
+    if fv.valueType == pynvml.NVML_VALUE_TYPE_SIGNED_INT:
+        return fv.value.siVal
+    if fv.valueType == pynvml.NVML_VALUE_TYPE_UNSIGNED_SHORT:
+        return fv.value.usVal
+
+    return "Unsupported type"
+
+
+@functools.lru_cache(maxsize=16)
+def get_nvlink_max_speed_pynvml(gpu_index=0):
+    ensure_nvml_initialized()
+    import pynvml
+
+    handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
+    values = pynvml.nvmlDeviceGetFieldValues(handle, [pynvml.NVML_FI_DEV_NVLINK_GET_SPEED])
+    speed = parse_nvml_field_value(values[0])
+    # speed in Mbps but in 1e6, not MB (1024 * 1024)
+    speed = speed * 1e6 / 1024 / 1024
+    return get_active_nvlinks_pynvml(gpu_index) * speed
+
+
+@functools.lru_cache(maxsize=16)
+def get_nvlink_max_speed_nvsmi(gpu_index=0):
+    """Returns total NVLink bandwidth in GB/s for specified GPU"""
+    # Run nvidia-smi command
+    result = subprocess.run(['nvidia-smi', 'nvlink', '-s', '-i', str(gpu_index)], capture_output=True, text=True,
+                            check=True)
+
+    total_speed = 0.0
+
+    # Parse output lines
+    for line in result.stdout.split('\n'):
+        if 'Link' in line and 'GB/s' in line:
+            # Example line: " Link 0: 26.562 GB/s"
+            parts = line.split(':')
+            speed_str = parts[1].strip().split()[0]
+            total_speed += float(speed_str)
+
+    return total_speed
+
+
+def get_nvlink_max_speed(gpu_index=0):
+    try:
+        return get_nvlink_max_speed_nvsmi(gpu_index)
+    except Exception:
+        return get_nvlink_max_speed_pynvml(gpu_index)
+
+
 @functools.lru_cache()
-def get_has_nvlink_pynvml():
+def get_has_fullmesh_nvlink_pynvml():
     num_devices = torch.cuda.device_count()
 
     ensure_nvml_initialized()
     import pynvml
 
-    handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(num_devices)]
-    return [pynvml.nvmlDeviceGetNvLinkState(handle, 0) for handle in handles]
+    try:
+        handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(num_devices)]
+        remote_type = [pynvml.nvmlDeviceGetNvLinkRemoteDeviceType(handle, 0) for handle in handles]
+        if all([x == pynvml.NVML_NVLINK_DEVICE_TYPE_SWITCH for x in remote_type]):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            result = pynvml.nvmlDeviceGetFieldValues(handle, [pynvml.NVML_FI_DEV_NVSWITCH_CONNECTED_LINK_COUNT])
+            link_count = parse_nvml_field_value(result[0])
+            if link_count != num_devices:
+                warnings.warn(f"Found {link_count} NVLink links, but expected {num_devices}. "
+                              "This may be due to a bug in the NVSwitch driver. ")
+            return link_count == num_devices
+        if all([x == pynvml.NVML_NVLINK_DEVICE_TYPE_GPU for x in remote_type]):
+            if num_devices == 2:
+                return True
+            else:
+                warnings.warn(
+                    f"Found {num_devices} GPUs, but not connected by NVSwitch. this may not be supported well")
+                return False
+        return False
+    except pynvml.NVMLError_NotSupported:
+        return False
 
 
 @functools.lru_cache()
@@ -577,6 +664,92 @@ def get_numa_node_pynvml(gpu_index):
     return pynvml.nvmlDeviceGetNumaNodeId(handle)  # no such symbol for CUDA driver 535.161.08
 
 
+def calculate_pcie_bandwidth(generation: int, lanes: int) -> tuple:
+    """
+    Calculate PCIe bandwidth for a given generation and number of lanes.
+    Returns (per_direction_gbs, bidirectional_gbs)
+
+    Args:
+        generation: PCIe generation (1-6)
+        lanes: Number of lanes (x1, x4, x8, x16, etc.)
+
+    Returns:
+        Tuple with per-direction and bidirectional bandwidth in GB/s
+    """
+    # PCIe specifications (transfer rates in GT/s and encoding efficiency)
+    pcie_specs = {
+        1: {'transfer_rate': 2.5, 'encoding': 0.8},  # 8b/10b encoding
+        2: {'transfer_rate': 5.0, 'encoding': 0.8},  # 8b/10b
+        3: {'transfer_rate': 8.0, 'encoding': 128 / 130},  # 128b/130b
+        4: {'transfer_rate': 16.0, 'encoding': 128 / 130}, 5: {'transfer_rate': 32.0, 'encoding': 128 / 130}, 6:
+        {'transfer_rate': 64.0, 'encoding': 242 / 256}  # FLIT encoding
+    }
+
+    if generation not in pcie_specs:
+        raise ValueError(f"Invalid PCIe generation: {generation}. Supported: 1-6")
+
+    if not isinstance(lanes, int) or lanes <= 0:
+        raise ValueError("Lanes must be a positive integer")
+
+    # Get specs for requested generation
+    spec = pcie_specs[generation]
+    transfer_rate = spec['transfer_rate']  # GT/s per lane
+    encoding = spec['encoding']  # Encoding efficiency
+
+    # Calculate bandwidth
+    per_direction_gbs = (transfer_rate * encoding * lanes) / 8
+
+    return per_direction_gbs
+
+
+@functools.lru_cache(maxsize=16)
+def get_pcie_link_info_nvsmi(gpu_index=0):
+    """Returns (pcie_generation, pcie_width) as integers or (None, None) on error"""
+    result = subprocess.run([
+        "nvidia-smi", "--query-gpu=pcie.link.gen.gpucurrent,pcie.link.width.current", "--format=csv,noheader", "-i",
+        str(gpu_index)
+    ], capture_output=True, text=True, check=True)
+
+    # Parse output like "4, 16"
+    gen_str, width_str = result.stdout.strip().split(',')
+    return int(gen_str.strip()), int(width_str.strip())
+
+
+@functools.lru_cache()
+def get_pcie_link_max_speed_nvsmi(gpu_index=0):
+    """Returns the maximum PCIe link speed in GB/s for specified GPU"""
+    pcie_gen, lanes = get_pcie_link_info_nvsmi(gpu_index)
+    return calculate_pcie_bandwidth(pcie_gen, lanes)
+
+
+@functools.lru_cache()
+def get_pcie_link_max_speed_pynvml(gpu_index=0):
+    ensure_nvml_initialized()
+    import pynvml
+    handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
+    pcie_gen = pynvml.nvmlDeviceGetCurrPcieLinkGeneration(handle)
+    lanes = pynvml.nvmlDeviceGetCurrPcieLinkWidth(handle)
+    return calculate_pcie_bandwidth(pcie_gen, lanes)
+
+
+def get_pcie_link_max_speed(gpu_index):
+    try:
+        return get_pcie_link_max_speed_nvsmi(gpu_index)
+    except Exception:
+        return get_pcie_link_max_speed_pynvml(gpu_index)
+
+
+def get_intranode_max_speed(gpu_index=0, with_scale: bool = True):
+    if get_has_fullmesh_nvlink():
+        # 200GB/s => 160GB/s
+        _factor = 1.0 if not with_scale else 0.8
+        return get_nvlink_max_speed(gpu_index) * _factor
+    else:
+        # 32GB/s => 22.4GB/s
+        _factor = 1.0 if not with_scale else 0.7
+        return get_pcie_link_max_speed(gpu_index) * _factor
+
+
 @functools.lru_cache()
 def get_numa_node(gpu_index):
     try:
@@ -586,12 +759,18 @@ def get_numa_node(gpu_index):
 
 
 @functools.lru_cache()
-def get_has_nvlink():
+def get_has_fullmesh_nvlink():
     try:
-        return all(get_has_nvlink_pynvml())
+        return get_has_fullmesh_nvlink_pynvml()
     except Exception:
         nvlink_matrix = NvidiaSmiUtil.get_nvlink_adjacency_matrix()
-        return all(1 in row for row in nvlink_matrix)
+        has_nvlink = any([any(x == 1 for x in row) for row in nvlink_matrix])
+        has_fullmesh_nvlink = all([i == j or v == 1 for i, row in enumerate(nvlink_matrix) for j, v in enumerate(row)])
+        if has_nvlink and not has_fullmesh_nvlink:
+            warnings.warn(
+                "⚠️ found NVLink but not fullmesh NVLink, this may cause undefined behavior, please check your GPU topology"
+            )
+        return has_fullmesh_nvlink
 
 
 @functools.lru_cache()

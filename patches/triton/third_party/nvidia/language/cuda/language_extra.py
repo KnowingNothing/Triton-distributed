@@ -487,12 +487,14 @@ def __shfl_sync_with_mode_i32(
     c: core.constexpr = 31,
     _builder=None,
 ):
+    tl.static_assert(value.dtype == tl.int32 or value.dtype == tl.uint32,
+                     "__shfl_sync_i32 only support int32 or uint32", _builder=_builder)
     # refer to https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-shfl-sync
     return tl.inline_asm_elementwise(
         asm=f"shfl.sync.{mode.value}.b32 $0, $1, $2, {c.value}, $3;",
         constraints="=r,r,r,r",
         args=[value, delta, mask],
-        dtype=tl.int32,
+        dtype=value.dtype,
         is_pure=False,
         pack=1,
         _builder=_builder,
@@ -511,7 +513,12 @@ def __shfl_up_sync_i32(mask, value, delta):
 
 @triton.jit
 def __shfl_down_sync_i32(mask, value, delta):
-    return __shfl_sync_with_mode_i32(mask, value, delta, "down", 0)
+    return __shfl_sync_with_mode_i32(mask, value, delta, "down", 31)
+
+
+@triton.jit
+def __shfl_xor_sync_i32(mask, value, delta):
+    return __shfl_sync_with_mode_i32(mask, value, delta, "bfly", 31)
 
 
 # @patch_triton_module
@@ -573,6 +580,7 @@ __all__ = [
     "__shfl_sync_i32",
     "__shfl_up_sync_i32",
     "__shfl_down_sync_i32",
+    "__shfl_xor_sync_i32",
     "__ballot_sync",
     "ld",
     "ffs",
