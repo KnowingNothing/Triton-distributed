@@ -868,8 +868,8 @@ def get_packages():
         packages += ["triton/profiler"]
     if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):  # Default ON
         packages += [
-            "triton_dist/_C", "triton_dist/kernels", "triton_dist/kernels/nvidia", "triton_dist/kernels/amd",
-            "triton_dist/layers/nvidia", "triton_dist/tools", "triton_dist/test"
+            "triton_dist", "triton_dist/_C", "triton_dist/kernels", "triton_dist/kernels/nvidia",
+            "triton_dist/kernels/amd", "triton_dist/layers/nvidia", "triton_dist/tools", "triton_dist/test"
         ]
         try:
             import torch

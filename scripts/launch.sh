@@ -6,28 +6,10 @@ export NCCL_DEBUG=ERROR
 
 export NVSHMEM_SYMMETRIC_SIZE=${NVSHMEM_SYMMETRIC_SIZE:-1000000000}
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
-DISTRIBUTED_DIR=$(dirname -- "$SCRIPT_DIR")
-THIRD_PARTY_DIR=$(dirname -- "$SCRIPT_DIR")/3rdparty
-
-NVSHMEM_ROOT=${THIRD_PARTY_DIR}/nvshmem/build/install
-
-export LD_LIBRARY_PATH=${NVSHMEM_ROOT}/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=${NVSHMEM_DIR}/lib:$LD_LIBRARY_PATH
 export NVSHMEM_DISABLE_CUDA_VMM=${NVSHMEM_DISABLE_CUDA_VMM:-1} # moving from cpp to shell
 export NVSHMEM_BOOTSTRAP=UID
 export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=eth0
-
-export TRITON_CACHE_DIR=$DISTRIBUTED_DIR/.triton
-
-mkdir -p $DISTRIBUTED_DIR/.triton
-
-case ":${PYTHONPATH}:" in
-    *:"${DISTRIBUTED_DIR}/python":*)
-        ;;
-    *)
-        export PYTHONPATH="${PYTHONPATH}:${DISTRIBUTED_DIR}/python"
-        ;;
-esac
 
 nproc_per_node=${ARNOLD_WORKER_GPU:=$(nvidia-smi --list-gpus | wc -l)}
 nnodes=${ARNOLD_WORKER_NUM:=1}
