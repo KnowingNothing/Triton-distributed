@@ -25,7 +25,6 @@
 import triton
 import triton.language as tl
 from triton.language.extra import libshmem_device
-from triton.language.extra.cuda import libnvshmem_device
 from triton.language.extra.cuda.language_extra import tid, ntid, __syncthreads, multimem_st_b64, load_v2_b64, st
 import torch
 import torch.distributed
@@ -33,9 +32,8 @@ from triton_dist import pynvshmem
 import os
 import datetime
 
-from triton_dist.test.nvidia.test_ep_a2a import LOCAL_WORLD_SIZE
-
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
+LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
 RANK = int(os.environ.get("RANK", 0))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
 
@@ -46,18 +44,18 @@ def test_nvshmem_basic():
     def _nvshmem_basic(output):
         thread_idx = tid(axis=0)
         if thread_idx == 0:
-            st(output, libnvshmem_device.my_pe())
+            st(output, libshmem_device.my_pe())
             output += 1
-            st(output, libnvshmem_device.team_my_pe(libnvshmem_device.NVSHMEM_TEAM_WORLD))
+            st(output, libshmem_device.team_my_pe(libshmem_device.NVSHMEM_TEAM_WORLD))
             output += 1
-            st(output, libnvshmem_device.team_my_pe(libnvshmem_device.NVSHMEMX_TEAM_NODE))
+            st(output, libshmem_device.team_my_pe(libshmem_device.NVSHMEMX_TEAM_NODE))
             output += 1
 
-            st(output, libnvshmem_device.n_pes())
+            st(output, libshmem_device.n_pes())
             output += 1
-            st(output, libnvshmem_device.team_n_pes(libnvshmem_device.NVSHMEM_TEAM_WORLD))
+            st(output, libshmem_device.team_n_pes(libshmem_device.NVSHMEM_TEAM_WORLD))
             output += 1
-            st(output, libnvshmem_device.team_n_pes(libnvshmem_device.NVSHMEMX_TEAM_NODE))
+            st(output, libshmem_device.team_n_pes(libshmem_device.NVSHMEMX_TEAM_NODE))
 
     print("nvshmem basic start...")
     output = pynvshmem.nvshmem_create_tensor((6, ), torch.int32)
@@ -633,6 +631,228 @@ def test_nvshmem_mc_ptr(N, dtype: torch.dtype = torch.int8):
         print("_nvshmem_multimem_st done")
 
 
+def test_nvshmemi_putmem_rma(N, dtype: torch.dtype = torch.int8):
+
+    @triton.jit
+    def _nvshmemi_putmem_rma_kernel(
+        ptr,
+        elems_per_rank,
+        scope: tl.constexpr,
+        nbi: tl.constexpr,
+        ELEM_SIZE: tl.constexpr,
+    ):
+        mype = libshmem_device.my_pe()
+        pid = tl.program_id(axis=0)
+        thread_idx = tid(axis=0)
+        if pid != mype:
+            if nbi:
+                if scope == "block":
+                    libshmem_device.putmem_rma_nbi_block(
+                        ptr + mype * elems_per_rank,
+                        ptr + mype * elems_per_rank,
+                        elems_per_rank * ELEM_SIZE,
+                        pid,
+                    )
+                elif scope == "warp":
+                    libshmem_device.putmem_rma_nbi_warp(
+                        ptr + mype * elems_per_rank,
+                        ptr + mype * elems_per_rank,
+                        elems_per_rank * ELEM_SIZE,
+                        pid,
+                    )
+                elif scope == "thread":
+                    if thread_idx < elems_per_rank:
+                        libshmem_device.putmem_rma_nbi(
+                            ptr + mype * elems_per_rank + thread_idx,
+                            ptr + mype * elems_per_rank + thread_idx,
+                            1,
+                            pid,
+                        )
+                else:
+                    raise ValueError("scope must be block, warp, or thread")
+            else:
+                if scope == "block":
+                    libshmem_device.putmem_rma_block(
+                        ptr + mype * elems_per_rank,
+                        ptr + mype * elems_per_rank,
+                        elems_per_rank * ELEM_SIZE,
+                        pid,
+                    )
+                elif scope == "warp":
+                    libshmem_device.putmem_rma_warp(
+                        ptr + mype * elems_per_rank,
+                        ptr + mype * elems_per_rank,
+                        elems_per_rank * ELEM_SIZE,
+                        pid,
+                    )
+                elif scope == "thread":
+                    if thread_idx < elems_per_rank:
+                        libshmem_device.putmem_rma(
+                            ptr + mype * elems_per_rank + thread_idx,
+                            ptr + mype * elems_per_rank + thread_idx,
+                            1,
+                            pid,
+                        )
+                else:
+                    raise ValueError("scope must be block, warp, or thread")
+
+    t = pynvshmem.nvshmem_create_tensor((N, ), dtype)
+
+    for scope in ["block", "warp", "thread"]:
+        for nbi in [True, False]:
+            api = {
+                ("block", False): "nvshmemi_transfer_rma_put_block",
+                ("warp", False): "nvshmemi_transfer_rma_put_warp",
+                ("thread", False): "nvshmemi_transfer_rma",
+                ("block", True): "nvshmemi_transfer_rma_put_nbi_block",
+                ("warp", True): "nvshmemi_transfer_rma_put_nbi_warp",
+                ("thread", True): "nvshmemi_transfer_rma_nbi",
+            }[(scope, nbi)]
+            print(f"runing {api}...")
+            t.fill_(RANK + 1)
+            pynvshmem.nvshmem_barrier_all()
+            _nvshmemi_putmem_rma_kernel[(WORLD_SIZE, )](
+                t,
+                N // WORLD_SIZE,
+                scope,
+                nbi,
+                ELEM_SIZE=dtype.itemsize,
+                num_warps=1 if scope == "warp" else 4,
+            )
+            pynvshmem.nvshmem_barrier_all()
+            t_expected = (torch.arange(1, WORLD_SIZE + 1, dtype=dtype, device="cuda").reshape(
+                (WORLD_SIZE, 1)).repeat(1, N // WORLD_SIZE).flatten())
+            try:
+                torch.testing.assert_close(t, t_expected)
+            except Exception as e:
+                print(f" ❌ {api} failed")
+                print(t.reshape(WORLD_SIZE, -1))
+                raise (e)
+            else:
+                print(f"✅ {api} pass")
+
+
+def test_nvshmemi_putmem_rma_signal_with_scope(N, dtype: torch.dtype = torch.int8):
+
+    @triton.jit
+    def _nvshmemi_putmem_rma_signal_kernel(ptr, signal, bytes_per_rank, scope: tl.constexpr, nbi: tl.constexpr):
+        mype = libshmem_device.my_pe()
+        pid = tl.program_id(axis=0)
+        thread_idx = tid(axis=0)
+        wid = thread_idx // 32
+        if pid != mype:
+            if nbi:
+                if scope == "block":
+                    libshmem_device.putmem_signal_rma_nbi_block(
+                        ptr + mype * bytes_per_rank,
+                        ptr + mype * bytes_per_rank,
+                        bytes_per_rank,
+                        signal + mype,
+                        1,
+                        libshmem_device.NVSHMEM_SIGNAL_SET,
+                        pid,
+                    )
+                elif scope == "warp":
+                    if wid == 0:
+                        libshmem_device.putmem_signal_rma_nbi_warp(
+                            ptr + mype * bytes_per_rank,
+                            ptr + mype * bytes_per_rank,
+                            bytes_per_rank,
+                            signal + mype,
+                            1,
+                            libshmem_device.NVSHMEM_SIGNAL_SET,
+                            pid,
+                        )
+                elif scope == "thread":
+                    if thread_idx == 0:
+                        libshmem_device.putmem_signal_rma_nbi(
+                            ptr + mype * bytes_per_rank,
+                            ptr + mype * bytes_per_rank,
+                            bytes_per_rank,
+                            signal + mype,
+                            1,
+                            libshmem_device.NVSHMEM_SIGNAL_SET,
+                            pid,
+                        )
+                else:
+                    raise ValueError("scope must be block, warp, or thread")
+            else:
+                if scope == "block":
+                    libshmem_device.putmem_signal_rma_block(
+                        ptr + mype * bytes_per_rank,
+                        ptr + mype * bytes_per_rank,
+                        bytes_per_rank,
+                        signal + mype,
+                        1,
+                        libshmem_device.NVSHMEM_SIGNAL_SET,
+                        pid,
+                    )
+                elif scope == "warp":
+                    if wid == 0:
+                        libshmem_device.putmem_signal_rma_warp(
+                            ptr + mype * bytes_per_rank,
+                            ptr + mype * bytes_per_rank,
+                            bytes_per_rank,
+                            signal + mype,
+                            1,
+                            libshmem_device.NVSHMEM_SIGNAL_SET,
+                            pid,
+                        )
+                elif scope == "thread":
+                    if thread_idx == 0:
+                        libshmem_device.putmem_signal_rma(
+                            ptr + mype * bytes_per_rank,
+                            ptr + mype * bytes_per_rank,
+                            bytes_per_rank,
+                            signal + mype,
+                            1,
+                            libshmem_device.NVSHMEM_SIGNAL_SET,
+                            pid,
+                        )
+                else:
+                    raise ValueError("scope must be block, warp, or thread")
+
+    t = pynvshmem.nvshmem_create_tensor((N, ), dtype)
+    signal = pynvshmem.nvshmem_create_tensor((WORLD_SIZE, ), torch.uint64)
+
+    for scope in ["block", "warp", "thread"]:
+        for nbi in [True, False]:
+            api = {
+                ("block", False): "nvshmemi_transfer_put_signal_block",
+                ("warp", False): "nvshmemi_transfer_put_signal_warp",
+                ("thread", False): "nvshmemi_transfer_put_signal",
+                ("block", True): "nvshmemi_transfer_put_signal_nbi_block",
+                ("warp", True): "nvshmemi_transfer_put_signal_nbi_warp",
+                ("thread", True): "nvshmemi_transfer_put_signal_nbi",
+            }[(scope, nbi)]
+            print(f"runing {api}...")
+            t.fill_(RANK + 1)
+            signal.fill_(0)
+            signal[RANK].fill_(1)
+            pynvshmem.nvshmem_barrier_all()
+            _nvshmemi_putmem_rma_signal_kernel[(WORLD_SIZE, )](
+                t,
+                signal,
+                t.nbytes // WORLD_SIZE,
+                scope,
+                nbi,
+                num_warps=4,
+            )
+            pynvshmem.nvshmem_barrier_all()
+            t_expected = (torch.arange(1, WORLD_SIZE + 1, dtype=dtype, device="cuda").reshape(
+                (WORLD_SIZE, 1)).repeat(1, N // WORLD_SIZE).flatten())
+            try:
+                torch.testing.assert_close(t, t_expected)
+                torch.testing.assert_close(signal, torch.ones((WORLD_SIZE, ), dtype=torch.uint64, device="cuda"))
+            except Exception as e:
+                print(f" ❌ {api} failed")
+                print(t.reshape(WORLD_SIZE, -1))
+                print(signal)
+                raise (e)
+            else:
+                print(f"✅ {api} pass")
+
+
 if __name__ == "__main__":
     torch.cuda.set_device(LOCAL_RANK)
     torch.distributed.init_process_group(
@@ -657,6 +877,9 @@ if __name__ == "__main__":
     # some ranks hangs. don't know why
     # test_nvshmem_fcollect(1024, torch.int8)
     test_nvshmem_mc_ptr(1024, torch.int16)
+
+    test_nvshmemi_putmem_rma(16 * WORLD_SIZE, torch.int8)
+    test_nvshmemi_putmem_rma_signal_with_scope(16 * WORLD_SIZE, torch.int8)
 
     torch.distributed.barrier(TP_GROUP)
     torch.cuda.synchronize()

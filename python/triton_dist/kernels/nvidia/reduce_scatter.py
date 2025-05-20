@@ -424,6 +424,102 @@ def reduce_scatter_ring_push_1d_intra_node_sm(
     return output
 
 
+@triton.jit(do_not_specialize=["rank", "num_ranks"])
+def reduce_scatter_ring_push_1d_intra_node_rma_kernel(
+    rank,
+    num_ranks,
+    symm_input_ptr,
+    symm_input_flag_ptr,
+    symm_reduce_ptr,
+    symm_reduce_flag_ptr,
+    grid_barrier_ptr,  # use this to sync many grids
+    output_ptr,
+    elems_per_rank,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """ why this kernel, what's the difference with reduce_scatter_ring_push_1d_intra_node_kernel?
+
+    for some PCI-e machines, we find that NCCL use NIC to communicate cross NUMA nodes. so we follow this design.
+
+    with rma, the kernel is a little different:
+    1. we have to implicit do ADD and save result to buffer. then putmem_rma to remote
+    """
+    to_rank = (rank - 1 + num_ranks) % num_ranks
+    thread_idx = tid(0)
+    pid = tl.program_id(0)
+
+    ITEM_SIZE = tl.constexpr(symm_input_ptr.dtype.primitive_bitwidth) // 8
+    NUMA_WORLD_SIZE = 4
+    use_rma = rank % NUMA_WORLD_SIZE == 0  # TODO(houqi.1993) maybe numa_world_size
+
+    if not use_rma:
+        return reduce_scatter_ring_push_1d_intra_node_kernel(rank, num_ranks, symm_input_ptr, symm_input_flag_ptr,
+                                                             symm_reduce_ptr, symm_reduce_flag_ptr, grid_barrier_ptr,
+                                                             output_ptr, elems_per_rank, BLOCK_SIZE=BLOCK_SIZE)
+
+    for stage in range(num_ranks):
+        segment = (rank + stage + 1) % num_ranks
+        src_ptr = symm_input_ptr + segment * elems_per_rank
+        dst_ptr = symm_reduce_ptr + segment * elems_per_rank
+
+        # wait by many CTA's is OK
+        if thread_idx == 0:
+            while ld(symm_input_flag_ptr + segment, semantic="acquire", scope="gpu") != 1:
+                pass
+        __syncthreads()
+
+        if stage != 0:
+            # wait for reduce ready
+            if thread_idx == 0:
+                while ld(symm_reduce_flag_ptr + segment, semantic="acquire", scope="sys") != 1:
+                    pass
+            __syncthreads()
+
+            add_continuous_kernel(src_ptr, dst_ptr, output_ptr if stage == num_ranks - 1 else dst_ptr, elems_per_rank,
+                                  BLOCK_SIZE)  # directly reduce to output
+            barrier_on_this_grid(grid_barrier_ptr)
+
+        if stage != num_ranks - 1 and pid == 0:
+            # set flag only after all CTAs done memcpy/reduce
+            libshmem_device.putmem_signal_nbi_block(dst_ptr, dst_ptr if stage != 0 else src_ptr,
+                                                    elems_per_rank * ITEM_SIZE, symm_reduce_flag_ptr, 1,
+                                                    libshmem_device.NVSHMEM_SIGNAL_SET, to_rank)
+    if pid == 0:
+        libshmem_device.barrier_all_block()
+
+
+def reduce_scatter_ring_push_1d_intra_node_sm_rma(
+    rank,
+    num_ranks,
+    input_tensor: torch.Tensor,
+    input_flag: torch.Tensor,
+    symm_reduce_tensor: torch.Tensor,
+    symm_reduce_flag: torch.Tensor,
+    grid_barrier: torch.Tensor,
+    output: Optional[torch.Tensor] = None,
+    num_sms=1,
+):
+    M, _ = input_tensor.shape
+    M_per_rank = M // num_ranks
+    output = output if output is not None else torch.empty(
+        (M_per_rank, _), dtype=input_tensor.dtype, device=input_tensor.device)
+    num_warps = 32
+    reduce_scatter_ring_push_1d_intra_node_kernel[(num_sms, )](
+        rank,
+        num_ranks,
+        input_tensor,
+        input_flag,
+        symm_reduce_tensor,
+        symm_reduce_flag,
+        grid_barrier,
+        output,
+        input_tensor.numel() // num_ranks,
+        BLOCK_SIZE=32 * num_warps * 16 // input_tensor.dtype.itemsize,  # each thread copy a uint4
+        num_warps=num_warps,
+    )
+    return output
+
+
 ################### triton kernel ###################
 @triton.jit
 def kernel_inter_node_p2p_for_same_local_rank(offset, local_world_size, M_per_rank, N, input,  # [M, N]
@@ -444,23 +540,6 @@ def kernel_inter_node_p2p_for_same_local_rank(offset, local_world_size, M_per_ra
         input + remote_node_id * nelem_per_rank,
         nelem_per_rank * elem_size,
         remote_rank,
-    )
-
-
-@triton.jit
-def putmem(
-    dst_ptr,
-    src_ptr,
-    nbytes,
-    peer,
-):
-    dst_ptr = tl.cast(dst_ptr, tl.pointer_type(tl.int8))
-    src_ptr = tl.cast(src_ptr, tl.pointer_type(tl.int8))
-    libshmem_device.putmem_block(
-        dst_ptr,
-        src_ptr,
-        nbytes,
-        peer,
     )
 
 

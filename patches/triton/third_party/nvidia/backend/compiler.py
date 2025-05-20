@@ -43,7 +43,9 @@ def _path_to_binary(binary: str):
         os.path.join(os.path.dirname(__file__), "bin", binary),
     ]
 
-    paths += ["/usr/local/cuda/bin/nvcc"]
+    cuda_home = os.getenv("CUDA_HOME", "/usr/local/cuda/bin")
+
+    paths += [f"{cuda_home}/{binary}"]
 
     for path in paths:
         if os.path.exists(path) and os.path.isfile(path):
@@ -184,7 +186,7 @@ class NVSHMEMHelper:
             content = f.read()
 
         extern_block_pattern = re.compile(
-            r'extern "C" {\s*'  # match start with extern "C" 
+            r'extern "C" {\s*'  # match start with extern "C"
             r'((?:__device__.*?}\s*)+)'  # match __device__ func
             r'}',
             re.DOTALL
@@ -320,9 +322,11 @@ class CUDAOptions:
         if not extern_libs.get('libdevice', None):
             extern_libs['libdevice'] = os.getenv("TRITON_LIBDEVICE_PATH", str(default_libdir / 'libdevice.10.bc'))
         nvshmem_device_lib = os.getenv("TRITON_LIBDEVICE_PATH", str(default_libdir / 'libnvshmem_device.bc'))
+        nvshmemi_device_lib = os.getenv("TRITON_LIBDEVICE_PATH", str(default_libdir / 'libnvshmemi_device.bc'))
 
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
         object.__setattr__(self, 'nvshmem_device_lib', nvshmem_device_lib)
+        object.__setattr__(self, 'nvshmemi_device_lib', nvshmemi_device_lib)
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
                "num_warps must be a power of 2"
 
@@ -538,6 +542,9 @@ class CUDABackend(BaseBackend):
             llvm.link_extern_libs(llvm_mod, paths)
         if options.nvshmem_device_lib and metadata['use_nvshmem'] and not metadata['use_nvshmem_wrapper']:
             llvm.link_extern_libs(llvm_mod, [options.nvshmem_device_lib])
+            if os.path.exists(options.nvshmemi_device_lib):
+                # optional: if user don't want to compile the bitcode, just ignore it and can't use nvshmemi functions
+                llvm.link_extern_libs(llvm_mod, [options.nvshmemi_device_lib])
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
 
         # Get some metadata

@@ -58,6 +58,15 @@ function download_libnvshmem_device_bc_byted() {
     rm -rf "$tmp_dir"
     return 1
   fi
+
+  lib_file=/tmp/libnvshmemi_device.bc
+  wget -q https://tosv.byted.org/obj/flux/dsit-triton/nvshmem/3.2.5-1/bc/libnvshmemi_device.bc -O ${lib_file}
+  if ! mv -f $lib_file $dst_path; then
+    echo "File move failed" >&2
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
   echo "download done."
 }
 

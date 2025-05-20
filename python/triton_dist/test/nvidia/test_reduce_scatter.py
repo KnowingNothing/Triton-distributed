@@ -32,7 +32,8 @@ import torch.distributed
 from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.reduce_scatter import (create_reduce_scater_2d_ctx, reduce_scatter_2d_op,
                                                        reduce_scatter_ring_push_1d_intra_node_ce,
-                                                       reduce_scatter_ring_push_1d_intra_node_sm)
+                                                       reduce_scatter_ring_push_1d_intra_node_sm,
+                                                       reduce_scatter_ring_push_1d_intra_node_sm_rma)
 from triton_dist.utils import group_profile, perf_func, assert_allclose
 
 
@@ -45,8 +46,8 @@ def fill_random(tensor: torch.Tensor):
         raise NotImplementedError
 
 
-def test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, dtype: torch.dtype, use_ce: bool = True, warmup_iters=30,
-                                                iters=500, debug: bool = False, profile: bool = False):
+def test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, dtype: torch.dtype, method, warmup_iters=30, iters=500,
+                                                debug: bool = False, profile: bool = False):
 
     M = M_per_rank * WORLD_SIZE
 
@@ -58,7 +59,7 @@ def test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, dtype: torch.dtyp
     input_flag = torch.ones((WORLD_SIZE, ), device="cuda", dtype=torch.int32)
     symm_reduce_flags = pynvshmem.nvshmem_create_tensor_list_intra_node((WORLD_SIZE, ), torch.int32)
     symm_reduce_flags[LOCAL_RANK].zero_()
-    if not use_ce:
+    if method != "ce":
         grid_barrier = torch.zeros((1, ), device="cuda", dtype=torch.int32)
 
     pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
@@ -67,7 +68,7 @@ def test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, dtype: torch.dtyp
     torch.distributed.reduce_scatter_tensor(ref_output, input_tensor, group=TP_GROUP)
 
     def _reduce_scatter_fn():
-        if use_ce:
+        if method == "ce":
             output = reduce_scatter_ring_push_1d_intra_node_ce(
                 RANK,
                 WORLD_SIZE,
@@ -76,7 +77,7 @@ def test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, dtype: torch.dtyp
                 symm_reduce_buffers,
                 symm_reduce_flags,
             )
-        else:
+        elif method == "sm":
             output = reduce_scatter_ring_push_1d_intra_node_sm(
                 RANK,
                 WORLD_SIZE,
@@ -85,10 +86,23 @@ def test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, dtype: torch.dtyp
                 symm_reduce_buffers[LOCAL_RANK],
                 symm_reduce_flags[LOCAL_RANK],
                 grid_barrier,
-                num_sms=1,
+                num_sms=8,
             )
+        elif method == "sm_rma":
+            output = reduce_scatter_ring_push_1d_intra_node_sm_rma(
+                RANK,
+                WORLD_SIZE,
+                input_tensor,
+                input_flag,
+                symm_reduce_buffers[LOCAL_RANK],
+                symm_reduce_flags[LOCAL_RANK],
+                grid_barrier,
+                num_sms=8,
+            )
+        else:
+            raise Exception(f"Unsupported method {method}")
 
-        symm_reduce_flags[RANK].zero_()
+        symm_reduce_flags[LOCAL_RANK].zero_()
         pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
         return output
 
@@ -110,12 +124,11 @@ def test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, dtype: torch.dtyp
     pynvshmem.nvshmem_barrier_all()
     torch.cuda._sleep(1000000000)
     _run_id = os.environ.get("TORCHELASTIC_RUN_ID")
-    exp = "ce" if use_ce else "sm"
-    with group_profile(f"reduce_scatter_1d_{exp}_{M}x{N}_{_run_id}", group=TP_GROUP, do_prof=profile):
+    with group_profile(f"reduce_scatter_1d_{method}_{M}x{N}_{_run_id}", group=TP_GROUP, do_prof=profile):
         _, duration_ms = perf_func(_reduce_scatter_fn, iters, warmup_iters)
 
     gbps = (lambda ms: input_tensor.nbytes * 1e-9 / (ms * 1e-3) * (WORLD_SIZE - 1) / WORLD_SIZE)
-    print(f"RANK = {RANK}, Bandwith = {gbps(duration_ms):0.2f} GB/S")
+    print(f"[{method}] RANK = {RANK}, Bandwith = {gbps(duration_ms):0.2f} GB/S")
 
 
 def test_reduce_scatter_2d_op(M_per_rank, N, dtype, profile, warmup_iters=30, iters=500, debug=False):
@@ -196,8 +209,8 @@ if __name__ == "__main__":
     pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
 
     if LOCAL_WORLD_SIZE == WORLD_SIZE:
-        for use_ce in [True, False]:
-            test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, torch.int32, use_ce=use_ce,
+        for method in ["ce", "sm", "sm_rma"]:
+            test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, torch.int32, method=method,
                                                         warmup_iters=warmup_iters, iters=iters, debug=args.debug,
                                                         profile=args.profile)
         torch.cuda.synchronize()
