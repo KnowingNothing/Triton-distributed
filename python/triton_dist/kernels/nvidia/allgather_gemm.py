@@ -558,12 +558,13 @@ def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext = None, rank=None, num
         1], f"tensor_B should has shape (col_major) [{b.shape[0]}, {a.shape[1]}], but get [{b.shape}]"
     assert a.dtype == b.dtype, f"Dtype of input and weight must be same: tensor_A dtype {a.dtype}, tensor_B dtype {b.dtype}"
 
-    if ctx is None:
-        assert rank is not None and num_ranks is not None
-        ctx = create_ag_gemm_context(a, b, rank, num_ranks)
-
     M_per_rank, K = a.shape
     N_per_rank, _ = b.shape
+
+    if ctx is None:
+        assert rank is not None and num_ranks is not None
+        M = M_per_rank * ctx.num_ranks
+        ctx = create_ag_gemm_context(a, b, rank, num_ranks, max_M=M)
 
     assert a.shape[0] * ctx.num_ranks <= ctx.max_M and a.shape[
         1] == ctx.K, f"Shape of tensor_A must not exceed the maxmize M of ctx: tensor_A shape [{a.shape}], ctx shape [{ctx.max_M},{ctx.K}]"
