@@ -44,7 +44,7 @@ import triton_dist.language as dl
 
 from typing import Optional, List
 from triton_dist import pynvshmem
-from triton_dist.kernels.nvidia.common_ops import wait_eq, barrier_all_on_stream
+from triton_dist.kernels.nvidia.common_ops import BarrierAllContext, wait_eq, barrier_all_on_stream
 from triton_dist.kernels.nvidia.reduce_scatter import ring_reduce
 from triton.language.extra import libshmem_device
 
@@ -72,8 +72,7 @@ class ReduceScatter2DContext:
 
     # barrier bufs
     signal_bufs: List[torch.Tensor]  # need reset: signal_buf =  scatter_signal | rs_per_node_signal
-    sync_buf: torch.Tensor  # no need to reset
-    sync_target_value: int
+    barrier: BarrierAllContext
 
     # stream
     reduction_stream: torch.cuda.Stream
@@ -171,11 +170,7 @@ def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dt
         world_size * num_signal_bufs,
     ], SIGNAL_DTYPE)
 
-    sync_buf = pynvshmem.nvshmem_create_tensor([
-        local_world_size,
-    ], torch.int32)
-    sync_buf.fill_(0)
-    barrier_all_on_stream(torch.cuda.current_stream())
+    barrier_all_on_stream(None, torch.cuda.current_stream())
 
     p2p_stream: torch.cuda.Stream = torch.cuda.Stream(priority=-1)
     reduction_stream: torch.cuda.Stream = torch.cuda.Stream(priority=-1)
@@ -185,7 +180,7 @@ def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dt
     ctx = ReduceScatter2DContext(max_M=max_M, N=N, rank=rank, world_size=world_size, local_world_size=local_world_size,
                                  dtype=dtype, overlap_with_gemm=overlap_with_gemm, scatter_bufs=scatter_bufs,
                                  rs_per_node_bufs=rs_per_node_bufs, p2p_bufs=p2p_bufs, signal_bufs=signal_bufs,
-                                 sync_buf=sync_buf, sync_target_value=1, reduction_stream=reduction_stream,
+                                 barrier=BarrierAllContext(True), reduction_stream=reduction_stream,
                                  p2p_stream=p2p_stream, num_sync_sms=num_sync_sms, num_p2p_sms=num_p2p_sms,
                                  num_reduction_sms=num_reduction_sms)
     return ctx
@@ -281,9 +276,7 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
 
             rs_buf_cur_node = rs_per_node_buf[M_per_rank * cur_node_id:(cur_node_id + 1) * M_per_rank]
             # step1-2: perform barrier_all, wait for all peers within the node to complete the scatter operation
-            barrier_all_on_stream(stream, is_intra_node=True, symm_barrier_buf=ctx.sync_buf,
-                                  local_world_size=local_world_size, barrier_value=ctx.sync_target_value)
-            ctx.sync_target_value += 1
+            barrier_all_on_stream(ctx.barrier, stream)
 
             reduction_stream.wait_stream(stream)
             with torch.cuda.stream(reduction_stream):
@@ -330,7 +323,7 @@ def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
             This can reduce the inter-node communication volume by a factor of local_world_size.
     """
     rs_resutl_per_node = reducer_scatter_for_each_node(input, stream, ctx)
-    barrier_all_on_stream(stream)
+    barrier_all_on_stream(None, stream)
     output = torch.empty((M_per_rank, N), dtype=input.dtype, device=input.device)
     """
     Step 2: After receiving data sent via P2P from all nodes, perform a reduction to get the final result.
@@ -356,7 +349,7 @@ def reduce_scatter_2d_op(input, ctx: ReduceScatter2DContext):
     current_stream = torch.cuda.current_stream()
     reduction_stream.wait_stream(current_stream)
     # Wait for the completion of the previous iteration.
-    barrier_all_on_stream(current_stream)
+    barrier_all_on_stream(None, current_stream)
 
     # perform reduce-scatter
     output = reduce_scatter_multi_node(input, current_stream, ctx)

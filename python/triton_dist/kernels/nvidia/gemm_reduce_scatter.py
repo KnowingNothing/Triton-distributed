@@ -110,7 +110,18 @@ def _matmul_launch_metadata(grid, kernel, args):
     return ret
 
 
-@triton.jit(launch_metadata=_matmul_launch_metadata)
+def _gemm_rs_persistent_repr(proxy):
+    constexprs = proxy.constants
+    cap_major, cap_minor = torch.cuda.get_device_capability()
+    a_dtype = proxy.signature["a_ptr"].lstrip("*")
+    b_dtype = proxy.signature["b_ptr"].lstrip("*")
+    c_dtype = proxy.signature["c_ptr"].lstrip("*")
+    BM, BN, BK = constexprs["BLOCK_SIZE_M"], constexprs["BLOCK_SIZE_N"], constexprs["BLOCK_SIZE_K"]
+
+    return f"triton3x_sm{cap_major}{cap_minor}_gemm_rs_persistent_tensorop_{a_dtype}_{b_dtype}_{c_dtype}_{BM}x{BN}x{BK}_ntn"
+
+
+@triton.jit(launch_metadata=_matmul_launch_metadata, repr=_gemm_rs_persistent_repr)
 def kernel_gemm_rs_producer_persistent(
     a_ptr,
     b_ptr,
@@ -225,7 +236,38 @@ def kernel_gemm_rs_producer_persistent(
             accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
 
-@triton.jit(launch_metadata=_matmul_launch_metadata)
+def _gemm_rs_non_persistent_repr(proxy):
+    constexprs = proxy.constants
+    cap_major, cap_minor = torch.cuda.get_device_capability()
+    a_dtype = proxy.signature["a_ptr"].lstrip("*")
+    b_dtype = proxy.signature["b_ptr"].lstrip("*")
+    c_dtype = proxy.signature["c_ptr"].lstrip("*")
+    BM, BN, BK = constexprs["BLOCK_SIZE_M"], constexprs["BLOCK_SIZE_N"], constexprs["BLOCK_SIZE_K"]
+    if constexprs.get("stride_am", None) == 1:  # column major => n
+        a_trans = "n"
+    elif constexprs.get("stride_ak", None) == 1:  # row-major => t
+        a_trans = "t"
+    else:
+        raise Exception("both stride_am/stride_ak != 1")
+
+    if constexprs.get("stride_bk", None) == 1:
+        b_trans = "n"
+    elif constexprs.get("stride_bn", None) == 1:
+        b_trans = "t"
+    else:
+        raise Exception("both stride_am/stride_ak != 1")
+
+    if constexprs.get("stride_cm", None) == 1:
+        c_trans = "n"
+    elif constexprs.get("stride_cn", None) == 1:
+        c_trans = "t"
+    else:
+        raise Exception("both stride_am/stride_ak != 1")
+
+    return f"triton3x_sm{cap_major}{cap_minor}_gemm_rs_tensorop_{a_dtype}_{b_dtype}_{c_dtype}_{BM}x{BN}x{BK}_{a_trans}{b_trans}{c_trans}"
+
+
+@triton.jit(launch_metadata=_matmul_launch_metadata, repr=_gemm_rs_non_persistent_repr)
 def kernel_gemm_rs_producer_non_persistent(
     # Pointers to matrices
     a_ptr,  # [M, K]_Ti

@@ -33,7 +33,7 @@ from typing import Optional, List
 
 from dataclasses import dataclass
 
-from triton_dist.kernels.nvidia.common_ops import wait_eq, set_signal, barrier_all_on_stream
+from triton_dist.kernels.nvidia.common_ops import wait_eq, set_signal, barrier_all_on_stream, BarrierAllContext
 from triton.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import (atomic_add, __syncthreads, tid, ntid)
 
@@ -258,9 +258,7 @@ class MoEReduceRSContext:
     rs_per_node_buffer: torch.Tensor
     p2p_buffer: torch.Tensor
     final_output_buffer: torch.Tensor
-
-    sync_buf: torch.Tensor
-    sync_target_value: int
+    barrier: BarrierAllContext
 
     rs_stream: torch.cuda.Stream
     reduction_stream: torch.cuda.Stream
@@ -310,9 +308,7 @@ def create_moe_rs_context(pg, local_rank, world_size, local_world_size, max_toke
         device=device,
     )
 
-    max_blocks = 65536
-    sync_buf = pynvshmem.nvshmem_create_tensor([max_blocks * world_size], torch.int32)
-    sync_buf.fill_(0)
+    barrier = BarrierAllContext(True)
 
     # stream
     rs_stream = torch.cuda.Stream()
@@ -355,8 +351,8 @@ def create_moe_rs_context(pg, local_rank, world_size, local_world_size, max_toke
         rs_per_node_signal_buffer.zero_()
 
     return MoEReduceRSContext(precompute_ctx, rs_buffers, rs_buffer_ptrs, rs_per_node_buffer, p2p_buffer,
-                              final_output_buffer, sync_buf, 1, rs_stream, reduction_stream, p2p_stream,
-                              dataflow_config, barriers_gemm_scatter_counter, barriers_gemm_scatter_counter_ptrs,
+                              final_output_buffer, barrier, rs_stream, reduction_stream, p2p_stream, dataflow_config,
+                              barriers_gemm_scatter_counter, barriers_gemm_scatter_counter_ptrs,
                               barrier_gemm_scatter_ready, barriers_gemm_scatter_ready_ptrs,
                               barrier_gemm_scatter_counter, barrier_gemm_scatter_ready, rs_per_node_signal_buffer)
 
@@ -681,8 +677,7 @@ def topk_reduce_scatter_reduce_for_each_node(
     rs_per_node_buffer: torch.Tensor,  # [M // local_world_size, N]
     barrier_gemm_scatter_ready: torch.Tensor,
     rs_per_node_signal_buf: torch.Tensor,
-    sync_buf,
-    sync_target_value,
+    barrier: BarrierAllContext,
     rs_stream: torch.cuda.Stream,
     reduction_stream: torch.cuda.Stream,
 ):
@@ -712,7 +707,7 @@ def topk_reduce_scatter_reduce_for_each_node(
             num_warps=32,
         )
 
-        barrier_all_on_stream(rs_stream, True, sync_buf, local_world_size, barrier_value=sync_target_value)
+        barrier_all_on_stream(barrier, rs_stream)
         reduction_stream.wait_stream(rs_stream)
 
     with torch.cuda.stream(reduction_stream):
@@ -833,8 +828,7 @@ def consumer_reduce_scatter_reduce_2d(
     p2p_buffer: torch.Tensor,
     barrier_gemm_scatter_ready: torch.Tensor,
     rs_per_node_signal_buffer: torch.Tensor,
-    sync_buf,
-    sync_target_value,
+    barrier: BarrierAllContext,
     rs_stream: torch.cuda.Stream,
     reduction_stream: torch.cuda.Stream,
     p2p_stream: torch.cuda.Stream,
@@ -844,7 +838,7 @@ def consumer_reduce_scatter_reduce_2d(
     nnodes = world_size // local_world_size
 
     reduction_stream.wait_stream(rs_stream)
-    barrier_all_on_stream(rs_stream)
+    barrier_all_on_stream(None, rs_stream)
     p2p_stream.wait_stream(rs_stream)
     rs_result_intra_node = topk_reduce_scatter_reduce_for_each_node(
         rank,
@@ -859,8 +853,7 @@ def consumer_reduce_scatter_reduce_2d(
         rs_per_node_buffer,
         barrier_gemm_scatter_ready,
         rs_per_node_signal_buffer,
-        sync_buf,
-        sync_target_value,
+        barrier,
         rs_stream,
         reduction_stream,
     )
@@ -874,7 +867,7 @@ def consumer_reduce_scatter_reduce_2d(
         p2p_stream,
     )
     rs_stream.wait_stream(p2p_stream)
-    barrier_all_on_stream(rs_stream)
+    barrier_all_on_stream(None, rs_stream)
     output = torch.empty((M_per_rank, N), dtype=local_tensor.dtype, device=local_tensor.device)
     ring_reduce(
         p2p_result,
@@ -924,7 +917,7 @@ def moe_reduce_rs(
         ctx.rs_stream.wait_stream(torch.cuda.current_stream())
         ctx.reduction_stream.wait_stream(torch.cuda.current_stream())
         ctx.p2p_stream.wait_stream(torch.cuda.current_stream())
-        barrier_all_on_stream(torch.cuda.current_stream())
+        barrier_all_on_stream(None, torch.cuda.current_stream())
 
     with torch.cuda.stream(torch.cuda.current_stream()):
         full_sorted_token_ids = ctx.precompute_ctx.full_sorted_token_ids
@@ -986,7 +979,7 @@ def moe_reduce_rs(
         torch.cuda.current_stream().wait_stream(ctx.rs_stream)
         torch.cuda.current_stream().wait_stream(ctx.reduction_stream)
         torch.cuda.current_stream().wait_stream(ctx.p2p_stream)
-        barrier_all_on_stream(torch.cuda.current_stream())
+        barrier_all_on_stream(None, torch.cuda.current_stream())
 
     output = None
 
@@ -1005,13 +998,11 @@ def moe_reduce_rs(
             ctx.p2p_buffer,
             ctx.barrier_gemm_scatter_ready,
             ctx.rs_per_node_signal_buffer,
-            ctx.sync_buf,
-            ctx.sync_target_value,
+            ctx.barrier,
             ctx.rs_stream,
             ctx.reduction_stream,
             ctx.p2p_stream,
         )
-        ctx.sync_target_value += 1
 
     if dump_ir:
         if rank == 0:
@@ -1024,6 +1015,6 @@ def moe_reduce_rs(
         torch.cuda.current_stream().wait_stream(ctx.rs_stream)
         torch.cuda.current_stream().wait_stream(ctx.reduction_stream)
         torch.cuda.current_stream().wait_stream(ctx.p2p_stream)
-        barrier_all_on_stream(torch.cuda.current_stream())
+        barrier_all_on_stream(None, torch.cuda.current_stream())
 
     return output

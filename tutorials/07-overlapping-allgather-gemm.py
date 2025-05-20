@@ -40,6 +40,7 @@ In doing so, you will learn about:
 
 """
 
+import os
 import torch
 from triton_dist import pynvshmem
 from typing import Optional
@@ -398,12 +399,10 @@ def torch_ag_gemm(
 
 
 if __name__ == "__main__":
-    TP_GROUP = initialize_distributed()
-    rank = TP_GROUP.rank()
-    world_size = TP_GROUP.size()
-    LOCAL_WORLD_SIZE = 8
+    WORLD_SIZE = int(os.getenv("WORLD_SIZE", "-1"))
+    LOCAL_WORLD_SIZE = int(os.getenv("LOCAL_WORLD_SIZE", "-1"))
 
-    if world_size == LOCAL_WORLD_SIZE:
+    if WORLD_SIZE == LOCAL_WORLD_SIZE:
         print("Skip the test because this should be performed with 2 nodes or higher")
         import sys
         sys.exit()
@@ -413,16 +412,19 @@ if __name__ == "__main__":
         import sys
         sys.exit()
 
+    TP_GROUP = initialize_distributed()
+    rank = TP_GROUP.rank()
+
     M = 8192
     N = 49152
     K = 12288
     config = {"BM": 128, "BN": 256, "BK": 64, "stage": 3}
     dtype = torch.float16
 
-    assert M % world_size == 0
-    assert N % world_size == 0
-    M_per_rank = M // world_size
-    N_per_rank = N // world_size
+    assert M % WORLD_SIZE == 0
+    assert N % WORLD_SIZE == 0
+    M_per_rank = M // WORLD_SIZE
+    N_per_rank = N // WORLD_SIZE
 
     A = torch.randn([M_per_rank, K], dtype=dtype, device="cuda")
     B = torch.randn([N_per_rank, K], dtype=dtype, device="cuda")
@@ -435,7 +437,7 @@ if __name__ == "__main__":
     # In practice, the following parts are encapsulated in ag_gemm_inter_node() of triton_dist.kernels.nvidia.allgather_gemm.py
 
     C = torch.empty([M, N_per_rank], dtype=dtype, device="cuda")
-    ctx = create_ag_gemm_context(A, B, rank, world_size, max_M=M, BLOCK_M=config["BM"], BLOCK_N=config["BN"],
+    ctx = create_ag_gemm_context(A, B, rank, WORLD_SIZE, max_M=M, BLOCK_M=config["BM"], BLOCK_N=config["BN"],
                                  BLOCK_K=config["BK"], stages=config["stage"])
     ctx.barrier_tensor.fill_(0)
     pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)

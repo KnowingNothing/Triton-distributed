@@ -416,6 +416,11 @@ def torch_gemm_rs(
 
 
 if __name__ == "__main__":
+    if torch.cuda.get_device_capability()[0] <= 9:
+        print("Skip the test because the device is not sm90 or higher")
+        import sys
+        sys.exit()
+
     # init
     RANK = int(os.environ.get("RANK", 0))
     LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
@@ -425,11 +430,6 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     M, N, K = 16384, 12288, 49152
     local_K = K // TP_GROUP.size()
-
-    if torch.cuda.get_device_capability()[0] <= 9:
-        print("Skip the test because the device is not sm90 or higher")
-        import sys
-        sys.exit()
 
     # gen input
     input_dtype = torch.bfloat16

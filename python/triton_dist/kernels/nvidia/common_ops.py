@@ -160,21 +160,37 @@ def barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_flags, t
     barrier_on_this_grid(symm_flags + 2 * num_ranks)
 
 
-def barrier_all_on_stream(stream, is_intra_node=False, symm_barrier_buf=None, local_world_size=0, barrier_value=1,  #
-                          ):
-    # TODO(houqi.1993) make a sync context and do the barrier_value inc inner the funtion
-    if not is_intra_node:
-        pynvshmem.nvshmemx_barrier_all_on_stream(stream.cuda_stream)
+class BarrierAllContext:
+    """
+    You may use this to barrier all ranks in global, or just in intra-node team.
+
+    NOTE: nvshmem_barrier_all is slower for intra-node only.
+    """
+
+    def __init__(self, is_intra_node):
+        self.is_intra_node = is_intra_node
+        if self.is_intra_node:
+            self.rank = pynvshmem.nvshmem_my_pe()
+            self.local_rank = pynvshmem.nvshmem_team_my_pe(pynvshmem.NVSHMEMX_TEAM_NODE)
+            self.num_local_ranks = pynvshmem.nvshmem_team_n_pes(pynvshmem.NVSHMEMX_TEAM_NODE)
+            self.symm_barrier = pynvshmem.nvshmem_create_tensor((1, ), torch.int32)
+            self.symm_barrier.fill_(0)
+            pynvshmem.nvshmem_barrier_all()
+
+
+def barrier_all_on_stream(ctx: BarrierAllContext, stream: torch.cuda.Stream):
+    """
+    barrier_all_on_stream does not support CUDAGraph
+    """
+    if ctx is None or not ctx.is_intra_node:
+        return pynvshmem.nvshmemx_barrier_all_on_stream(stream.cuda_stream)
+
+    if check_p2p_native_atomic_supported():
+        barrier_all_intra_node_atomic_cas_block[(1, )](ctx.local_rank, ctx.rank, ctx.num_local_ranks, ctx.symm_barrier)
     else:
-        assert symm_barrier_buf is not None and local_world_size > 0
-        with torch.cuda.stream(stream):
-            if check_p2p_native_atomic_supported():
-                barrier_all_intra_node_atomic_cas_block[(1, )](pynvshmem.nvshmem_team_my_pe(
-                    pynvshmem.NVSHMEMX_TEAM_NODE), pynvshmem.nvshmem_my_pe(), local_world_size, symm_barrier_buf)
-            else:
-                barrier_all_intra_node_non_atomic[(1, )](pynvshmem.nvshmem_team_my_pe(pynvshmem.NVSHMEMX_TEAM_NODE),
-                                                         pynvshmem.nvshmem_my_pe(), local_world_size, symm_barrier_buf,
-                                                         barrier_value)
+        barrier_all_intra_node_non_atomic_block[(1, )](ctx.local_rank, ctx.rank, ctx.num_local_ranks, ctx.symm_barrier,
+                                                       ctx.target_value)
+        ctx.target_value += 1
 
 
 def wait_eq(ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=False):
