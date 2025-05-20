@@ -89,17 +89,19 @@ Dependencies with other versions may also work well, but this is not guaranteed.
 6. Build Triton-distributed
     Then you can build Triton-distributed.
     ```sh
-    cd /home/Triton-distributed
+    cd /home/Triton-distributed/python
     export USE_TRITON_DISTRIBUTED_AOT=0
-    python3 python/setup.py build_ext
+    python3 setup.py build_ext
     ```
 
     We also provide AOT version of Triton-distributed. If you want to use AOT, then
     ```sh
+    cd /home/Triton-distributed/
     source scripts/setenv.sh
     bash scripts/gen_aot_code.sh
     export USE_TRITON_DISTRIBUTED_AOT=1
-    python3 python/setup.py build_ext
+    cd python
+    python3 setup.py build_ext
     ```
     (Note: You have to first build non-AOT version before building AOT version, once you build AOT version, you will always build for AOT in future. To unset this, you have to remove your build directory: `python/build`)
 6. Setup environment variables (Do this step at the beginning every time you use Triton-distributed)
@@ -112,71 +114,65 @@ Dependencies with other versions may also work well, but this is not guaranteed.
 #### AllGather GEMM example on single node
 This example runs on a single node with 8 H800 GPUs.
 ```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma
-```
-For AMD CDNA3 GPUs:
-```sh
-bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_ag_gemm_intra_node.py 8192 53248 16384
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma
 ```
 
 #### GEMM ReduceScatter example on single node
 This example runs on a single node with 8 H800 GPUs.
 ```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_gemm_rs.py 8192 8192 29568
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568
 ```
-For AMD CDNA3 GPUs:
-```sh
-bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_gemm_rs_intra_node.py 8192 3584 14336
-```
+
 #### NVSHMEM example in Triton-distributed
 ```sh
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_nvshmem_api.py
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_nvshmem_api.py
 ```
 
 ### Run All The Test Files
 ```sh
 # basic
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_distributed_wait.py --case correctness
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_distributed_wait.py --case correctness_tma
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_distributed_wait.py --case correctness_tma_multi_barrier
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma_multi_barrier
 # ag gemm
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_intra_node.py --case correctness_tma
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_intra_node.py --case correctness_tma_autotune
-
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_gemm_inter_node.py --M 8192
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness_autotune
 # gemm rs
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs.py 8192 8192 29568
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_gemm_rs.py 8192 8192 29568 --check
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568 --check
 # allgather
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_small_msg.py
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_gather.py
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_fast_allgather.py   --iters 10   --warmup_iters 20   --mode push_2d_ll   --minbytes 4096   --maxbytes 8192
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_small_msg.py
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_all_gather.py
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_fast_allgather.py   --iters 10   --warmup_iters 20   --mode push_2d_ll   --minbytes 4096   --maxbytes 8192
 # all-to-all
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_all_to_all.py
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ep_moe_inference.py
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_all_to_all.py
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ep_moe_inference.py
 # nvshmem related
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_nvshmem_api.py
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ring_put.py
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_nvshmem_api.py
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ring_put.py
 # flash decoding
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_persistent
-USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_persistent_aot
-USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh  ./third_party/distributed/distributed/test/test_decode_attn.py --case perf_8k_aot
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case perf
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case correctness
-USE_TRITON_DISTRIBUTED_AOT=1 bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_sp_decode_attn.py --case correctness
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_persistent
+USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_persistent_aot
+USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_aot
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case perf
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
+USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
 # ag moe
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 2048
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 4096
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 8192
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_ag_moe.py --M 16384
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe.py --M 2048
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --autotune
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe_inter_node.py --M 2048
 # moe rs
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/test_moe_reduce_rs_intra_node.py 8192 2048 1536 32 2 --check
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check
+bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check --autotune
+# ep a2a
+NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8 --check
+NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8
 ```
 
 ## To use Triton-distributed with the AMD backend:
-- Starting from the rocm/pytorch:rocm6.1_ubuntu22.04_py3.10_pytorch_2.4 Docker container
+Starting from the rocm/pytorch:rocm6.1_ubuntu22.04_py3.10_pytorch_2.4 Docker container
 #### Steps:
 1. Clone the repo
 ```sh
