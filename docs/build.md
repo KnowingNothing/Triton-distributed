@@ -89,9 +89,9 @@ Dependencies with other versions may also work well, but this is not guaranteed.
 6. Build Triton-distributed
     Then you can build Triton-distributed.
     ```sh
-    cd /home/Triton-distributed/python
+    cd /home/Triton-distributed
     export USE_TRITON_DISTRIBUTED_AOT=0
-    python3 setup.py build_ext
+    MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
     ```
 
     We also provide AOT version of Triton-distributed. If you want to use AOT, then
@@ -100,8 +100,7 @@ Dependencies with other versions may also work well, but this is not guaranteed.
     source scripts/setenv.sh
     bash scripts/gen_aot_code.sh
     export USE_TRITON_DISTRIBUTED_AOT=1
-    cd python
-    python3 setup.py build_ext
+    MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
     ```
     (Note: You have to first build non-AOT version before building AOT version, once you build AOT version, you will always build for AOT in future. To unset this, you have to remove your build directory: `python/build`)
 6. Setup environment variables (Do this step at the beginning every time you use Triton-distributed)
