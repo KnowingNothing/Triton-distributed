@@ -107,14 +107,16 @@ class SymmCudaBuffer:
             "strides": None,  # Contiguous memory
             "version": 3,
         }
-        self._finializer = weakref.finalize(self, self._finialize)
+        # keep alive
+        self.torch = torch
+        self.nvshmem_free = nvshmem_free
 
-    def _finialize(self):
+    def __del__(self):
         if self.own_data:
-            with torch.cuda.device(self._device):
-                torch.cuda.synchronize()
-                nvshmem_free(self.ptr)
-                torch.cuda.synchronize()
+            with self.torch.cuda.device(self._device):
+                self.torch.cuda.synchronize()
+                self.nvshmem_free(self.ptr)
+                self.torch.cuda.synchronize()
             self.own_data = False
 
 
