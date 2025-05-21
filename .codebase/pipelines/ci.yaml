@@ -136,7 +136,7 @@ jobs:
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
           - USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
           # ag moe
-          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --iters 10 --warmup_iters 20 
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --iters 10 --warmup_iters 20
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --iters 10 --warmup_iters 20 --autotune
           # moe rs
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2

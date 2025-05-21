@@ -35,19 +35,6 @@ from triton_dist.kernels.nvidia.allgather import AllGatherMethod, cp_engine_prod
 from triton_dist import pynvshmem
 
 
-def torch_dtype_to_triton_dtype(dtype):
-    if dtype == torch.float32:
-        return tl.float32
-    elif dtype == torch.float16:
-        return tl.float16
-    elif dtype == torch.int32:
-        return tl.int32
-    elif dtype == torch.int8:
-        return tl.int8
-    else:
-        raise RuntimeError(f"unsupported dtype: {dtype}")
-
-
 @dataclass
 class MoEInfo:
     num_experts: int = None
@@ -282,7 +269,8 @@ def create_ag_group_gemm_context(tensor_A, tensor_B, rank, num_ranks, full_topk_
     return ctx
 
 
-def ag_group_gemm(a: torch.Tensor, b: torch.Tensor, ctx=None, rank=None, num_ranks=None, full_topk_ids=None):
+def ag_group_gemm(a: torch.Tensor, b: torch.Tensor, ctx: MoEAllGatherGroupGEMMTensorParallelContext = None, rank=None,
+                  num_ranks=None, full_topk_ids=None):
     """allgather group gemm
 
     Allgather global matrix A and do matmul with local matrix B, produces local matrix C
@@ -295,28 +283,25 @@ def ag_group_gemm(a: torch.Tensor, b: torch.Tensor, ctx=None, rank=None, num_ran
     Returns:
         c (torch.Tensor<float>): local matmul C matrix. shape: [M * topk, N_per_rank]
     """
-
-    assert a.shape[1] == b.shape[
-        1], f"tensor_B should has shape (col_major) [{b.shape[0]}, {a.shape[1]}, {b.shape[2]}], but get [{b.shape}]"
+    ntokens, hidden = a.shape
+    num_experts, h, N_per_rank = b.shape
+    assert hidden == h == ctx.K, f"dim hidden does not match: A<ntokens, hidden> and B<nexperts, hidden, N_per_rank> : {a.shape} vs {b.shape} vs {ctx.K}"
     assert a.dtype == b.dtype, f"Dtype of input and weight must be same: tensor_A dtype {a.dtype}, tensor_B dtype {b.dtype}"
-    assert (a.dtype == torch.float16
-            or a.dtype == torch.float8_e4m3fn), "Currently only support float16 or float8_e4m3fn"
+    assert a.dtype in [torch.float16, torch.bfloat16, torch.float8_e4m3fn,
+                       torch.float8_e5m2], f"{a.dtype} not supported"
 
     if ctx is None:
         assert full_topk_ids is not None
         assert rank is not None and num_ranks is not None
-        M = a.shape[0] * num_ranks
+        M = ntokens * num_ranks
         ctx = create_ag_group_gemm_context(a, b, rank, num_ranks, full_topk_ids, max_M=M)
 
-    assert a.shape[
-        0] * ctx.num_ranks <= ctx.max_M, f"Shape of Allgathered tensor_A must not exceed max_M of ctx: tensor_A shape [{a.shape[0] * ctx.num_ranks}], ctx max_M [{ctx.max_M}]"
-    assert a.shape[1] == ctx.K, f"K of tensor_A must equal to that of ctx: tensor_A K [{a.shape[1]}], ctx K [{ctx.K}]"
-    assert b.shape[
-        2] == ctx.N_per_rank, f"N_per_rank of tensor_B must match that of ctx: tensor_B shape [{b.shape[2]}], ctx shape [{ctx.N_per_rank}]"
-    assert ctx.tensor_dtype == a.dtype, f"dtype of ctx must match that of ctx: tensor_A dtype {a.dtype}, ctx dtype {ctx.tensor_dtype}"
+    assert ntokens * ctx.num_ranks <= ctx.max_M, f"Shape of Allgathered tensor_A must not exceed max_M of ctx: tensor_A shape [{ntokens * ctx.num_ranks}], ctx max_M [{ctx.max_M}]"
+    assert N_per_rank == ctx.N_per_rank, f"N_per_rank of tensor_B must match that of ctx: tensor_B shape [{b.shape[2]}], ctx shape [{ctx.N_per_rank}]"
+    assert ctx.tensor_dtype == a.dtype, f"dtype of ctx must match that of ctx: tensor_A dtype {a.dtype}, ctx dtype {ctx.tensor_dtype}"  # TODO(houqi.1993) does not support FP8
 
     c = torch.empty(
-        [ctx.moe_info.topk * a.shape[0] * ctx.num_ranks, ctx.N_per_rank],
+        [ctx.moe_info.topk * ntokens * ctx.num_ranks, ctx.N_per_rank],
         dtype=ctx.tensor_dtype,
         device=a.device,
     )
@@ -359,7 +344,8 @@ def rowise_ag_scatter_group_gemm_dispatcher(a,  # local tensor
         M = M_per_rank * ctx.num_ranks
         local_ag_buffer = ctx.workspace_tensor[:M]
 
-        grid = lambda META: (triton.cdiv(EM, META["BLOCK_M"]) * triton.cdiv(ctx.N_per_rank, META["BLOCK_N"]), )
+        grid = lambda META: (triton.cdiv(EM, META["BLOCK_SIZE_M"]) * triton.cdiv(ctx.N_per_rank, META["BLOCK_SIZE_N"]),
+                             )
         compiled = kernel_consumer_m_parallel_scatter_group_gemm[grid](
             local_ag_buffer,
             b,
@@ -385,7 +371,6 @@ def rowise_ag_scatter_group_gemm_dispatcher(a,  # local tensor
             ctx.BLOCK_K,
             ctx.GROUP_SIZE_M,
             ctx.moe_info.topk,
-            torch_dtype_to_triton_dtype(ctx.tensor_dtype),
             ctx.rank,
             ctx.num_ranks,
             num_stages=ctx.stages,
@@ -400,11 +385,42 @@ def rowise_ag_scatter_group_gemm_dispatcher(a,  # local tensor
     return compiled
 
 
-@triton.jit
+def _kernel_consumer_gemm_non_persistent_repr(proxy):
+    constexprs = proxy.constants
+    cap_major, cap_minor = torch.cuda.get_device_capability()
+    a_dtype = proxy.signature["a_ptr"].lstrip("*")
+    b_dtype = proxy.signature["b_ptr"].lstrip("*")
+    c_dtype = proxy.signature["c_ptr"].lstrip("*")
+    BM, BN, BK = constexprs["BLOCK_SIZE_M"], constexprs["BLOCK_SIZE_N"], constexprs["BLOCK_SIZE_K"]
+    if constexprs.get("stride_am", None) == 1:  # column major => n
+        a_trans = "n"
+    elif constexprs.get("stride_ak", None) == 1:  # row-major => t
+        a_trans = "t"
+    else:
+        raise Exception("both stride_am/stride_ak != 1")
+
+    if constexprs.get("stride_bk", None) == 1:
+        b_trans = "n"
+    elif constexprs.get("stride_bn", None) == 1:
+        b_trans = "t"
+    else:
+        raise Exception("both stride_am/stride_ak != 1")
+
+    if constexprs.get("stride_cm", None) == 1:
+        c_trans = "n"
+    elif constexprs.get("stride_cn", None) == 1:
+        c_trans = "t"
+    else:
+        raise Exception("both stride_am/stride_ak != 1")
+
+    return f"triton3x_sm{cap_major}{cap_minor}_ag_group_gemm_tensorop_{a_dtype}_{b_dtype}_{c_dtype}_{BM}x{BN}x{BK}_{a_trans}{b_trans}{c_trans}"
+
+
+@triton.jit(do_not_specialize=["rank"], repr=_kernel_consumer_gemm_non_persistent_repr)
 def kernel_consumer_m_parallel_scatter_group_gemm(
-    in_features_ptr,
-    expert_weights_ptr,
-    out_features_ptr,
+    a_ptr,
+    b_ptr,
+    c_ptr,
     block_barrier_ptr,
     sorted_token_ids_ptr,
     token_expert_ids_ptr,
@@ -414,75 +430,70 @@ def kernel_consumer_m_parallel_scatter_group_gemm(
     M,
     N,
     K,
-    stride_in_m,
-    stride_in_k,
-    stride_weight_e,
-    stride_weight_k,
-    stride_weight_n,
-    stride_out_m,
-    stride_out_n,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    GROUP_M: tl.constexpr,
+    stride_am,
+    stride_ak,
+    stride_be,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
     TOP_K: tl.constexpr,
-    compute_dtype: tl.constexpr,
-    rank: tl.constexpr,
-    world_size: tl.constexpr,
-    swizzle_offset: tl.constexpr = 3,
+    rank,
+    WORLD_SIZE: tl.constexpr,
+    SWIZZLE_OFFSET: tl.constexpr = 3,
 ):
     pid = tl.program_id(axis=0)
-    num_block_m = tl.cdiv(M, BLOCK_M)
-    num_block_n = tl.cdiv(N, BLOCK_N)
+    num_block_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_block_n = tl.cdiv(N, BLOCK_SIZE_N)
 
-    num_blocks_per_group = GROUP_M * num_block_n
+    num_blocks_per_group = GROUP_SIZE_M * num_block_n
     group_id = pid // num_blocks_per_group
-    group_size = min(num_block_m - group_id * GROUP_M, GROUP_M)
-    pid_m = group_id * GROUP_M + pid % group_size
+    group_size = min(num_block_m - group_id * GROUP_SIZE_M, GROUP_SIZE_M)
+    pid_m = group_id * GROUP_SIZE_M + pid % group_size
     pid_n = pid % num_blocks_per_group // group_size
 
     # swizzle along m-dimension
-    num_rank_m = world_size
-    num_rank_n = 1
-    m_per_rank = num_block_m // num_rank_m
-    rank_m = rank // num_rank_n
-    m_offset = m_per_rank * ((rank_m + swizzle_offset) % num_rank_m)
+    m_per_rank = num_block_m // WORLD_SIZE
+    m_offset = m_per_rank * ((rank + SWIZZLE_OFFSET) % WORLD_SIZE)
     pid_m = (pid_m + m_offset) % num_block_m
 
     num_tokens_post_padded_value = tl.load(num_tokens_post_padded)
 
-    if pid_m * BLOCK_M >= num_tokens_post_padded_value:
+    if pid_m * BLOCK_SIZE_M >= num_tokens_post_padded_value:
         return
 
-    offs_token_id = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_token_id = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
     token_mask = offs_token < num_valid_tokens
 
-    offs_k = tl.arange(0, BLOCK_K)
-    a_ptrs = (in_features_ptr + offs_token[:, None] // TOP_K * stride_in_m + offs_k[None, :] * stride_in_k)
+    offs_k = tl.arange(0, BLOCK_SIZE_K)
+    a_ptrs = (a_ptr + offs_token[:, None] // TOP_K * stride_am + offs_k[None, :] * stride_ak)
 
-    offs_bn = (pid_n * BLOCK_N + tl.arange(0, BLOCK_N)) % N
+    offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
     offs_be = tl.load(token_expert_ids_ptr + pid_m)
 
-    b_ptrs = (expert_weights_ptr + offs_be * stride_weight_e + offs_k[:, None] * stride_weight_k +
-              offs_bn[None, :] * stride_weight_n)
+    b_ptrs = (b_ptr + offs_be * stride_be + offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
 
     offs_barrier = tl.load(block_barrier_id_ptr + pid_m)
     token = dl.wait(block_barrier_ptr + offs_barrier, 1, "gpu", "acquire")
     a_ptrs = dl.consume_token(a_ptrs, token)
 
-    accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    for k in range(0, tl.cdiv(K, BLOCK_K)):
-        a = tl.load(a_ptrs, mask=token_mask[:, None] & (offs_k[None, :] < K - k * BLOCK_K))
-        b = tl.load(b_ptrs, mask=(offs_k[:, None] < K - k * BLOCK_K))
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+        a = tl.load(a_ptrs, mask=token_mask[:, None] & (offs_k[None, :] < K - k * BLOCK_SIZE_K))
+        b = tl.load(b_ptrs, mask=(offs_k[:, None] < K - k * BLOCK_SIZE_K))
 
         accumulator += tl.dot(a, b)
-        a_ptrs += BLOCK_K * stride_in_k
-        b_ptrs += BLOCK_K * stride_weight_k
+        a_ptrs += BLOCK_SIZE_K * stride_ak
+        b_ptrs += BLOCK_SIZE_K * stride_bk
 
-    accumulator = accumulator.to(compute_dtype)
+    accumulator = accumulator.to(c_ptr.dtype.element_ty)
 
-    offs_cn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    c_ptrs = (out_features_ptr + offs_token[:, None] * stride_out_m + offs_cn[None, :] * stride_out_n)
+    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    c_ptrs = (c_ptr + offs_token[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
     c_mask = token_mask[:, None] & (offs_cn[None, :] < N)
     tl.store(c_ptrs, accumulator, mask=c_mask)

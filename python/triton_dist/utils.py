@@ -846,3 +846,10 @@ def p2p_native_atomic_required(fn):
         return fn(*args, **kwargs)
 
     return wrapper
+
+
+@functools.lru_cache()
+def get_device_max_shared_memory_size(device):
+    err, prop = cudart.cudaGetDeviceProperties(device)
+    CUDA_CHECK(err)
+    return prop.sharedMemPerBlockOptin

@@ -23,9 +23,11 @@
 #
 ################################################################################
 
+import argparse
 import re
 import os
 import subprocess
+from pathlib import Path
 
 PYTHON_LICENSES = [
     """################################################################################
@@ -142,6 +144,7 @@ TD_EXTENSIONS = ['.td']
 CPP_EXTENSIONS = ['.cc', '.cpp', '.c', '.h', '.hpp', '.cu', '.cuh']
 WHITELIST_PATTERNS = [
     r'setup.py',
+    r'^.*patches\/triton\/.*$',
 ]
 
 
@@ -153,6 +156,16 @@ def get_modified_files():
         return [file for file in modified_files if file]
     except Exception as e:
         print(f"Error getting modified files: {e}")
+        return []
+
+
+def get_git_tracked_files():
+    try:
+        result = subprocess.run(['git', 'ls-files'], capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+        tracked_files = set(result.stdout.strip().split('\n'))
+        return [file for file in tracked_files if file]
+    except Exception as e:
+        print(f"Error getting tracked files: {e}")
         return []
 
 
@@ -189,12 +202,23 @@ def check_license(file_path):
         return False
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Check license for modified files.")
+    parser.add_argument("--modify-only", default=False, action="store_true")
+    return parser.parse_args()
+
+
 def main():
-    modified_files = get_modified_files()
+    args = parse_args()
+    if args.modify_only:
+        to_check_files = get_modified_files()
+    else:
+        to_check_files = get_git_tracked_files()
+
     missing_license_files = []
 
-    for file in modified_files:
-        if os.path.exists(file):
+    for file in to_check_files:
+        if Path(file).is_file():
             if not check_license(file):
                 missing_license_files.append(file)
 
@@ -204,7 +228,7 @@ def main():
             print(file)
         assert not missing_license_files, "Some files are missing the required license."
     else:
-        print("All modified files have the required license.")
+        print("[✅] check license passed")
 
 
 if __name__ == "__main__":
