@@ -51,7 +51,7 @@ export NVSHMEM_USE_GDRCOPY=0
 export NVSHMEM_ENABLE_ALL_DEVICE_INLINING=0
 export NVSHMEM_BUILD_BITCODE_LIBRARY=1
 
-export NVSHMEM_SRC=${NVSHMEM_SRC:${PROJECT_ROOT}/../../3rdparty/nvshmem}
+export NVSHMEM_SRC=${NVSHMEM_SRC:-${PROJECT_ROOT}/../../3rdparty/nvshmem}
 
 pushd ${NVSHMEM_SRC}
 mkdir -p build

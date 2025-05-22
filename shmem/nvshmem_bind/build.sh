@@ -50,7 +50,8 @@ function set_nvcc_gencode() {
 
 function move_libnvshmem_device_bc() {
   local dst_path=${PROJECT_ROOT}/../../3rdparty/triton/third_party/nvidia/backend/lib
-  lib_file=${PROJECT_ROOT}/../../3rdparty/nvshmem/build/install/lib/libnvshmem_device.bc
+  nvshmem_dir = ${NVSHMEM_SRC:-${PROJECT_ROOT}/../../3rdparty/nvshmem}
+  lib_file=${nvshmem_dir}/build/install/lib/libnvshmem_device.bc
   if ! mv -f $lib_file $dst_path; then
     echo "File move failed" >&2
     rm -rf "$tmp_dir"
