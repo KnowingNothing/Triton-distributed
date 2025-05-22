@@ -409,6 +409,7 @@ class CMakeExtension(Extension):
 def build_nvshmem(cap):
     nvshmem_bind_dir = os.path.join(get_base_dir(), "shmem", "nvshmem_bind")
     nvshmem_dir = os.path.join(get_base_dir(), "3rdparty", "nvshmem")
+    nvshmem_dir = os.getenv("NVSHMEM_SRC_DIR", nvshmem_dir)
     if not os.path.exists(nvshmem_dir) or len(os.listdir(nvshmem_dir)) == 0:
         # for github version: download_nvshmem()
         # subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
