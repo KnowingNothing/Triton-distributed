@@ -27,7 +27,7 @@ from typing import Sequence
 
 import torch
 import torch.distributed
-import weakref
+from cuda import cudart
 
 try:
     from triton._C._pynvshmem import nvshmem_malloc, nvshmem_free, nvshmem_ptr, nvshmem_team_n_pes, nvshmem_team_my_pe, nvshmem_my_pe, nvshmemx_get_uniqueid, nvshmemx_init_attr_with_uniqueid, nvshmem_barrier_all
@@ -108,15 +108,33 @@ class SymmCudaBuffer:
             "version": 3,
         }
         # keep alive
-        self.torch = torch
+        self.cudart = cudart
         self.nvshmem_free = nvshmem_free
 
     def __del__(self):
         if self.own_data:
-            with self.torch.cuda.device(self._device):
-                self.torch.cuda.synchronize()
-                self.nvshmem_free(self.ptr)
-                self.torch.cuda.synchronize()
+            if cudart is None:
+                print("⚠️ cudart is unloaded, strange things may happen when program exiting. take it easy...")
+
+            err, device = self.cudart.cudaGetDevice()
+            assert err == self.cudart.cudaError_t.cudaSuccess, f"cudaError: {err}"
+            if device != self._device:
+                err, = self.cudart.cudaSetDevice(self._device)
+                assert err == self.cudart.cudaError_t.cudaSuccess, f"cudaError: {err}"
+            # sync
+            err, = self.cudart.cudaDeviceSynchronize()
+            assert err == self.cudart.cudaError_t.cudaSuccess, f"cudaError: {err}"
+
+            self.nvshmem_free(self.ptr)
+
+            # sync
+            err, = self.cudart.cudaDeviceSynchronize()
+            assert err == self.cudart.cudaError_t.cudaSuccess
+            # set device back
+            if device != self._device:
+                err, = self.cudart.cudaSetDevice(device)
+                assert err == self.cudart.cudaError_t.cudaSuccess, f"cudaError: {err}"
+
             self.own_data = False
 
 
