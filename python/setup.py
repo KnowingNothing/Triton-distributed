@@ -614,8 +614,9 @@ class CMakeBuild(TorchBuildExtension):
                 if torch.cuda.is_available():
                     if torch.version.hip is None:
                         cmake_args += ["-DTRITON_BUILD_PYNVSHMEM=ON"]
-                        nvshmem_dir = os.path.join(get_base_dir(), "3rdparty", "nvshmem", "build", "install")
-                        env["NVSHMEM_DIR"] = nvshmem_dir
+                        nvshmem_dir = os.path.join(get_base_dir(), "3rdparty", "nvshmem")
+                        nvshmem_dir = os.getenv("NVSHMEM_SRC", nvshmem_dir)
+                        env["NVSHMEM_DIR"] = os.path.join(nvshmem_dir, "build", "install")
             except Exception:
                 print("Cannot import torch.")
                 pass
