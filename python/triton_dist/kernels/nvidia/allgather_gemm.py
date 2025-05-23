@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 
 from triton_dist.kernels.nvidia.common_ops import set_signal, barrier_all_intra_node_non_atomic
 from triton_dist.kernels.nvidia.allgather import AllGatherMethod, cp_engine_producer_all_gather_intra_node, get_auto_all_gather_method, cp_engine_producer_all_gather_inter_node
+from triton_dist.kernels.nvidia.ag_gemm_threadblock_swizzle import threadblock_swizzle_allgather_gemm_kernel
 
 
 @triton.jit(do_not_specialize=["rank"])
@@ -116,6 +117,17 @@ def local_copy_and_barrier_all(local_rank, rank, num_ranks, local_data, global_d
         pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
 
 
+@triton.jit
+def swizzle_2d(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M: tl.constexpr):
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    group_id = tile_id // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + (tile_id % group_size_m)
+    pid_n = (tile_id % num_pid_in_group) // group_size_m
+    return pid_m, pid_n
+
+
 # TMA related test
 def _matmul_launch_metadata(grid, kernel, args):
     ret = {}
@@ -148,7 +160,6 @@ def kernel_consumer_gemm_persistent(a_ptr, b_ptr, c_ptr,  #
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
     num_tiles = num_pid_m * num_pid_n
-    node_id = rank // LOCAL_WORLD_SIZE
     nnodes = num_ranks // LOCAL_WORLD_SIZE
 
     a_desc = tl.make_tensor_descriptor(
@@ -188,19 +199,13 @@ def kernel_consumer_gemm_persistent(a_ptr, b_ptr, c_ptr,  #
     M_per_rank = M // num_ranks
     pid_ms_per_rank = tl.cdiv(M_per_rank, BLOCK_SIZE_M)
 
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
     for _ in range(0, k_tiles * tiles_per_SM):
         ki = tl.where(ki == k_tiles - 1, 0, ki + 1)
         if ki == 0:
             tile_id += NUM_SMS
-            group_id = tile_id // num_pid_in_group
-            first_pid_m = group_id * GROUP_SIZE_M
-            group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-            pid_m = first_pid_m + (tile_id % group_size_m)
-            pid_n = (tile_id % num_pid_in_group) // group_size_m
+            pid_m, pid_n = swizzle_2d(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
 
             # swizzle m
             if nnodes == 1:
@@ -208,15 +213,7 @@ def kernel_consumer_gemm_persistent(a_ptr, b_ptr, c_ptr,  #
                 beta = 0
                 pid_m = (pid_m + ((((rank ^ alpha) + beta) % num_ranks) * pid_ms_per_rank)) % num_pid_m
             else:
-                m_rank = pid_m // pid_ms_per_rank
-                pid_m_intra_rank = pid_m - m_rank * pid_ms_per_rank
-                m_node_id = m_rank // LOCAL_WORLD_SIZE
-                m_local_rank = m_rank % LOCAL_WORLD_SIZE
-                swizzle_m_node_id = (m_node_id + node_id) % nnodes
-                swizzle_m_local_rank = (m_local_rank + rank) % LOCAL_WORLD_SIZE
-                swizzle_m_rank = swizzle_m_node_id * LOCAL_WORLD_SIZE + swizzle_m_local_rank
-
-                pid_m = swizzle_m_rank * pid_ms_per_rank + pid_m_intra_rank
+                pid_m = threadblock_swizzle_allgather_gemm_kernel(pid_m, M, rank, num_ranks, nnodes, BLOCK_SIZE_M)
 
             offs_am = pid_m * BLOCK_SIZE_M
             offs_bn = pid_n * BLOCK_SIZE_N
@@ -537,7 +534,7 @@ def create_ag_gemm_context(tensor_A, tensor_B, rank, num_ranks, max_M, num_local
 
 
 def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext = None, rank=None, num_ranks=None, persistent=True,
-            autotune=False):
+            autotune=False, straggler_option=None):
     """allgather gemm
     Allgather global matrix A and do matmul with local matrix B, produces local matrix C
 
@@ -549,6 +546,7 @@ def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext = None, rank=None, num
         num_ranks (int, Optional): total number of ranks, used for creating AllGatherGEMMTensorParallelContext
         persistent (bool, Optional): whether to use persistent GEMM kernel
         autotune(bool, Optional): whether to use autotuned GEMM kernel
+        straggler_option(tuple[int, int], Optional): [straggler id, straggler_latency (ns)] options for debugging straggler
 
     Returns:
         c (torch.Tensor<float>): local matmul C matrix. shape: [M, N_per_rank]
@@ -578,12 +576,13 @@ def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext = None, rank=None, num
                                ctx.barrier_tensor, M_per_rank, K, ctx.phase, is_internode=ctx.is_multinode)
     ctx.phase += 2
 
-    rowise_ag_gemm_dispatcher(a, b, C, ctx, persistent=persistent, autotune=autotune)
+    rowise_ag_gemm_dispatcher(a, b, C, ctx, persistent=persistent, autotune=autotune, straggler_option=straggler_option)
 
     return C
 
 
-def rowise_ag_gemm_dispatcher(a, b, c, ctx: AllGatherGEMMTensorParallelContext, persistent=False, autotune=False):
+def rowise_ag_gemm_dispatcher(a, b, c, ctx: AllGatherGEMMTensorParallelContext, persistent=False, autotune=False,
+                              straggler_option=None):
     current_stream = torch.cuda.current_stream()
     if ctx.is_multinode:
         ctx.ag_internode_stream.wait_stream(current_stream)
@@ -608,6 +607,9 @@ def rowise_ag_gemm_dispatcher(a, b, c, ctx: AllGatherGEMMTensorParallelContext, 
                                                  all_gather_method=ctx.all_gather_method)
 
     with torch.cuda.stream(ctx.gemm_stream):
+        if straggler_option and ctx.rank == straggler_option[0]:
+            torch.cuda._sleep(straggler_option[1])
+
         M_per_rank, K = a.shape
         M = M_per_rank * ctx.num_ranks
         if not persistent:
