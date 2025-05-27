@@ -88,30 +88,29 @@ def barrier_on_this_grid(ptr):
 def barrier_all_intra_node_atomic_cas_block(local_rank, rank, local_world_size, symm_flag_ptr):
     """ NOTE: this function should only be called with atomic support. memory over PCI-e does not support atomic r/w. DON'T use this function on such platforms.
     """
-    thread_idx = tid(axis=0)
-    local_rank_offset = rank - local_rank
-    if thread_idx < local_world_size:  # thread_idx => local_rank
-        remote_ptr = dl.symm_at(symm_flag_ptr + local_rank, thread_idx + local_rank_offset)
-        while atomic_cas(remote_ptr, 0, 1, "sys", "release") != 0:
-            pass
+    with dl.simt_exec_region() as (thread_idx, block_size):
+        local_rank_offset = rank - local_rank
+        if thread_idx < local_world_size:  # thread_idx => local_rank
+            remote_ptr = dl.symm_at(symm_flag_ptr + local_rank, thread_idx + local_rank_offset)
+            while atomic_cas(remote_ptr, 0, 1, "sys", "release") != 0:
+                pass
 
-    if thread_idx < local_world_size:  # thread_idx => local_rank
-        while (atomic_cas(symm_flag_ptr + thread_idx, 1, 0, "sys", "acquire") != 1):
-            pass
-    __syncthreads()
+        if thread_idx < local_world_size:  # thread_idx => local_rank
+            while (atomic_cas(symm_flag_ptr + thread_idx, 1, 0, "sys", "acquire") != 1):
+                pass
+        __syncthreads()
 
 
 @triton.jit
 def _barrier_all_intra_node_non_atomic_once_block(local_rank, rank, local_world_size, symm_flags, target_value):
-    thread_idx = tid(axis=0)
-    if thread_idx < local_world_size:  # thread_idx => local_rank
-        local_rank_offset = rank - local_rank
-        remote_ptr = dl.symm_at(symm_flags + local_rank, thread_idx + local_rank_offset)
-        st(remote_ptr, target_value, scope="sys", semantic="release")
-        while ld(symm_flags + thread_idx, scope="sys", semantic="acquire") != target_value:
-            pass
-
-    __syncthreads()
+    with dl.simt_exec_region() as (thread_idx, block_size):
+        if thread_idx < local_world_size:  # thread_idx => local_rank
+            local_rank_offset = rank - local_rank
+            remote_ptr = dl.symm_at(symm_flags + local_rank, thread_idx + local_rank_offset)
+            st(remote_ptr, target_value, scope="sys", semantic="release")
+            while ld(symm_flags + thread_idx, scope="sys", semantic="acquire") != target_value:
+                pass
+        __syncthreads()
 
 
 @triton.jit(do_not_specialize=["local_rank", "rank", "num_ranks", "target_value"])

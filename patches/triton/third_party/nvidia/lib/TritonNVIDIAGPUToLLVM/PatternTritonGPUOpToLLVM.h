@@ -91,6 +91,11 @@ void populateDistributedOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                          const TargetInfo &targetInfo,
                                          std::string NVSHMEMLibname = "",
                                          std::string NVSHMEMLibpath = "");
+
+void populateSIMTOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                  const TargetInfo &targetInfo,
+                                  RewritePatternSet &patterns,
+                                  PatternBenefit benefit);
 } // namespace NVIDIA
 } // namespace triton
 } // namespace mlir

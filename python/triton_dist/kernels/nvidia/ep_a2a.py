@@ -257,8 +257,6 @@ def kernel_get_ag_splits_and_recv_offset(
     world_size = dl.num_ranks()
     pid = tl.program_id(0)
     num_pid = tl.num_programs(0)
-    thread_idx = tid(0)
-    threads_per_block = num_warps * 32
     num_experts = experts_per_rank * world_size
     elem_size = tl.constexpr(local_splits_buf.dtype.element_ty.primitive_bitwidth) // 8
     nbytes = num_experts * elem_size
@@ -279,13 +277,14 @@ def kernel_get_ag_splits_and_recv_offset(
     # permute full_splits before cusum: [global_rank, ep_rank, expert_idx_intra_rank] => [ep_rank, expert_idx_intra_rank, global_rank]
     for target_rank in range(pid, world_size, num_pid):
         libshmem_device.signal_wait_until(splits_signal_buf + target_rank, libshmem_device.NVSHMEM_CMP_EQ, 1)
-        for expert_idx in range(thread_idx, num_experts, threads_per_block):
-            val = ld_b32(full_splits_buf + target_rank * num_experts + expert_idx)
-            ep_rank = expert_idx // experts_per_rank
-            expert_idx_intra_rank = expert_idx % experts_per_rank
-            st_b32(
-                recv_buf_offset_per_expert + ep_rank * experts_per_rank * world_size +
-                expert_idx_intra_rank * world_size + target_rank, val)
+        with dl.simt_exec_region() as (thread_idx, threads_per_block):
+            for expert_idx in range(thread_idx, num_experts, threads_per_block):
+                val = ld_b32(full_splits_buf + target_rank * num_experts + expert_idx)
+                ep_rank = expert_idx // experts_per_rank
+                expert_idx_intra_rank = expert_idx % experts_per_rank
+                st_b32(
+                    recv_buf_offset_per_expert + ep_rank * experts_per_rank * world_size +
+                    expert_idx_intra_rank * world_size + target_rank, val)
         splits_cur_rank = tl.load(full_splits_buf + target_rank * num_experts + offs, mask=mask)
         num_input_tokens_cur_rank = tl.sum(splits_cur_rank) // topk
         tl.store(num_input_tokens_per_rank + target_rank, num_input_tokens_cur_rank)
@@ -311,14 +310,13 @@ def kernel_bincount(
     n,
     input,
     output,
-    BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    thread_idx = tid(0)
     num_pid = tl.num_programs(0)
-    for i in range(pid * BLOCK_SIZE + thread_idx, n, num_pid * BLOCK_SIZE):
-        val = tl.load(input + i)
-        atomic_add(output + val, 1, scope="gpu", semantic="relaxed")
+    with dl.simt_exec_region() as (thread_idx, threads_per_block):
+        for i in range(pid * threads_per_block + thread_idx, n, num_pid * threads_per_block):
+            val = tl.load(input + i)
+            atomic_add(output + val, 1, scope="gpu", semantic="relaxed")
 
 
 ########################################
@@ -331,7 +329,7 @@ def bincount(input, length, output=None, output_dtype=torch.int32, num_sm=16):
     assert output.size(0) == length
     n = input.size(0)
     num_warps = 8
-    kernel_bincount[(num_sm, )](n, input, output, BLOCK_SIZE=num_warps * 32, num_warps=num_warps)
+    kernel_bincount[(num_sm, )](n, input, output, num_warps=num_warps)
     return output
 
 

@@ -105,6 +105,8 @@ jobs:
           #############
           # ad-hoc test
           #############
+          # simt
+          - python3 ./python/triton_dist/test/nvidia/test_simt.py
           # basic
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma

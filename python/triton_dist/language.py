@@ -54,6 +54,18 @@ def _str_to_dist_comm_scopre(comm_scope):
     return scope
 
 
+class simt_exec_region:
+
+    def __init__(self, _builder=None):
+        self._builder = _builder
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pass
+
+
 @builtin
 def wait(barrierPtrs, numBarriers, scope: str, semantic: str, waitValue: int = 1, _builder=None):
     if not barrierPtrs.type.scalar.is_ptr():

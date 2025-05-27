@@ -36,6 +36,7 @@
 #include "llvm/Support/SourceMgr.h"
 
 #include "Dialect/Distributed/IR/Dialect.h"
+#include "Dialect/SIMT/IR/Dialect.h"
 #include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
 
 namespace {
@@ -336,12 +337,14 @@ void init_triton_ir(py::module &&m) {
 
   m.def("load_dialects", [](MLIRContext &context) {
     DialectRegistry registry;
-    registry.insert<TritonDialect, ::mlir::triton::gpu::TritonGPUDialect,
-                    math::MathDialect, arith::ArithDialect, scf::SCFDialect,
-                    ::mlir::gpu::GPUDialect, cf::ControlFlowDialect,
-                    ::mlir::triton::proton::ProtonDialect,
-                    ::mlir::triton::distributed::DistributedDialect,
-                    LLVM::LLVMDialect, mlir::ub::UBDialect>();
+    registry
+        .insert<TritonDialect, ::mlir::triton::gpu::TritonGPUDialect,
+                math::MathDialect, arith::ArithDialect, scf::SCFDialect,
+                tensor::TensorDialect, ::mlir::gpu::GPUDialect,
+                cf::ControlFlowDialect, ::mlir::triton::proton::ProtonDialect,
+                ::mlir::triton::distributed::DistributedDialect,
+                ::mlir::triton::simt::SIMTDialect, LLVM::LLVMDialect,
+                mlir::ub::UBDialect>();
     mlir::LLVM::registerInlinerInterface(registry);
     registerBuiltinDialectTranslation(registry);
     registerLLVMDialectTranslation(registry);
@@ -539,6 +542,18 @@ void init_triton_ir(py::module &&m) {
       .def("verify", [](OpState &self) -> bool {
         return succeeded(verify(self.getOperation()));
       });
+  // simt ops
+  py::class_<triton::simt::BlockYieldOp, OpState>(m, "BlockYieldOp",
+                                                  py::module_local());
+  py::class_<triton::simt::SIMTExecRegionOp, OpState>(m, "SIMTExecRegionOp",
+                                                      py::module_local())
+      .def(
+          "get_simt_entry_block",
+          [](triton::simt::SIMTExecRegionOp &self) -> Block * {
+            return &self.getDefaultRegion().front();
+          },
+          ret::reference);
+
   // scf Ops
   py::class_<scf::ForOp, OpState>(m, "ForOp", py::module_local())
       .def("get_induction_var", &scf::ForOp::getInductionVar);
@@ -1779,6 +1794,67 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, bool isStart, int32_t regionId) -> void {
              self.create<mlir::triton::proton::RecordOp>(isStart, regionId);
            })
+      // SIMT ops
+      .def("create_get_thread_id",
+           [](TritonOpBuilder &self) -> Value {
+             // triton only use 1D thread block
+             Value tid = self.create<::mlir::gpu::ThreadIdOp>(
+                 ::mlir::gpu::Dimension::x);
+             Type ty_i32 = self.getBuilder().getIntegerType(32);
+             tid = self.create<arith::IndexCastOp>(ty_i32, tid);
+             return tid;
+           })
+      .def("create_get_block_size",
+           [](TritonOpBuilder &self) -> Value {
+             Value bs = self.create<::mlir::gpu::BlockDimOp>(
+                 ::mlir::gpu::Dimension::x);
+             Type ty_i32 = self.getBuilder().getIntegerType(32);
+             bs = self.create<arith::IndexCastOp>(ty_i32, bs);
+             return bs;
+           })
+      .def("create_simt_exec_region_op",
+           [](TritonOpBuilder &self,
+              std::vector<Value> &init_args) -> triton::simt::SIMTExecRegionOp {
+             return self.create<mlir::triton::simt::SIMTExecRegionOp>(
+                 init_args);
+           })
+      .def("create_block_yield_op",
+           [](TritonOpBuilder &self,
+              std::vector<Value> &yields) -> triton::simt::BlockYieldOp {
+             return self.create<triton::simt::BlockYieldOp>(yields);
+           })
+      .def("create_extract",
+           [](TritonOpBuilder &self, Value src,
+              std::vector<Value> &indices) -> Value {
+             std::vector<Value> to_index;
+             for (size_t i = 0; i < indices.size(); ++i) {
+               Value val = indices[i];
+               if (!isa<IndexType>(val.getType())) {
+                 to_index.push_back(self.create<arith::IndexCastOp>(
+                     self.getBuilder().getIndexType(), val));
+               } else {
+                 to_index.push_back(val);
+               }
+             }
+             Value ret = self.create<tensor::ExtractOp>(src, to_index);
+             return ret;
+           })
+      .def("create_insert",
+           [](TritonOpBuilder &self, Value scalar, Value dest,
+              std::vector<Value> &indices) -> Value {
+             std::vector<Value> to_index;
+             for (size_t i = 0; i < indices.size(); ++i) {
+               Value val = indices[i];
+               if (!isa<IndexType>(val.getType())) {
+                 to_index.push_back(self.create<arith::IndexCastOp>(
+                     self.getBuilder().getIndexType(), val));
+               } else {
+                 to_index.push_back(val);
+               }
+             }
+             return self.create<tensor::InsertOp>(scalar, dest, to_index);
+           })
+
       // Distributed Ops
       .def("create_distributed_wait",
            [](TritonOpBuilder &self, Value &barrierPtrs, Value &numBarriers,

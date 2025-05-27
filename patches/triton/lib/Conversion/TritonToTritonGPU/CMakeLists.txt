@@ -12,6 +12,7 @@ add_triton_library(TritonToTritonGPU
     TritonIR
     ProtonIR
     DistributedIR
+    SIMTIR
     TritonGPUIR
     TritonGPUTransforms
 )

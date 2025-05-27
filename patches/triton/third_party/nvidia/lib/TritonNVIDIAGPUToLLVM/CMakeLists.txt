@@ -20,6 +20,7 @@ add_triton_library(TritonNVIDIAGPUToLLVM
     Utility.cpp
     Fp4ToFpOpToLLVM.cpp
     TargetInfo.cpp
+    SIMTOpToLLVM.cpp
 
     DEPENDS
     TritonNVIDIAGPUConversionPassIncGen
@@ -29,4 +30,5 @@ add_triton_library(TritonNVIDIAGPUToLLVM
     TritonGPUToLLVM
     TritonProtonToLLVM
     DistributedIR
+    SIMTIR
 )

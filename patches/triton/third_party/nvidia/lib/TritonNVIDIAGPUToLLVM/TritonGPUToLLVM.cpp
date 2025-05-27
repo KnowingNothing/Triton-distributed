@@ -3,6 +3,7 @@
  */
 #include "Dialect/Distributed/IR/Dialect.h"
 #include "Dialect/NVGPU/IR/Dialect.h"
+#include "Dialect/SIMT/IR/Dialect.h"
 #include "TritonNVIDIAGPUToLLVM/Passes.h"
 #include "TritonNVIDIAGPUToLLVM/Utility.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -172,6 +173,9 @@ struct ConvertTritonGPUToLLVM
     // Distributed ops
     mlir::triton::NVIDIA::populateDistributedOpToLLVMPatterns(
         typeConverter, patterns, benefit, targetInfo);
+    // SIMT ops
+    mlir::triton::NVIDIA::populateSIMTOpToLLVMPatterns(
+        typeConverter, targetInfo, patterns, benefit);
     mlir::triton::NVIDIA::populateTCGen5MMAOpToLLVMPattern(typeConverter,
                                                            patterns, benefit);
     mlir::triton::NVIDIA::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
