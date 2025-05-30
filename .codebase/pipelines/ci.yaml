@@ -34,7 +34,10 @@ jobs:
           - python3 -m pip install cmake==3.26 ninja wheel lit numpy plotly pandas pytest scipy==1.10.1 matplotlib tabulate pybind11 setuptools==69.0.0 tqdm
           - python3 -m pip install -i https://test.pypi.org/simple hip-python>=6.3.0
           - git submodule update --init --recursive
+          # some unknown proxy issue caused apt install fail for some packages
+          - unset http_proxy
           - bash shmem/rocshmem_bind/build.sh
+          - export http_proxy=http://sys-proxy-rd-relay.byted.org:3128
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
           # - source scripts/setenv.sh
 
