@@ -1,5 +1,8 @@
 #!/bin/bash
 
+set -x
+set -e
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT=$(realpath ${SCRIPT_DIR})
 
