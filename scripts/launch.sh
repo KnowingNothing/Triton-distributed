@@ -62,7 +62,8 @@ function check_nvshmem_bootstrap_uid_sock() {
   if [ -n NCCL_SOCKET_IFNAME ]; then
     _NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME#=} # remove leading '='. refer to NCCL syntax: https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-ifname
     if [ $NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME != ${_NCCL_SOCKET_IFNAME} ]; then
-      echo -e "${YELLOW}${BOLD}${WARN_ICON} WARNING: ${RESET}${BOLD}${RESET} NVSHMEM and NCCL use the different socket interface..."
+      echo -e "${YELLOW}${BOLD}${WARN_ICON} WARNING: ${RESET}${BOLD}${RESET} NVSHMEM and NCCL use the different socket interface. force set NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME to NCCL_SOCKET_IFNAME instead..."
+      export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=${_NCCL_SOCKET_IFNAME}
     fi
   fi
 
@@ -79,7 +80,8 @@ function check_nvshmem_bootstrap_uid_sock() {
   fi
 
   if [ $has_ipv4 -eq 0 ]; then
-    echo -e "${YELLOW}${BOLD}${WARN_ICON} WARNING: ${RESET}${BOLD}${RESET} NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY=${NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY} does not support IPv4, maybe you should set NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY to AF_INET6..."
+    echo -e "${YELLOW}${BOLD}${WARN_ICON} WARNING: ${RESET}${BOLD}${RESET} NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY=${NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY} does not support IPv4, force set NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY to AF_INET6..."
+    export NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY=AF_INET6
   fi
 }
 
