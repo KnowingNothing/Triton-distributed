@@ -49,6 +49,8 @@ class Backend:
     tools_dir: Optional[str]
     install_dir: str
     is_external: bool
+    dist_backend_dir: Optional[str]
+    dist_language_dir: Optional[str]
 
 
 class BackendInstaller:
@@ -97,9 +99,29 @@ class BackendInstaller:
         if tools_dir is not None:
             tools_package_data = [f"{os.path.relpath(p, tools_dir)}/*" for p, _, _, in os.walk(tools_dir)]
 
+        # TritonDistributed backends
+        dist_root_dir = os.path.join(get_base_dir(), "backends")
+        dist_backend_path = None
+        dist_language_dir = None
+        if backend_name in os.listdir(dist_root_dir):
+            dist_backend_src_dir = os.path.join(dist_root_dir, backend_name)
+
+            for dir in os.listdir(dist_backend_src_dir):
+                assert dir in ["backend", "language"], "only support backend/language extension"
+
+            if os.path.exists(os.path.abspath(os.path.join(dist_backend_src_dir, "backend"))):
+                dist_backend_path = os.path.abspath(os.path.join(dist_backend_src_dir, "backend"))
+                for file in os.listdir(dist_backend_path):
+                    assert os.path.exists(os.path.join(backend_path,
+                                                       file)), f"${file} does not exist in ${backend_path}"
+            dist_language_dir = os.path.abspath(os.path.join(dist_backend_src_dir, "language"))
+            if not os.path.exists(dist_language_dir):
+                dist_language_dir = None
+
         return Backend(name=backend_name, package_data=package_data, language_package_data=language_package_data,
                        tools_package_data=tools_package_data, src_dir=backend_src_dir, backend_dir=backend_path,
-                       language_dir=language_dir, tools_dir=tools_dir, install_dir=install_dir, is_external=is_external)
+                       language_dir=language_dir, tools_dir=tools_dir, install_dir=install_dir, is_external=is_external,
+                       dist_backend_dir=dist_backend_path, dist_language_dir=dist_language_dir)
 
     # Copy all in-tree backends under triton/third_party.
     @staticmethod
@@ -477,6 +499,9 @@ class CMakeBuild(TorchBuildExtension):
         TorchBuildExtension.finalize_options(self)
 
     def run(self):
+        # We creates symbolic links for each file in backend separately. Since the nvshmem bitcode is moved to nvidia/lib,
+        # it needs to be built first.
+        build_shmem()
         add_links()
         for ext in self.extensions:
             if isinstance(ext, CMakeExtension):
@@ -511,7 +536,6 @@ class CMakeBuild(TorchBuildExtension):
         return cmake_args
 
     def build_extension_cmake(self, ext):
-        build_shmem()
 
         try:
             out = subprocess.check_output(["cmake", "--version"])
@@ -710,8 +734,27 @@ backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_ex
 
 
 def add_link_to_backends():
+
+    def _force_update_symlink_recursive(dest_dir, src_dir):
+        for root, dirs, files in os.walk(src_dir):
+            for file in files:
+                src_path = os.path.join(root, file)
+                rel_path = os.path.relpath(src_path, src_dir)
+                dest_path = os.path.join(dest_dir, rel_path)
+
+                src_path = os.path.abspath(src_path)
+                dest_path = os.path.abspath(dest_path)
+                if os.path.lexists(dest_path):
+                    assert os.path.islink(dest_path), f"unexpected file: {dest_path} is not a symbolic link"
+                    os.unlink(dest_path)
+                dest_parent = os.path.dirname(dest_path)
+                os.makedirs(dest_parent, exist_ok=True)
+
+                rel_src_path = os.path.join(os.path.relpath(os.path.dirname(src_path), dest_parent), file)
+                os.symlink(rel_src_path, dest_path)
+
     for backend in backends:
-        update_symlink(backend.install_dir, backend.backend_dir)
+        _force_update_symlink_recursive(backend.install_dir, backend.backend_dir)
 
         if backend.language_dir:
             # Link the contents of each backend's `language` directory into
@@ -722,7 +765,7 @@ def add_link_to_backends():
             for x in os.listdir(backend.language_dir):
                 src_dir = os.path.join(backend.language_dir, x)
                 install_dir = os.path.join(extra_dir, x)
-                update_symlink(install_dir, src_dir)
+                _force_update_symlink_recursive(install_dir, src_dir)
 
         if backend.tools_dir:
             # Link the contents of each backend's `tools` directory into
@@ -734,6 +777,22 @@ def add_link_to_backends():
                 src_dir = os.path.join(backend.tools_dir, x)
                 install_dir = os.path.join(extra_dir, x)
                 update_symlink(install_dir, src_dir)
+
+    # use TritonDistributed backend to override the exsiting backend in triton
+    for backend in backends:
+        if backend.dist_backend_dir is not None:
+            _force_update_symlink_recursive(backend.install_dir, backend.dist_backend_dir)
+
+        if backend.dist_language_dir:
+            # Link the contents of each backend's `language` directory into
+            # `triton.language.extra`.
+            extra_dir = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "python", "triton", "language",
+                             "extra"))
+            for x in os.listdir(backend.dist_language_dir):
+                src_dir = os.path.join(backend.dist_language_dir, x)
+                install_dir = os.path.join(extra_dir, x)
+                _force_update_symlink_recursive(install_dir, src_dir)
 
 
 def add_link_to_proton():
@@ -867,8 +926,15 @@ def get_packages():
         packages += ["triton/profiler"]
     if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):  # Default ON
         packages += [
-            "triton_dist", "triton_dist/_C", "triton_dist/kernels", "triton_dist/kernels/nvidia",
-            "triton_dist/kernels/amd", "triton_dist/layers/nvidia", "triton_dist/tools", "triton_dist/test"
+            "triton_dist",
+            "triton_dist/_C",
+            "triton_dist/kernels",
+            "triton_dist/kernels/nvidia",
+            "triton_dist/kernels/amd",
+            "triton_dist/layers/nvidia",
+            "triton_dist/tools",
+            "triton_dist/test",
+            "triton_dist/language",
         ]
         try:
             import torch

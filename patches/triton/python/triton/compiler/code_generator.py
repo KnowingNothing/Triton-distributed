@@ -12,7 +12,7 @@ from types import ModuleType
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
 
 from .. import language
-from .._C.libtriton import ir
+from .._C.libtriton import ir, distributed
 from ..language import constexpr, semantic, str_to_ty, tensor
 from ..language.core import _unwrap_if_constexpr, nv_tma_desc_type, base_value, base_type
 from ..runtime.jit import get_jit_fn_file_line
@@ -20,6 +20,7 @@ from ..runtime.jit import get_jit_fn_file_line
 from ..runtime import JITFunction
 from .._utils import find_paths_if, get_iterable_path, set_iterable_path
 from . import config
+import builtins
 
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 
@@ -287,7 +288,7 @@ class CodeGenerator(ast.NodeVisitor):
                  module=None, is_kernel=False, function_types: Optional[Dict] = None, noinline=False,
                  file_name: Optional[str] = None, begin_line=0):
         self.context = context
-        self.builder = ir.builder(context)
+        self.builder = distributed.ir.builder(context)
         self.file_name = file_name
         # node.lineno starts from 1, so we need to subtract 1
         self.begin_line = begin_line - 1
@@ -1052,6 +1053,18 @@ class CodeGenerator(ast.NodeVisitor):
         lhs = self.visit(node.value)
         slices = self.visit(node.slice)
         if _is_triton_tensor(lhs):
+            if isinstance(slices, (builtins.slice, language.core.slice, constexpr, tensor)) or slices is None:
+                slices = [slices]
+            if isinstance(slices, tuple):
+                slices = slices.values
+            is_extract = True
+            for sl in slices:
+                if not isinstance(sl, (constexpr, tensor)):
+                    is_extract = False
+                if isinstance(sl, constexpr) and sl.value is None:
+                    is_extract = False
+            if is_extract:
+                return triton_dist.language.semantic.extract(lhs, slices, self.builder)
             return lhs.__getitem__(slices, _builder=self.builder)
         return lhs[slices]
 
@@ -1061,7 +1074,7 @@ class CodeGenerator(ast.NodeVisitor):
         slices = self.visit(node.slice)
         # Extension of dist triton: store value to tile
         if _is_triton_tensor(lhs):
-            ret = semantic.insert(lhs, value, slices, self.builder)
+            ret = triton_dist.language.semantic.insert(lhs, value, slices, self.builder)
             self.set_value(node.value.id, ret)
             return
         assert isinstance(lhs, language.tuple)

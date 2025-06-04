@@ -45,7 +45,7 @@ In doing so, you will learn about:
 import torch
 import triton
 import triton.language as tl
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 from triton_dist import pynvshmem
 
 from typing import List

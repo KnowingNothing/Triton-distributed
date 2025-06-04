@@ -25,7 +25,7 @@
 import torch
 import triton
 from triton_dist import pynvshmem
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 
 import os
 import datetime

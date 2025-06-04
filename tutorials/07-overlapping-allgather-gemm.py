@@ -52,7 +52,7 @@ import triton
 from triton_dist.kernels.nvidia.allgather_gemm import create_ag_gemm_context
 import triton.language as tl
 import triton_dist.language as dl
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 
 # %%
 # Now, let's write a GEMM kernel to consume the transfered tensors!

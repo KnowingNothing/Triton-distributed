@@ -16,7 +16,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #include "llvm/Support/Casting.h"
 
-#include "Dialect/Distributed/IR/Dialect.h"
+#include "TritonDistributed/Dialect/Distributed/IR/Dialect.h"
 
 using namespace mlir;
 namespace tt = mlir::triton;

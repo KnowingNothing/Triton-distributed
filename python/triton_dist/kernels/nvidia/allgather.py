@@ -37,7 +37,7 @@ import triton.language as tl
 from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.common_ops import set_signal, wait_eq
 from triton_dist.utils import CUDA_CHECK, get_numa_world_size, get_has_fullmesh_nvlink
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import __syncthreads, tid
 
 

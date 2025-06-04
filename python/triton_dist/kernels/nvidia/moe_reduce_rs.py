@@ -34,7 +34,7 @@ from typing import Optional, List
 from dataclasses import dataclass
 
 from triton_dist.kernels.nvidia.common_ops import wait_eq, set_signal, barrier_all_on_stream, BarrierAllContext
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import (atomic_add, __syncthreads, tid, ntid)
 
 

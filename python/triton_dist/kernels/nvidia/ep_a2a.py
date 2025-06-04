@@ -27,7 +27,7 @@ import torch
 import triton
 import triton.language as tl
 import triton_dist.language as dl
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import tid, atomic_add, ld_acquire, __syncthreads, ld_b32, st_b32, atomic_add_per_warp
 
 

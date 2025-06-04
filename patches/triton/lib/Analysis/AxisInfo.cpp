@@ -10,7 +10,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
-#include "Dialect/Distributed/IR/Dialect.h"
+#include "TritonDistributed/Dialect/Distributed/IR/Dialect.h"
 
 #define DEBUG_TYPE "axis-info"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")

@@ -46,7 +46,7 @@ from typing import Optional, List
 from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.common_ops import BarrierAllContext, wait_eq, barrier_all_on_stream
 from triton_dist.kernels.nvidia.reduce_scatter import ring_reduce
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 
 import os
 

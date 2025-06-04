@@ -32,7 +32,7 @@ import triton
 import triton.language as tl
 from cuda import cudart
 from triton_dist import pynvshmem
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 
 import triton_dist.language as dl
 from triton_dist.kernels.nvidia.common_ops import (barrier_all_on_stream, set_signal, wait_eq, barrier_on_this_grid,

@@ -149,8 +149,8 @@ else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4244 /wd4624 /wd4715 /wd4530")
 endif()
 
-include_directories(${PROJECT_SOURCE_DIR}/dialect/include)
-include_directories(${PROJECT_BINARY_DIR}/dialect/include)
+include_directories(${PROJECT_SOURCE_DIR}/include)
+include_directories(${PROJECT_BINARY_DIR}/include)
 include_directories(${PROJECT_SOURCE_DIR}/3rdparty/triton)
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${LLVM_INCLUDE_DIRS})
@@ -158,10 +158,15 @@ include_directories(${PROJECT_SOURCE_DIR}/3rdparty/triton/include)
 include_directories(${PROJECT_BINARY_DIR}/3rdparty/triton/include) # Tablegen'd files
 include_directories(${PROJECT_SOURCE_DIR}/3rdparty/triton/third_party)
 include_directories(${PROJECT_BINARY_DIR}/3rdparty/triton/third_party) # Tablegen'd files
+# backend
+include_directories(${PROJECT_SOURCE_DIR}/3rdparty/triton/third_party/amd/include)
+include_directories(${PROJECT_SOURCE_DIR}/3rdparty/triton/third_party/nvidia/include)
 
 # link_directories(${LLVM_LIBRARY_DIR})
 add_subdirectory(3rdparty/triton/include)
 add_subdirectory(3rdparty/triton/lib)
+add_subdirectory(include)
+add_subdirectory(lib)
 
 # TODO: Figure out which target is sufficient to fix errors; triton is
 # apparently not enough. Currently set linking libstdc++fs for all targets
@@ -174,6 +179,16 @@ endif()
 # -----
 
 # ------
+# triton distributed
+if(TRITON_BUILD_PYTHON_MODULE)
+  message(STATUS "Adding Python module for TritonDistributed")
+  set(PYTHON_DIST_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
+  add_triton_plugin(TritonDistributed ${PYTHON_DIST_SRC_PATH}/triton_distributed.cc
+                                      ${PYTHON_DIST_SRC_PATH}/passes.cc
+                                      ${PYTHON_DIST_SRC_PATH}/ir.cc)
+  target_link_libraries(TritonDistributed PRIVATE DistributedIR Python3::Module pybind11::headers)
+endif()
+
 if(TRITON_BUILD_PYTHON_MODULE)
   message(STATUS "Adding Python module")
   set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/triton/python/src)
@@ -218,7 +233,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
   add_subdirectory(3rdparty/triton/third_party/proton/dialect)
   # We always build distributed dialect
   list(APPEND TRITON_PLUGIN_NAMES "distributed")
-  add_subdirectory(dialect)
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
@@ -330,7 +344,6 @@ if(NOT TRITON_BUILD_PYTHON_MODULE)
     add_subdirectory(3rdparty/triton/third_party/${CODEGEN_BACKEND})
   endforeach()
   add_subdirectory(3rdparty/triton/third_party/proton/dialect)
-  add_subdirectory(dialect)
 endif()
 
 find_package(Threads REQUIRED)

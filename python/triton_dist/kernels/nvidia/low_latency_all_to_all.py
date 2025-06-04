@@ -28,7 +28,7 @@ import triton.language as tl
 from triton_dist import pynvshmem
 
 from typing import Optional
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import tid
 
 

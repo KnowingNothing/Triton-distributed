@@ -44,7 +44,7 @@ import torch
 import triton
 import triton.language as tl
 from triton_dist.utils import perf_func
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import __syncthreads, tid
 
 

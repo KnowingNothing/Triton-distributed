@@ -30,7 +30,7 @@ from typing import List
 
 import triton
 import triton.language as tl
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 
 from triton.language.extra.cuda.language_extra import (
     __syncthreads,

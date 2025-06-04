@@ -24,7 +24,7 @@
 ################################################################################
 import triton
 import triton.language as tl
-from triton.language.extra import libshmem_device
+from triton_dist.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import tid, ntid, __syncthreads, multimem_st_b64, load_v2_b64, st
 import torch
 import torch.distributed
