@@ -122,6 +122,8 @@ jobs:
           # gemm rs
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568 --check
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 4096 4096 12288 --fuse_scatter --check
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 4096 4096 12288 --fuse_scatter --no-persistent --check
           # allgather
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_small_msg.py
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_all_gather.py

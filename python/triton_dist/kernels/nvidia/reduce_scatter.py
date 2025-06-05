@@ -300,7 +300,7 @@ def reduce_scatter_ring_push_1d_intra_node_ce(
     stream = stream or torch.cuda.current_stream()
     (M, _) = input_tensor.shape
     M_per_rank = M // num_ranks
-    if output:
+    if output is not None:
         assert (output.dtype == input_tensor.dtype and output.is_contiguous() and output.is_cuda
                 and output.shape == (M_per_rank, _))
 
@@ -323,8 +323,8 @@ def reduce_scatter_ring_push_1d_intra_node_ce(
                     if_64bit_flag,
                 )
                 buffer = symm_reduce_tensors[rank][M_start:M_end]
-                output = output if output is not None and stage == num_ranks - 1 else buffer
-                add_continuous(src, buffer, output)  # directly reduce to output
+                cur_out = output if output is not None and stage == num_ranks - 1 else buffer
+                add_continuous(src, buffer, cur_out)  # directly reduce to output
             if stage == num_ranks - 1:
                 return output
             if stage == 0:
@@ -553,6 +553,9 @@ def reducer_scatter_for_each_node_ring(input: torch.Tensor, stream: torch.cuda.S
     nnodes = ctx.nnodes
     node_id = ctx.node_id
     p2p_buf = ctx.p2p_buf
+    output = None
+    if nnodes == 1:
+        output = torch.empty((M_per_rank, N), dtype=input.dtype, device=input.device)
     with torch.cuda.stream(stream):
         for n in range(0, nnodes):
             cur_node_id = (node_id + n + 1) % nnodes
@@ -571,6 +574,7 @@ def reducer_scatter_for_each_node_ring(input: torch.Tensor, stream: torch.cuda.S
                     x[cur_node_id * local_world_size:(cur_node_id + 1) * local_world_size]
                     for x in ctx.rs_per_node_signal_bufs
                 ],
+                output,
                 stream=stream,
             )
 
@@ -649,6 +653,9 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
     node_id = ctx.node_id
     rs_per_node_buf = ctx.rs_per_node_buf
     p2p_buf = ctx.p2p_buf
+    output = None
+    if nnodes == 1:
+        output = torch.empty((M_per_rank, N), dtype=input.dtype, device=input.device)
     with torch.cuda.stream(stream):
         for n in range(0, nnodes):
             cur_node_id = (node_id + n + 1) % nnodes
@@ -660,10 +667,11 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
 
             # ring reduce intra node
             rs_buf_cur_node = rs_per_node_buf[M_per_rank * cur_node_id:(cur_node_id + 1) * M_per_rank]
-            barrier_all_on_stream(ctx.barrier, stream)
+            barrier_all_on_stream(None, stream)
             reduction_stream.wait_stream(stream)
             with torch.cuda.stream(reduction_stream):
-                ring_reduce(scatter_bufs_intra_node[local_rank], rs_buf_cur_node, local_rank, local_world_size,
+                reduce_out_buf = output if nnodes == 1 else rs_buf_cur_node
+                ring_reduce(scatter_bufs_intra_node[local_rank], reduce_out_buf, local_rank, local_world_size,
                             num_sms=-1 if n == nnodes - 1 else num_reduction_sms)
 
                 # inter node p2p
@@ -685,7 +693,7 @@ def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
 
     stream.wait_stream(reduction_stream)
     if nnodes == 1:
-        return rs_per_node_buf[:M_per_rank * nnodes]
+        return output
     return p2p_buf[:M_per_rank * nnodes]
 
 
@@ -852,6 +860,9 @@ def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
         rs_result_per_node = reducer_scatter_for_each_node_ring(input, stream, ctx)
     else:
         rs_result_per_node = reducer_scatter_for_each_node(input, stream, ctx)
+
+    if ctx.nnodes == 1:
+        return rs_result_per_node
 
     barrier_all_on_stream(None, stream)
     output = torch.empty((M_per_rank, N), dtype=input.dtype, device=input.device)

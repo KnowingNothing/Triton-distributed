@@ -67,6 +67,8 @@ class GemmRS(torch.nn.Module):
         input_dtype: torch.dtype,
         output_dtype: torch.dtype,
         local_world_size: int = -1,
+        persistent: bool = True,
+        fuse_scatter: bool = False,
     ):
         super().__init__()
         self.tp_group = tp_group
@@ -85,17 +87,18 @@ class GemmRS(torch.nn.Module):
 
         self.ctx = create_gemm_rs_context(max_M, N, self.rank, self.world_size, self.local_world_size, output_dtype,
                                           self.rs_stream)
+        self.fuse_scatter = fuse_scatter
+        self.persistent = persistent
 
     def forward(
         self,
         input: torch.Tensor,  # [M, local_K]
         weight: torch.Tensor,  # [N, local_K]
         bias: Optional[torch.Tensor] = None,
-        persistent: bool = True,
     ):
         assert input.shape[0] <= self.max_M and weight.shape[0] == self.N
 
-        return gemm_rs(input, weight, self.ctx, persistent)
+        return gemm_rs(input, weight, self.ctx, self.persistent, self.fuse_scatter)
 
 
 DTYPE_MAP = {
@@ -129,6 +132,8 @@ def parse_args():
     parser.add_argument("--verify-iters", default=10, type=int)
     parser.add_argument("--persistent", action=argparse.BooleanOptionalAction,
                         default=torch.cuda.get_device_capability() >= (9, 0))
+
+    parser.add_argument("--fuse_scatter", action=argparse.BooleanOptionalAction, default=False)
 
     parser.add_argument(
         "--transpose_weight",
@@ -203,7 +208,8 @@ if __name__ == "__main__":
         input, weight, bias = next(generator)
         return input, weight, bias
 
-    gemm_rs_op = GemmRS(TP_GROUP, args.M, args.N, args.K, input_dtype, output_dtype, LOCAL_WORLD_SIZE)
+    gemm_rs_op = GemmRS(TP_GROUP, args.M, args.N, args.K, input_dtype, output_dtype, LOCAL_WORLD_SIZE, args.persistent,
+                        args.fuse_scatter)
 
     if args.check:
         for n in range(args.iters):
@@ -225,7 +231,7 @@ if __name__ == "__main__":
 
             # dist triton impl
             for input, weight, bias in input_list:
-                dist_out = gemm_rs_op.forward(input, weight, bias, args.persistent)
+                dist_out = gemm_rs_op.forward(input, weight, bias)
                 dist_out_list.append(dist_out)
             # verify
             for idx, (torch_out, dist_out) in enumerate(zip(torch_out_list, dist_out_list)):
@@ -242,9 +248,8 @@ if __name__ == "__main__":
         pynvshmem.nvshmem_barrier_all()
         torch.cuda.synchronize()
 
-        dist_triton_output, dist_triton_perf = perf_func(
-            partial(gemm_rs_op.forward, input, weight, bias, args.persistent), iters=args.iters,
-            warmup_iters=args.warmup)
+        dist_triton_output, dist_triton_perf = perf_func(partial(gemm_rs_op.forward, input, weight, bias),
+                                                         iters=args.iters, warmup_iters=args.warmup)
 
     pynvshmem.nvshmem_barrier_all()
     torch.cuda.synchronize()
