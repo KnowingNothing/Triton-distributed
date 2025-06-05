@@ -62,7 +62,7 @@ jobs:
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
     runs-on:
-      cluster: gpu-h100
+      cluster: triton_distributed_nvidia_121
       docker:
         shared-memory: 1024
 
