@@ -221,11 +221,11 @@ if __name__ == "__main__":
     dist_output = dist_ag_and_reduce(input, ag_buffers, signals, notify_stream)
     dist.barrier()
     # torch impl
-    gloden_output = torch_ag_and_reduce(input)
+    golden_output = torch_ag_and_reduce(input)
     torch.cuda.synchronize()
     dist.barrier()
     # check
-    torch.testing.assert_close(gloden_output, dist_output, rtol=0, atol=0)
+    torch.testing.assert_close(golden_output, dist_output, rtol=0, atol=0)
     print(f"RANK[{LOCAL_RANK}]: Test Passed!")
     # post process
     dist.barrier()

@@ -1,5 +1,20 @@
 #!/bin/bash
 
+user_nproc_per_node=""
+final_args=()
+
+for arg in "$@"; do
+  case $arg in
+    --nproc_per_node=*)
+      user_nproc_per_node="${arg#*=}"
+      ;;
+    *)
+      final_args+=("$arg")
+      ;;
+  esac
+done
+set -- "${final_args[@]}"
+
 function list_interfaces() {
   # Try /sys first (most reliable)
   if [ -d "/sys/class/net" ]; then
@@ -100,7 +115,11 @@ export NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY=${NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY:-AF
 
 check_nvshmem_bootstrap_uid_sock
 
-nproc_per_node=${ARNOLD_WORKER_GPU:=$(nvidia-smi --list-gpus | wc -l)}
+if [ -n "$user_nproc_per_node" ]; then
+  nproc_per_node=${user_nproc_per_node}
+else
+  nproc_per_node=${ARNOLD_WORKER_GPU:=$(nvidia-smi --list-gpus | wc -l)}
+fi
 nnodes=${ARNOLD_WORKER_NUM:=1}
 node_rank=${ARNOLD_ID:=0}
 
