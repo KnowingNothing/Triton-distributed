@@ -136,17 +136,6 @@ private:
     Type returnType = calleeType.getReturnType();
 
     auto loc = callOp.getLoc();
-
-    // clang-format off
-    // define internal noundef i64 @_Z22load_acquire_workgroupPU3AS1m(ptr addrspace(1) nocapture noundef readonly %0) #0 {
-    //   %2 = load atomic i64, ptr addrspace(1) %0 syncscope("workgroup-one-as") acquire, align 8
-    //   ret i64 %2
-    // }
-    // define internal noundef i32 @_Z19load_acquire_systemPU3AS1i(ptr addrspace(1) nocapture noundef readonly %0) #0 {
-    //   %2 = load atomic i32, ptr addrspace(1) %0 syncscope("one-as") acquire, align 4
-    //   ret i32 %2
-    // }
-    // clang-format on
     auto buildAtomicLoad =
         [&rewriter, &loc](Type dtype, Value inputPtr, int align,
                           LLVM::AtomicOrdering ordering,

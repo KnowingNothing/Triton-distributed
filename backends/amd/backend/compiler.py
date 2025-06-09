@@ -81,7 +81,6 @@ class HIPOptions:
         # Only kpack=1 is supported on gfx950
         kpack = 1 if self.arch == 'gfx950' else self.kpack
         object.__setattr__(self, 'kpack', kpack)
-        ## TODO: put generated .bc located at lib/ here
         libs = ["ocml", "ockl"]
         for lib in libs:
             extern_libs[lib] = str(default_libdir / f'{lib}.bc')
