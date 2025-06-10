@@ -610,11 +610,9 @@ def syncthreads(_builder=None):
 
 @core.extern
 def red_add_release_agent(arg0, arg1, _builder=None):
-    return dist_core.extern_elementwise(
-        "", "", [arg0, arg1], {
-            (core.pointer_type(core.int32), core.pointer_type(core.int32)):
-            ("__triton_hip_red_add_release_agent", core.int32),
-        }, is_pure=False, _builder=_builder)
+    return dist_core.extern_elementwise("", "", [arg0, arg1], {
+        (core.pointer_type(core.int32), core.int32): ("__triton_hip_red_add_release_agent", core.int32),
+    }, is_pure=False, _builder=_builder)
 
 
 @core.extern
@@ -626,29 +624,23 @@ def red_add_release_system(arg0, arg1, _builder=None):
 
 @core.extern
 def atom_add_acquire_agent(arg0, arg1, _builder=None):
-    return dist_core.extern_elementwise(
-        "", "", [arg0, arg1], {
-            (core.pointer_type(core.int32), core.pointer_type(core.int32)):
-            ("__triton_hip_atom_add_acquire_agent", core.int32),
-        }, is_pure=False, _builder=_builder)
+    return dist_core.extern_elementwise("", "", [arg0, arg1], {
+        (core.pointer_type(core.int32), core.int32): ("__triton_hip_atom_add_acquire_agent", core.int32),
+    }, is_pure=False, _builder=_builder)
 
 
 @core.extern
 def atom_add_relaxed_agent(arg0, arg1, _builder=None):
-    return dist_core.extern_elementwise(
-        "", "", [arg0, arg1], {
-            (core.pointer_type(core.int32), core.pointer_type(core.int32)):
-            ("__triton_hip_atom_add_relaxed_agent", core.int32),
-        }, is_pure=False, _builder=_builder)
+    return dist_core.extern_elementwise("", "", [arg0, arg1], {
+        (core.pointer_type(core.int32), core.int32): ("__triton_hip_atom_add_relaxed_agent", core.int32),
+    }, is_pure=False, _builder=_builder)
 
 
 @core.extern
 def atom_add_acqrel_agent(arg0, arg1, _builder=None):
-    return dist_core.extern_elementwise(
-        "", "", [arg0, arg1], {
-            (core.pointer_type(core.int32), core.pointer_type(core.int32)):
-            ("__triton_hip_atom_add_acqrel_agent", core.int32),
-        }, is_pure=False, _builder=_builder)
+    return dist_core.extern_elementwise("", "", [arg0, arg1], {
+        (core.pointer_type(core.int32), core.int32): ("__triton_hip_atom_add_acqrel_agent", core.int32),
+    }, is_pure=False, _builder=_builder)
 
 
 @core.extern
@@ -676,7 +668,7 @@ def atom_add_acqrel_system(arg0, arg1, _builder=None):
 def atom_cas_acquire_relaxed_agent(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
-            (core.pointer_type(core.int32), core.pointer_type(core.int32), core.pointer_type(core.int32)):
+            (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
             ("__triton_hip_atom_cas_acquire_relaxed_agent", core.uint64),
         }, is_pure=False, _builder=_builder)
 
@@ -685,7 +677,7 @@ def atom_cas_acquire_relaxed_agent(arg0, arg1, arg2, _builder=None):
 def atom_cas_release_relaxed_agent(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
-            (core.pointer_type(core.int32), core.pointer_type(core.int32), core.pointer_type(core.int32)):
+            (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
             ("__triton_hip_atom_cas_release_relaxed_agent", core.uint64),
         }, is_pure=False, _builder=_builder)
 
@@ -694,7 +686,7 @@ def atom_cas_release_relaxed_agent(arg0, arg1, arg2, _builder=None):
 def atom_cas_relaxed_relaxed_agent(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
-            (core.pointer_type(core.int32), core.pointer_type(core.int32), core.pointer_type(core.int32)):
+            (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
             ("__triton_hip_atom_cas_relaxed_relaxed_agent", core.uint64),
         }, is_pure=False, _builder=_builder)
 
@@ -703,7 +695,7 @@ def atom_cas_relaxed_relaxed_agent(arg0, arg1, arg2, _builder=None):
 def atom_cas_acqrel_relaxed_agent(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
-            (core.pointer_type(core.int32), core.pointer_type(core.int32), core.pointer_type(core.int32)):
+            (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
             ("__triton_hip_atom_cas_acqrel_relaxed_agent", core.uint64),
         }, is_pure=False, _builder=_builder)
 
@@ -713,7 +705,7 @@ def atom_cas_acquire_relaxed_system(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
             (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
-            ("__triton_hip_atom_cas_acquire_relaxed_system", core.int32),
+            ("__triton_hip_atom_cas_acquire_relaxed_system", core.uint64),
         }, is_pure=False, _builder=_builder)
 
 
@@ -722,7 +714,7 @@ def atom_cas_release_relaxed_system(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
             (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
-            ("__triton_hip_atom_cas_release_relaxed_system", core.int32),
+            ("__triton_hip_atom_cas_release_relaxed_system", core.uint64),
         }, is_pure=False, _builder=_builder)
 
 
@@ -731,7 +723,7 @@ def atom_cas_relaxed_relaxed_system(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
             (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
-            ("__triton_hip_atom_cas_relaxed_relaxed_system", core.int32),
+            ("__triton_hip_atom_cas_relaxed_relaxed_system", core.uint64),
         }, is_pure=False, _builder=_builder)
 
 
@@ -740,5 +732,5 @@ def atom_cas_acqrel_relaxed_system(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
             (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
-            ("__triton_hip_atom_cas_acqrel_relaxed_system", core.int32),
+            ("__triton_hip_atom_cas_acqrel_relaxed_system", core.uint64),
         }, is_pure=False, _builder=_builder)
