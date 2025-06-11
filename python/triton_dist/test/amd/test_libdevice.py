@@ -233,37 +233,42 @@ def test_atomic_add(libdevice_atomic_add_fn, device):
 def test_atomic_cas(libdevice_atomic_cas_fn, device):
 
     @triton.jit
-    def atomic_cas_kernel(ptr_p, old_val_p, new_val_p, out_p, fn: tl.constexpr, size, BLOCK_SIZE: tl.constexpr):
+    def atomic_cas_kernel(ptr_p, cmp_val_p, new_val_p, out_p, fn: tl.constexpr, size, BLOCK_SIZE: tl.constexpr):
         pid = tl.program_id(axis=0)
         block_start = pid * BLOCK_SIZE
         offsets = block_start + tl.arange(0, BLOCK_SIZE)
         mask = offsets < size
         ptr_plus_offsets = ptr_p + offsets
-        old_val_plus_offsets = old_val_p + offsets
+        cmp_val_plus_offsets = cmp_val_p + offsets
         new_val_plus_offsets = new_val_p + offsets
 
         new_val = tl.load(new_val_plus_offsets, mask=mask)
 
-        res = getattr(libdevice, fn)(ptr_plus_offsets, old_val_plus_offsets, new_val)
+        res = getattr(libdevice, fn)(ptr_plus_offsets, cmp_val_plus_offsets, new_val)
         tl.store(out_p + offsets, res)
 
-    SIZE = 128 * 64
+    SIZE = 128 * 4
     dtype = torch.int32
     x = torch.randint(0, 100, (SIZE, ), dtype=dtype, device=device)
-    old_val = torch.randint(0, 100, (SIZE, ), dtype=dtype, device=device)
+    cmp_val = torch.randint(0, 100, (SIZE, ), dtype=dtype, device=device)
+    cmp_val = torch.where(cmp_val < 50, cmp_val, x)
     new_val = torch.randint(0, 100, (SIZE, ), dtype=dtype, device=device)
     z_old = torch.empty((SIZE, ), dtype=dtype, device=device)
-    z_ref = torch.where(x == old_val, new_val, x)
+    x_new_ref = torch.where(x == cmp_val, new_val, x)
 
     grid = lambda meta: (triton.cdiv(SIZE, meta['BLOCK_SIZE']), )
+    x_new = x.clone().detach()
     atomic_cas_kernel[grid](
-        x,
-        old_val,
+        x_new,
+        cmp_val,
         new_val,
         z_old,
         fn=libdevice_atomic_cas_fn,
         size=SIZE,
         BLOCK_SIZE=128,
     )
-    torch.testing.assert_close(z_ref, x, equal_nan=True)
+    # Check maybe swaped result.
+    torch.testing.assert_close(x_new_ref, x_new, equal_nan=True)
+    # Check old value
+    torch.testing.assert_close(x, z_old, equal_nan=True)
     print("✅ Triton and Torch match")

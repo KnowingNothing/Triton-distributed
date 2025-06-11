@@ -139,65 +139,72 @@ private:
     auto buildAtomicLoad =
         [&rewriter, &loc](Type dtype, Value inputPtr, int align,
                           LLVM::AtomicOrdering ordering,
-                          std::optional<StringRef> syncGroup = std::nullopt) {
+                          std::optional<StringRef> scopeStr = std::nullopt) {
           return rewriter.create<LLVM::LoadOp>(
               loc, dtype, inputPtr, /*alignment=*/align,
               /*isVolatile=*/false, /*isNonTemporal=*/false,
               /*isInvariant =*/false, /*isInvariantGroup=*/false, ordering,
-              syncGroup.value_or(StringRef()));
+              scopeStr.value_or(StringRef()));
         };
 
     auto buildAtomicStore =
         [&rewriter, &loc](Value value, Value inputPtr, int align,
                           LLVM::AtomicOrdering ordering,
-                          std::optional<StringRef> syncGroup = std::nullopt) {
+                          std::optional<StringRef> scopeStr = std::nullopt) {
           return rewriter.create<LLVM::StoreOp>(
               loc, value, inputPtr, /*alignment=*/align,
               /*isVolatile =*/false, /*isNonTemporal*/ false,
               /*isInvariantGroup=*/false, ordering,
-              syncGroup.value_or(StringRef()));
+              scopeStr.value_or(StringRef()));
         };
 
     auto buildAtomicFetchAdd =
-        [&rewriter, &loc](Value atomicAddress, Value value,
+        [&rewriter, &loc](Value atomicAddr, Value value,
                           LLVM::AtomicOrdering ordering,
-                          std::optional<StringRef> syncGroup = std::nullopt) {
+                          std::optional<StringRef> scopeStr = std::nullopt) {
           return rewriter.create<LLVM::AtomicRMWOp>(
-              loc, LLVM::AtomicBinOp::add, atomicAddress, value, ordering,
-              syncGroup.value_or(StringRef()), /*alignment=*/4);
+              loc, LLVM::AtomicBinOp::add, atomicAddr, value, ordering,
+              scopeStr.value_or(StringRef()), /*alignment=*/4);
         };
 
     auto buildAtomicCompareExchangeStrong =
-        [&rewriter, &loc](Value atomicAddress, Value compare, Value value,
+        [&rewriter, &loc](Value atomicAddr, Value compare, Value value,
                           LLVM::AtomicOrdering successOrdering,
                           LLVM::AtomicOrdering failureOrdering,
-                          std::optional<StringRef> syncGroup = std::nullopt) {
-          auto cmp = rewriter.create<LLVM::LoadOp>(loc, i32_ty, compare,
-                                                   /*alignment=*/4);
+                          std::optional<StringRef> scopeStr = std::nullopt) {
+          // Prepare the value for the atomic operation.
+          auto cmpVal = rewriter.create<LLVM::LoadOp>(loc, i32_ty, compare,
+                                                      /*alignment=*/4);
           auto cmpxchg = rewriter.create<LLVM::AtomicCmpXchgOp>(
-              loc, atomicAddress, cmp, value, successOrdering, failureOrdering,
-              syncGroup.value_or(StringRef()),
-              /*alignment=*/4);
-          auto extractOne = rewriter.create<LLVM::ExtractValueOp>(
-              loc, cmpxchg, SmallVector<int64_t>{1});
-          Block *currentBlock = rewriter.getInsertionBlock();
-          Block *afterStore =
-              rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
-          Block *trueBlock = rewriter.createBlock(afterStore);
-          rewriter.setInsertionPointToEnd(currentBlock);
-          rewriter.create<LLVM::CondBrOp>(loc, extractOne, trueBlock,
-                                          afterStore);
-          rewriter.setInsertionPointToStart(trueBlock);
-          // cmpxchg.store_expected:
-          auto extractZero = rewriter.create<LLVM::ExtractValueOp>(
+              loc, atomicAddr, cmpVal, value, successOrdering, failureOrdering,
+              scopeStr.value_or(StringRef()), /*alignment=*/4);
+          // Extract the result value and condition from the struct.
+          // 0th is the old value at the ptr, 1st is the compare result: true if
+          // equal.
+          auto atomPtrVal = rewriter.create<LLVM::ExtractValueOp>(
               loc, cmpxchg, SmallVector<int64_t>{0});
-          (void)rewriter.create<LLVM::StoreOp>(loc, extractZero, compare,
+          auto equalToCmpVal = rewriter.create<LLVM::ExtractValueOp>(
+              loc, cmpxchg, SmallVector<int64_t>{1});
+
+          Block *curBlock = rewriter.getInsertionBlock();
+          Block *endBlock =
+              rewriter.splitBlock(curBlock, rewriter.getInsertionPoint());
+          Block *trueBlock = rewriter.createBlock(endBlock);
+          rewriter.setInsertionPointToEnd(curBlock);
+          rewriter.create<LLVM::CondBrOp>(loc, equalToCmpVal, trueBlock,
+                                          endBlock);
+
+          // If the compare was successful, store the value at the atomic
+          // address.
+          rewriter.setInsertionPointToStart(trueBlock);
+          (void)rewriter.create<LLVM::StoreOp>(loc, value, atomicAddr,
                                                /*alignment=*/4);
-          rewriter.create<LLVM::BrOp>(loc, afterStore);
-          rewriter.setInsertionPointToStart(afterStore);
-          // cmpxchg.continue:
-          return rewriter.create<LLVM::ZExtOp>(loc, i64_ty, extractOne,
-                                               /*nonNeg=*/true);
+
+          rewriter.create<LLVM::BrOp>(loc, endBlock);
+          rewriter.setInsertionPointToStart(endBlock);
+          // Return the value at the atomic address regardless of the compare
+          // result.
+          return atomPtrVal;
         };
 
     Operation *replacementOp = nullptr;

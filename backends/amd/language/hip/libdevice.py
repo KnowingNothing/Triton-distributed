@@ -669,7 +669,7 @@ def atom_cas_acquire_relaxed_agent(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
             (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
-            ("__triton_hip_atom_cas_acquire_relaxed_agent", core.uint64),
+            ("__triton_hip_atom_cas_acquire_relaxed_agent", core.int32),
         }, is_pure=False, _builder=_builder)
 
 
@@ -678,7 +678,7 @@ def atom_cas_release_relaxed_agent(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
             (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
-            ("__triton_hip_atom_cas_release_relaxed_agent", core.uint64),
+            ("__triton_hip_atom_cas_release_relaxed_agent", core.int32),
         }, is_pure=False, _builder=_builder)
 
 
@@ -687,7 +687,7 @@ def atom_cas_relaxed_relaxed_agent(arg0, arg1, arg2, _builder=None):
     return dist_core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
             (core.pointer_type(core.int32), core.pointer_type(core.int32), core.int32):
-            ("__triton_hip_atom_cas_relaxed_relaxed_agent", core.uint64),
+            ("__triton_hip_atom_cas_relaxed_relaxed_agent", core.int32),
         }, is_pure=False, _builder=_builder)
 
 
