@@ -39,9 +39,26 @@ def ConvertTritonDistributedToLLVM : Pass<"convert-triton-distributed-to-llvm", 
 
 
 // AMD Backend
-def ConvertTritonAMDGPUToLLVMExt : Pass<"convert-triton-amdgpu-to-llvm-ext", "mlir::ModuleOp"> {
-    let summary = "Convert TritonGPU to LLVM";
-    let constructor = "mlir::triton::createConvertTritonAMDGPUToLLVMExtPass(\"\", /*ftz=*/true)";
+def ConvertLibDeviceToLLVM : Pass<"convert-lib-device-to-llvm", "mlir::ModuleOp"> {
+    let summary = "Convert Lib Device(User Defined Ops) to LLVM";
+    let constructor = "mlir::triton::createConvertLibDeviceToLLVMPass(/*ftz=*/true)";
+
+    let dependentDialects = ["mlir::LLVM::LLVMDialect"];
+
+    let options = [
+        Option<"ftz", "ftz", "bool", /*default*/"true",
+               "flush denorms for math functions">,
+    ];
+}
+
+def ConvertAMDDistributedToLLVM : Pass<"convert-amd-distributed-to-llvm", "mlir::ModuleOp"> {
+    let summary = "Convert TritonDistributed to LLVM";
+    let description = [{
+        The `convert-amd-distributed-to-llvm` pass performs lowering of
+    the distributed op for AMD backend.
+    }];
+
+    let constructor = "mlir::triton::createConvertAMDDistributedToLLVMPass(\"\", /*ftz=*/true)";
 
     let dependentDialects = ["mlir::arith::ArithDialect",
                              "mlir::math::MathDialect",
@@ -51,6 +68,7 @@ def ConvertTritonAMDGPUToLLVMExt : Pass<"convert-triton-amdgpu-to-llvm-ext", "ml
                              "mlir::triton::TritonDialect",
                              "mlir::triton::gpu::TritonGPUDialect",
                              "mlir::ROCDL::ROCDLDialect",
+                             "mlir::cf::ControlFlowDialect",
                              "triton::distributed::DistributedDialect"];
 
     let options = [
@@ -61,16 +79,4 @@ def ConvertTritonAMDGPUToLLVMExt : Pass<"convert-triton-amdgpu-to-llvm-ext", "ml
     ];
 }
 
-
-def ConvertBuiltinFuncToLLVMExt : Pass<"convert-builtin-func-to-llvm-ext", "mlir::ModuleOp"> {
-    let summary = "Convert Builtin Func to LLVM";
-    let constructor = "mlir::triton::createConvertBuiltinFuncToLLVMExtPass(/*ftz=*/true)";
-
-    let dependentDialects = ["mlir::LLVM::LLVMDialect"];
-
-    let options = [
-        Option<"ftz", "ftz", "bool", /*default*/"true",
-               "flush denorms for math functions">,
-    ];
-}
 #endif // TRITONDISTRIBUTED_LLVM_CONVERSION_PASSES

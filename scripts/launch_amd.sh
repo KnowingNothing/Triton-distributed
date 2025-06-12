@@ -32,10 +32,20 @@ nproc_per_node=${ARNOLD_WORKER_GPU:=$(rocm-smi | grep W | wc -l)}
 nnodes=${ARNOLD_WORKER_NUM:=1}
 node_rank=${ARNOLD_ID:=0}
 
+master_addr=${ARNOLD_WORKER_0_HOST:="127.0.0.1"}
+if [ -z ${ARNOLD_WORKER_0_PORT} ]; then
+  master_port="23456"
+else
+  master_port=$(echo "$ARNOLD_WORKER_0_PORT" | cut -d "," -f 1)
+fi
+
+additional_args="--rdzv_endpoint=${master_addr}:${master_port}"
+
 CMD="torchrun \
   --node_rank=${node_rank} \
   --nproc_per_node=${nproc_per_node} \
   --nnodes=${nnodes} \
+  ${additional_args} \
   $@"
 
 echo ${CMD}

@@ -26,13 +26,13 @@ import torch
 import dataclasses
 import triton
 import triton.language as tl
+import triton_dist.language as dl
 
 from hip import hip
 from triton_dist.utils import HIP_CHECK
 from typing import Optional, List
 import pyrocshmem
 from triton_dist.kernels.amd.common_ops import (
-    wait_eq_sys,
     barrier_all_ipc,
     barrier_all_on_stream,
 )
@@ -203,7 +203,9 @@ def kernel_consumer_gemm_persistent(
         offs_rank = pid_m // pid_m_per_rank
 
         if offs_rank != rank:
-            wait_eq_sys(barrier_ptr + offs_sig, 1)
+            # wait_eq_sys(barrier_ptr + offs_sig, 1)
+            token = dl.wait(barrier_ptr + offs_sig, 1, "sys", "acquire", waitValue=1)
+            A = dl.consume_token(A, token)
 
         rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
         rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N

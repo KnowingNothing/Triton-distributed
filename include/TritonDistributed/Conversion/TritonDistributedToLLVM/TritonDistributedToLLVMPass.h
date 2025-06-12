@@ -72,9 +72,10 @@ createConvertTritonDistributedToLLVMPass(int32_t computeCapability,
                                          int32_t ptxVersion);
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonAMDGPUToLLVMExtPass(StringRef targetArch, bool ftz);
+createConvertLibDeviceToLLVMPass(bool ftz);
+
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertBuiltinFuncToLLVMExtPass(bool ftz);
+createConvertAMDDistributedToLLVMPass(StringRef targetArch, bool ftz);
 } // namespace triton
 } // namespace mlir
 

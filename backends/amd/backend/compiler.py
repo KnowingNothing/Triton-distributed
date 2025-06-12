@@ -309,8 +309,9 @@ class HIPBackend(BaseBackend):
         ## 3. __HIP_FTZ is default to 1 and not exposed as a kernel argument.
         ##    For now it is used as a controller for developers only.
         __HIP_FTZ = True
+        amd.passes.ttgpuir.add_to_llvmir(pm, options.arch, __HIP_FTZ)
         # TritonDistributed Extension: distributed -> llvm
-        distributed.passes.ttgpuir.amd.add_to_llvmir_ext(pm, options.arch, __HIP_FTZ)
+        distributed.passes.ttgpuir.amd.add_distributed_to_llvm(pm, options.arch, __HIP_FTZ)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
 
@@ -324,7 +325,8 @@ class HIPBackend(BaseBackend):
         if os.environ.get("TRITON_DISABLE_LINE_INFO", "0") == "0":
             passes.llvmir.add_di_scope(pm)
         # TritonDistributed Extension: libdevice -> llvm
-        distributed.passes.ttgpuir.amd.add_builtin_func_to_llvmir_ext(pm, __HIP_FTZ)
+        amd.passes.ttgpuir.add_builtin_func_to_llvmir(pm, __HIP_FTZ)
+        distributed.passes.ttgpuir.amd.add_lib_device_to_llvmir(pm, __HIP_FTZ)
         pm.run(mod)
 
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)

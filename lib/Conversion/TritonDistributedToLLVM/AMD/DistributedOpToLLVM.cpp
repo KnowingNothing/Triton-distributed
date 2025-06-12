@@ -23,6 +23,7 @@
 #include "TritonDistributed/Conversion/TritonDistributedToLLVM/TritonDistributedToLLVMPass.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
@@ -98,7 +99,117 @@ struct WaitOpConversion
   LogicalResult
   matchAndRewrite(triton::distributed::WaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return failure();
+
+    Location loc = op->getLoc();
+    auto type = op.getBarrierPtr().getType();
+    assert(isa<triton::PointerType>(type) && "must be a pointer type");
+    auto ptreeType = dyn_cast<triton::PointerType>(type).getPointeeType();
+    auto intType = dyn_cast<mlir::IntegerType>(ptreeType);
+    if (!intType) {
+      return op->emitError("barrier ptr must be integer type.");
+    }
+    const size_t barrierWidth = intType.getWidth();
+    unsigned int numBytes = barrierWidth / 8;
+
+    StringRef syncGroup;
+    if (adaptor.getScope() == triton::MemSyncScope::CTA) {
+      syncGroup = "workgroup-one-as";
+    } else if (adaptor.getScope() == triton::MemSyncScope::GPU) {
+      syncGroup = "agent-one-as";
+    } else if (adaptor.getScope() == triton::MemSyncScope::SYSTEM) {
+      syncGroup = StringRef();
+    }
+
+    LLVM::AtomicOrdering ordering = LLVM::AtomicOrdering::acquire;
+    if (adaptor.getSemantic() == triton::MemSemantic::ACQUIRE) {
+      ordering = LLVM::AtomicOrdering::acquire;
+    } else if (adaptor.getSemantic() == triton::MemSemantic::RELAXED) {
+      ordering = LLVM::AtomicOrdering::monotonic;
+    } else if (adaptor.getSemantic() == triton::MemSemantic::RELEASE) {
+      ordering = LLVM::AtomicOrdering::release;
+    } else if (adaptor.getSemantic() == triton::MemSemantic::ACQUIRE_RELEASE) {
+      ordering = LLVM::AtomicOrdering::acq_rel;
+    }
+
+    // convert waitOp to the following ops:
+    /*
+    ^init_block:
+      tid = rocdl.threadIdx.x
+      cf.br entry_block(tid)
+
+    ^entry_block(i: i32):
+      pred = i < num_barrier
+      cd.cond_br (pred, loop_block, yield)
+
+    ^loop_block:
+      ptr = ptr + i
+      val = load(ptr)
+      pred = val != x
+      cf.cond_br (pred, loop_block, jump_block)
+
+    ^jump_block:
+      val = i + block_size
+      cf.br entry_block(val)
+
+    ^yield_block:
+      gpu.barrier
+    */
+    Block *initBlock = op->getBlock();
+    Block *whileEntryBlock =
+        rewriter.splitBlock(initBlock, rewriter.getInsertionPoint());
+    Block *loopBlock = rewriter.splitBlock(whileEntryBlock, op->getIterator());
+    Block *jumpBlock = rewriter.splitBlock(loopBlock, op->getIterator());
+    Block *yieldBlock = rewriter.splitBlock(jumpBlock, op->getIterator());
+
+    auto b = ::mlir::triton::TritonLLVMOpBuilder(loc, rewriter);
+
+    // init block
+    rewriter.setInsertionPointToEnd(initBlock);
+    Value workIDX = rewriter.create<ROCDL::ThreadIdXOp>(loc, i32_ty);
+    rewriter.create<cf::BranchOp>(loc, whileEntryBlock, workIDX);
+
+    // while entry blcok
+    whileEntryBlock->addArgument(workIDX.getType(), loc);
+    rewriter.setInsertionPointToEnd(whileEntryBlock);
+    Value index = whileEntryBlock->getArgument(0);
+    Value whileCond = b.icmp_slt(index, adaptor.getNumBarriers());
+    rewriter.create<cf::CondBranchOp>(loc, whileCond, loopBlock, yieldBlock);
+
+    // loop block
+    rewriter.setInsertionPointToEnd(loopBlock);
+    auto basePtr = adaptor.getBarrierPtr();
+    auto elemLlvmTy = this->getTypeConverter()->convertType(intType);
+    auto newPtr = b.gep(basePtr.getType(), elemLlvmTy, basePtr, index);
+    LLVM::LoadOp loadOp = rewriter.create<LLVM::LoadOp>(
+        loc, elemLlvmTy, newPtr, /*alignment=*/numBytes,
+        /*isVolatile=*/false, /*isNonTemporal=*/false,
+        /*isInvariant =*/false, /*isInvariantGroup=*/false, ordering,
+        syncGroup);
+
+    Value pred = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne,
+                                               loadOp.getResult(),
+                                               adaptor.getWaitValue());
+    rewriter.create<cf::CondBranchOp>(loc, pred, loopBlock, jumpBlock);
+
+    // jump block
+    rewriter.setInsertionPointToEnd(jumpBlock);
+    // why not use the i32 BlockDimXOp:
+    // there is a bug in the upstream createDimGetterFunctionCall, which will
+    // cause type mismatch(create binary operator with two operands of differing
+    // type) when LLVM-IR (MLIR) -> LLVM-IR (LLVM)
+    Value blockSize =
+        rewriter.create<ROCDL::BlockDimXOp>(loc, rewriter.getIntegerType(64));
+    blockSize = b.trunc(i32_ty, blockSize);
+
+    Value barrier_idx = b.add(whileEntryBlock->getArgument(0), blockSize);
+    rewriter.create<cf::BranchOp>(loc, whileEntryBlock, barrier_idx);
+
+    // yieldBlock
+    rewriter.setInsertionPointToStart(yieldBlock);
+    auto preBarrier = rewriter.create<mlir::gpu::BarrierOp>(loc);
+
+    rewriter.eraseOp(op);
+    return success();
   }
 };
 

@@ -512,9 +512,7 @@ def thread_idx(axis, _builder=None):
 
 @core.extern
 def __syncthreads(_builder=None):
-    return core.extern_elementwise("", "", [], {
-        (): ("llvm.amdgcn.s.barrier", core.dtype("int32")),
-    }, is_pure=False, _builder=_builder)
+    return core.tensor(_builder.create_barrier(), core.void)
 
 
 @core.extern
