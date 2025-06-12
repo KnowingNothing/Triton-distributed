@@ -634,23 +634,16 @@ def get_has_fullmesh_nvlink_pynvml():
 
     try:
         handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(num_devices)]
-        remote_type = [pynvml.nvmlDeviceGetNvLinkRemoteDeviceType(handle, 0) for handle in handles]
-        if all([x == pynvml.NVML_NVLINK_DEVICE_TYPE_SWITCH for x in remote_type]):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            result = pynvml.nvmlDeviceGetFieldValues(handle, [pynvml.NVML_FI_DEV_NVSWITCH_CONNECTED_LINK_COUNT])
-            link_count = parse_nvml_field_value(result[0])
-            if link_count != num_devices:
-                warnings.warn(f"Found {link_count} NVLink links, but expected {num_devices}. "
-                              "This may be due to a bug in the NVSwitch driver. ")
-            return link_count == num_devices
-        if all([x == pynvml.NVML_NVLINK_DEVICE_TYPE_GPU for x in remote_type]):
-            if num_devices == 2:
-                return True
-            else:
-                warnings.warn(
-                    f"Found {num_devices} GPUs, but not connected by NVSwitch. this may not be supported well")
-                return False
-        return False
+        for cur_device in range(num_devices):
+            cur_handle = handles[cur_device]
+            for remote_device in range(num_devices):
+                if remote_device == cur_device:
+                    continue
+                remote_handle = handles[remote_device]
+                p2p_status = pynvml.nvmlDeviceGetP2PStatus(cur_handle, remote_handle, pynvml.NVML_P2P_CAPS_INDEX_NVLINK)
+                if p2p_status != pynvml.NVML_P2P_STATUS_OK:
+                    return False
+        return True
     except pynvml.NVMLError_NotSupported:
         return False
 

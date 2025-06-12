@@ -73,6 +73,7 @@ jobs:
         commands:
           - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43 setuptools==69.0.0
           - pip3 install cuda-python==12.4
+          - pip3 install pynvml==11.5.3
           - pip3 install pytest
           - pip3 install chardet
           # - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
