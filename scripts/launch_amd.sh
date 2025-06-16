@@ -50,3 +50,6 @@ CMD="torchrun \
 
 echo ${CMD}
 ${CMD}
+
+ret=$?
+exit $ret

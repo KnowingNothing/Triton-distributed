@@ -13,7 +13,6 @@ jobs:
       LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/home/code/shmem/rocshmem_bind/ompi_build/install/ompi/lib
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
-      # no_proxy: '.byted.org'
       PATH: /home/code/.local/bin:$PATH
     runs-on:
       cluster: triton_distributed_amd_109
@@ -39,7 +38,6 @@ jobs:
           - bash shmem/rocshmem_bind/build.sh
           - export http_proxy=http://sys-proxy-rd-relay.byted.org:3128
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
-          # - source scripts/setenv.sh
 
       - name: distributed tests
         commands:
@@ -99,7 +97,6 @@ jobs:
           - pip3 install ninja cmake wheel pybind11
           - export USE_TRITON_DISTRIBUTED_AOT=0
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
-          # - source ./scripts/setenv.sh
           - bash ./scripts/gen_aot_code.sh
           - export USE_TRITON_DISTRIBUTED_AOT=1
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation

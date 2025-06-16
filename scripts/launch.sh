@@ -138,7 +138,6 @@ CMD="torchrun \
   --nnodes=${nnodes} \
   ${DIST_TRITON_EXTRA_TORCHRUN_ARGS} \
   ${additional_args} \
-  ${DIST_TRITON_EXTRA_TORCHRUN_ARGS} \
   $@"
 
 echo ${CMD}
