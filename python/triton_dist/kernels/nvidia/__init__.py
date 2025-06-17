@@ -36,6 +36,8 @@ from .flash_decode import (gqa_fwd_batch_decode_persistent, kernel_gqa_fwd_batch
 from .gemm_reduce_scatter import create_gemm_rs_context, gemm_rs
 from .low_latency_all_to_all import create_all_to_all_context, fast_all_to_all, all_to_all_post_process
 from .moe_reduce_rs import create_moe_rs_context, select_experts, moe_reduce_rs
+from .sp_ag_attention_intra_node import fused_sp_ag_attn_intra_node, create_sp_ag_attention_context_intra_node
+from .sp_ag_attention_inter_node import fused_sp_ag_attn_inter_node, create_sp_ag_attention_context_inter_node
 
 __all__ = [
     "_forward_pull_kernel",
@@ -75,4 +77,8 @@ __all__ = [
     "kernel_inter_rank_gqa_fwd_batch_decode_combine_kv",
     "moe_reduce_rs",
     "select_experts",
+    "fused_sp_ag_attn_intra_node",
+    "create_sp_ag_attention_context_intra_node",
+    "fused_sp_ag_attn_inter_node",
+    "create_sp_ag_attention_context_inter_node",
 ]

@@ -152,6 +152,8 @@ jobs:
           # ep a2a
           - NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8 --check
           - NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8
+          # sp ag attn
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_ag_attention_intra_node.py --batch_size 1 --q_head 32 --kv_head 32 --max_seqlen_q 8192 --max_seqlen_k 8192 --head_dim 128 --seqlens_q 8192 --seqlens_k 8192
           #############
           # pytest (disabled)
           #############
