@@ -423,7 +423,7 @@ class AllGatherGEMMTensorParallelContext:
     local_barrier_buff: List[torch.Tensor] = field(init=False)  # only used in customized intranode barrier
     workspace_tensor: torch.Tensor = field(init=False)
     barrier_tensor: torch.Tensor = field(init=False)
-    fake_barrier: torch.Tensor = field(init=False)
+    fake_barrier: torch.Tensor = field(init=False)  # for gemm only function
     comm_buf: torch.Tensor = field(init=False)
     intranode_barrier_dtype = torch.int32
     internode_barrier_dtype = torch.uint64  # required by NVSHMEM
@@ -467,8 +467,11 @@ class AllGatherGEMMTensorParallelContext:
         self.comm_buf.fill_(0)
         self.barrier_tensor.fill_(0)
 
-        self.fake_barrier = torch.ones([self.num_ranks], dtype=self.intranode_barrier_dtype,
-                                       device="cuda")  # for gemm only function
+        if not self.is_multinode:
+            self.fake_barrier = torch.ones([self.num_ranks], dtype=self.intranode_barrier_dtype, device="cuda")
+        else:
+            self.fake_barrier = torch.ones([self.num_ranks], dtype=self.internode_barrier_dtype, device="cuda")
+
         self.max_gemm_sm = torch.cuda.get_device_properties("cuda").multi_processor_count
 
     def update(self, rank, num_ranks, num_local_ranks=8, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
@@ -689,22 +692,22 @@ def gemm_persistent(a, b, ctx: AllGatherGEMMTensorParallelContext, autotune=Fals
             K,  #
             ctx.rank,
             ctx.num_ranks,
-            ctx.fake_barrier_tensor,
-            ctx.comm_buf,
+            ctx.fake_barrier,
             ctx.BLOCK_M,
             ctx.BLOCK_N,
             ctx.BLOCK_K,
-            8,
+            ctx.GROUP_SIZE_M,
             False,
             NUM_SMS=NUM_SMS,
             num_stages=ctx.stages,
-            num_warps=8,
+            num_warps=ctx.warps,
         )
     else:
         kernel_consumer_gemm_persistent_autotune[grid](
             a, b, C,  #
             M, N, K,  #
-            ctx.rank, ctx.num_ranks, ctx.fake_barrier_tensor, ctx.comm_buf, EPILOGUE_SUBTILE=False, NUM_SMS=NUM_SMS  #
+            ctx.rank, ctx.num_ranks, ctx.fake_barrier, LOCAL_WORLD_SIZE=ctx.num_local_ranks, EPILOGUE_SUBTILE=False,
+            NUM_SMS=NUM_SMS  #
         )
 
     return C
@@ -732,7 +735,7 @@ def gemm_non_persistent(a, b, ctx: AllGatherGEMMTensorParallelContext):
             C.stride(1),
             ctx.rank,
             ctx.num_ranks,
-            ctx.fake_barrier_tensor,
+            ctx.fake_barrier,
             ctx.BLOCK_M,
             ctx.BLOCK_N,
             ctx.BLOCK_K,
@@ -744,7 +747,7 @@ def gemm_non_persistent(a, b, ctx: AllGatherGEMMTensorParallelContext):
         kernel_consumer_gemm_persistent_autotune[grid](
             a, b, C,  #
             M, N, K,  #
-            ctx.rank, ctx.num_ranks, ctx.fake_barrier_tensor, ctx.comm_buf, EPILOGUE_SUBTILE=False, NUM_SMS=0  #
+            ctx.rank, ctx.num_ranks, ctx.fake_barrier, ctx.comm_buf, EPILOGUE_SUBTILE=False, NUM_SMS=0  #
         )
 
     return C
