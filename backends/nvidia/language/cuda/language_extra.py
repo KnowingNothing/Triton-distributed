@@ -30,12 +30,12 @@ from triton.language.extra.cuda.libdevice import ffs
 
 
 @core.extern
-def __syncthreads(_builder=None):
-    return tl.tensor(_builder.create_barrier(), tl.void)
+def __syncthreads(_semantic=None):
+    return tl.tensor(_semantic.builder.create_barrier(), tl.void)
 
 
 @core.extern
-def __fence(scope: core.constexpr = core.constexpr("gpu"), _builder=None):
+def __fence(scope: core.constexpr = core.constexpr("gpu"), _semantic=None):
     return core.inline_asm_elementwise(
         asm=f"""
         fence.sc.{scope.value};
@@ -45,12 +45,12 @@ def __fence(scope: core.constexpr = core.constexpr("gpu"), _builder=None):
         dtype=tl.uint32,
         is_pure=False,  # no optimize this!
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @tl.core.extern
-def load_v4_u32(ptr, _builder=None):
+def load_v4_u32(ptr, _semantic=None):
     return tl.inline_asm_elementwise(
         asm="""
         ld.volatile.global.v4.u32 {$0,$1,$2,$3}, [$4];
@@ -60,12 +60,12 @@ def load_v4_u32(ptr, _builder=None):
         dtype=(tl.int32, tl.int32, tl.int32, tl.int32),
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @tl.core.extern
-def load_v2_b64(ptr, _builder=None):
+def load_v2_b64(ptr, _semantic=None):
     return tl.inline_asm_elementwise(
         asm="""
         ld.volatile.global.v2.b64 {$0,$1}, [$2];
@@ -75,12 +75,12 @@ def load_v2_b64(ptr, _builder=None):
         dtype=(tl.int64, tl.int64),
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @tl.core.extern
-def store_v2_u32(ptr, val0, val1, _builder=None):
+def store_v2_u32(ptr, val0, val1, _semantic=None):
     return tl.inline_asm_elementwise(
         asm="""
         st.volatile.global.v2.u32 [$1], {$2,$3};
@@ -91,12 +91,12 @@ def store_v2_u32(ptr, val0, val1, _builder=None):
         dtype=tl.int32,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @tl.core.extern
-def multimem_st_b64(ptr, val0, _builder=None):
+def multimem_st_b64(ptr, val0, _semantic=None):
     return tl.inline_asm_elementwise(
         asm="""
         multimem.st.global.b64 [$1], $2;
@@ -107,12 +107,12 @@ def multimem_st_b64(ptr, val0, _builder=None):
         dtype=tl.int32,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @tl.core.extern
-def multimem_st_b32(ptr, val0, _builder=None):
+def multimem_st_b32(ptr, val0, _semantic=None):
     return tl.inline_asm_elementwise(
         asm="""
         multimem.st.global.b32 [$1], $2;
@@ -123,12 +123,12 @@ def multimem_st_b32(ptr, val0, _builder=None):
         dtype=tl.int32,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @tl.core.extern
-def multimem_st_v2_b32(ptr, val0, val1, _builder=None):
+def multimem_st_v2_b32(ptr, val0, val1, _semantic=None):
     return tl.inline_asm_elementwise(
         asm="""{
         .reg .b64 r_combined;
@@ -141,13 +141,13 @@ def multimem_st_v2_b32(ptr, val0, val1, _builder=None):
         dtype=tl.int32,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 # TODO(houqi.1993) this is for reduce_scatter
 @tl.core.extern
-def multimem_ld_reduce(ptr, op, _builder=None):
+def multimem_ld_reduce(ptr, op, _semantic=None):
     tl.static_assert(ptr.is_ptr(), "multimem_ld_reduce(ptr) expect ptr is a pointer_type")
     if ptr.dtype == tl.int32:
         return tl.inline_asm_elementwise(
@@ -160,12 +160,12 @@ def multimem_ld_reduce(ptr, op, _builder=None):
             dtype=tl.int32,
             is_pure=False,
             pack=1,
-            _builder=_builder,
+            _semantic=_semantic,
         )
 
 
 @core.extern
-def _tid_wrapper(axis: core.constexpr, _builder=None):
+def _tid_wrapper(axis: core.constexpr, _semantic=None):
     return core.extern_elementwise(
         "",
         "",
@@ -177,24 +177,24 @@ def _tid_wrapper(axis: core.constexpr, _builder=None):
             ),
         },
         is_pure=False,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @core.extern
-def tid(axis: core.constexpr, _builder=None):
+def tid(axis: core.constexpr, _semantic=None):
     if axis == 0:
-        return _tid_wrapper(core.constexpr("x"), _builder=_builder)
+        return _tid_wrapper(core.constexpr("x"), _semantic=_semantic)
     elif axis == 1:
-        return _tid_wrapper(core.constexpr("y"), _builder=_builder)
+        return _tid_wrapper(core.constexpr("y"), _semantic=_semantic)
     elif axis == 2:
-        return _tid_wrapper(core.constexpr("z"), _builder=_builder)
+        return _tid_wrapper(core.constexpr("z"), _semantic=_semantic)
     else:
         tl.static_assert(False, "axis must be 0, 1 or 2")
 
 
 @core.extern
-def laneid(_builder=None):
+def laneid(_semantic=None):
     return core.extern_elementwise(
         "",
         "",
@@ -206,12 +206,12 @@ def laneid(_builder=None):
             ),
         },
         is_pure=False,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @core.extern
-def _ntid_wrapper(axis: core.constexpr, _builder=None):
+def _ntid_wrapper(axis: core.constexpr, _semantic=None):
     return core.extern_elementwise(
         "",
         "",
@@ -223,25 +223,25 @@ def _ntid_wrapper(axis: core.constexpr, _builder=None):
             ),
         },
         is_pure=False,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @core.extern
-def ntid(axis: core.constexpr, _builder=None):
+def ntid(axis: core.constexpr, _semantic=None):
     if axis == 0:
-        return _ntid_wrapper(core.constexpr("x"), _builder=_builder)
+        return _ntid_wrapper(core.constexpr("x"), _semantic=_semantic)
     elif axis == 1:
-        return _ntid_wrapper(core.constexpr("y"), _builder=_builder)
+        return _ntid_wrapper(core.constexpr("y"), _semantic=_semantic)
     elif axis == 2:
-        return _ntid_wrapper(core.constexpr("z"), _builder=_builder)
+        return _ntid_wrapper(core.constexpr("z"), _semantic=_semantic)
     else:
         tl.static_assert(False, "axis must be 0, 1 or 2")
 
 
 # @patch_triton_module
 @tl.core.extern
-def red_release(barrier_ptr, value, scope: core.constexpr = core.constexpr("gpu"), _builder=None):
+def red_release(barrier_ptr, value, scope: core.constexpr = core.constexpr("gpu"), _semantic=None):
     tl.inline_asm_elementwise(
         asm=f"""{{
         mov.u32         $0, %tid.x;
@@ -253,7 +253,7 @@ def red_release(barrier_ptr, value, scope: core.constexpr = core.constexpr("gpu"
         dtype=tl.int32,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
@@ -266,7 +266,7 @@ def arrive_inc(barrier_ptr, thread_idx, value, scope: core.constexpr):
 
 # @patch_triton_module
 @tl.core.extern
-def arrive_inc_asm(barrier_ptr, thread_idx, value, scope: core.constexpr = "gpu", _builder=None):
+def arrive_inc_asm(barrier_ptr, thread_idx, value, scope: core.constexpr = "gpu", _semantic=None):
     tl.inline_asm_elementwise(
         asm=f"""{{
         bar.sync        0;
@@ -280,12 +280,12 @@ def arrive_inc_asm(barrier_ptr, thread_idx, value, scope: core.constexpr = "gpu"
         dtype=tl.int32,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @core.extern
-def _int_constaint(bitwidth: core.constexpr, _builder=None):
+def _int_constaint(bitwidth: core.constexpr, _semantic=None):
     # https://docs.nvidia.com/cuda/inline-ptx-assembly/index.html#constraints
     # PTX has no constraint for int8. use "r"
     if bitwidth.value == 128:
@@ -303,7 +303,7 @@ def _int_constaint(bitwidth: core.constexpr, _builder=None):
 
 
 @core.extern
-def _float_constraint(bitwidth: core.constexpr, _builder=None):
+def _float_constraint(bitwidth: core.constexpr, _semantic=None):
     if bitwidth.value == 64:
         return core.constexpr("d")
     elif bitwidth.value == 32:
@@ -317,21 +317,21 @@ def ld(
     ptr,
     scope: core.constexpr = "gpu",
     semantic: core.constexpr = "relaxed",
-    _builder=None,
+    _semantic=None,
 ):
-    tl.static_assert(ptr.dtype.is_ptr(), "ld(ptr, scope) should be a pointer", _builder=_builder)
+    tl.static_assert(ptr.dtype.is_ptr(), "ld(ptr, scope) should be a pointer", _semantic=_semantic)
     if isinstance(scope, core.constexpr):
         scope = scope.value
-    tl.static_assert(scope in ["gpu", "sys"], "scope should be gpu or sys", _builder=_builder)
+    tl.static_assert(scope in ["gpu", "sys"], "scope should be gpu or sys", _semantic=_semantic)
     if isinstance(semantic, core.constexpr):
         semantic = semantic.value
     tl.static_assert(
         semantic in ["relaxed", "acquire"],
         "semantic should be relaxed or acquire",
-        _builder=_builder,
+        _semantic=_semantic,
     )
     element_ty: tl.dtype = ptr.dtype.element_ty
-    constraint = _int_constaint(core.constexpr(element_ty.primitive_bitwidth), _builder=_builder)
+    constraint = _int_constaint(core.constexpr(element_ty.primitive_bitwidth), _semantic=_semantic)
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-ld
     return tl.inline_asm_elementwise(
         asm=f"ld.global.{semantic}.{scope}.b{element_ty.primitive_bitwidth} $0, [$1];",
@@ -340,23 +340,23 @@ def ld(
         dtype=ptr.dtype.element_ty,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @tl.core.extern
-def ld_b32(ptr, _builder=None):
+def ld_b32(ptr, _semantic=None):
     tl.static_assert(
         ptr.dtype.is_ptr() and ptr.dtype.element_ty.is_int32(),
         "ld_b32(ptr) argument 0 `ptr` should be a pointer of int type",
-        _builder=_builder,
+        _semantic=_semantic,
     )
-    return ld(ptr, scope="gpu", semantic="relaxed", _builder=_builder)
+    return ld(ptr, scope="gpu", semantic="relaxed", _semantic=_semantic)
 
 
 @tl.core.extern
-def ld_acquire(ptr, scope: core.constexpr = "gpu", _builder=None):
-    return ld(ptr, scope, "acquire", _builder=_builder)
+def ld_acquire(ptr, scope: core.constexpr = "gpu", _semantic=None):
+    return ld(ptr, scope, "acquire", _semantic=_semantic)
 
 
 @tl.core.extern
@@ -365,32 +365,32 @@ def st(
         val,
         scope: core.constexpr = core.constexpr("gpu"),
         semantic: core.constexpr = core.constexpr("relaxed"),
-        _builder=None,
+        _semantic=None,
 ):
     tl.static_assert(
         ptr.dtype.is_ptr() and ptr.dtype.element_ty.is_int(),
         "st(ptr, val) argument 0 `ptr` should be a pointer of int type",
-        _builder=_builder,
+        _semantic=_semantic,
     )
     dtype = ptr.dtype.element_ty
     if isinstance(val, core.constexpr):
-        val = tl.cast(val.value, dtype, _builder=_builder)
+        val = tl.cast(val.value, dtype, _semantic=_semantic)
     else:
-        val = tl.cast(val, dtype, _builder=_builder)
+        val = tl.cast(val, dtype, _semantic=_semantic)
 
-    tl.static_assert(val.dtype.is_int(), "st(ptr, val) argument `val` should be of int type", _builder=_builder)
+    tl.static_assert(val.dtype.is_int(), "st(ptr, val) argument `val` should be of int type", _semantic=_semantic)
 
     if isinstance(scope, core.constexpr):
         scope = scope.value
     if isinstance(semantic, core.constexpr):
         semantic = semantic.value
-    tl.static_assert(scope in ["gpu", "sys"], "scope should be gpu or sys", _builder=_builder)
+    tl.static_assert(scope in ["gpu", "sys"], "scope should be gpu or sys", _semantic=_semantic)
     tl.static_assert(
         semantic in ["relaxed", "release"],
         "semantic should be relaxed or release",
-        _builder=_builder,
+        _semantic=_semantic,
     )
-    constraint = _int_constaint(core.constexpr(dtype.primitive_bitwidth), _builder=_builder)
+    constraint = _int_constaint(core.constexpr(dtype.primitive_bitwidth), _semantic=_semantic)
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-st
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#volatile-operation
     return tl.inline_asm_elementwise(
@@ -403,13 +403,13 @@ def st(
         dtype=tl.int32,  # never used
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
 @tl.core.extern
-def st_b32(ptr, val0, _builder=None):
-    return st(ptr, val0, scope="gpu", semantic="relaxed", _builder=_builder)
+def st_b32(ptr, val0, _semantic=None):
+    return st(ptr, val0, scope="gpu", semantic="relaxed", _semantic=_semantic)
 
 
 @tl.core.extern
@@ -418,7 +418,7 @@ def atomic_add(
     value,
     scope: core.constexpr = "gpu",
     semantic: core.constexpr = "relaxed",
-    _builder=None,
+    _semantic=None,
 ):
     """custom atomic_add implementation using extern_elementwise
 
@@ -430,19 +430,19 @@ def atomic_add(
     tl.static_assert(
         ptr.dtype.is_ptr() and ptr.dtype.element_ty.is_int(),
         "ptr must be a pointer of int",  # PTX support atom add float, but tl.inline_asm_elementwise does not like it
-        _builder=_builder,
+        _semantic=_semantic,
     )
     if isinstance(scope, core.constexpr):
         scope = scope.value
-    tl.static_assert(scope in ["gpu", "sys"], "scope should be gpu or sys", _builder=_builder)
+    tl.static_assert(scope in ["gpu", "sys"], "scope should be gpu or sys", _semantic=_semantic)
     if isinstance(semantic, core.constexpr):
         semantic = semantic.value
     tl.static_assert(
         semantic in ["release", "acquire", "relaxed", "acq_rel"],
         "semantic should be release, acquire, relaxed or acq_rel",
-        _builder=_builder,
+        _semantic=_semantic,
     )
-    constraint = _int_constaint(core.constexpr(ptr.dtype.element_ty.primitive_bitwidth), _builder=_builder).value
+    constraint = _int_constaint(core.constexpr(ptr.dtype.element_ty.primitive_bitwidth), _semantic=_semantic).value
 
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-atom
     # .add requires .u32 or .s32 or .u64 or .f64 or f16 or f16x2 or .f32 or .bf16 or .bf16x2 type for instruction 'atom'
@@ -457,7 +457,7 @@ def atomic_add(
         is_pure=False,
         pack=1,
         dtype=ptr.dtype.element_ty,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
@@ -485,10 +485,10 @@ def __shfl_sync_with_mode_i32(
     delta,
     mode: core.constexpr = "up",
     c: core.constexpr = 31,
-    _builder=None,
+    _semantic=None,
 ):
     tl.static_assert(value.dtype == tl.int32 or value.dtype == tl.uint32,
-                     "__shfl_sync_i32 only support int32 or uint32", _builder=_builder)
+                     "__shfl_sync_i32 only support int32 or uint32", _semantic=_semantic)
     # refer to https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-shfl-sync
     return tl.inline_asm_elementwise(
         asm=f"shfl.sync.{mode.value}.b32 $0, $1, $2, {c.value}, $3;",
@@ -497,7 +497,7 @@ def __shfl_sync_with_mode_i32(
         dtype=value.dtype,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
@@ -526,7 +526,7 @@ def __shfl_xor_sync_i32(mask, value, delta):
 def __ballot_sync(
     mask,
     predicate,
-    _builder=None,
+    _semantic=None,
 ):
     return tl.inline_asm_elementwise(
         asm="{.reg .pred p; setp.ne.b32 p, $1, 0; vote.sync.ballot.b32 $0, p, $2;}",
@@ -535,7 +535,7 @@ def __ballot_sync(
         dtype=tl.int32,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 
@@ -546,9 +546,9 @@ def atomic_cas(
     target_value,
     scope: core.constexpr,
     semantic: core.constexpr,
-    _builder=None,
+    _semantic=None,
 ):
-    constraint = _int_constaint(core.constexpr(ptr.dtype.element_ty.primitive_bitwidth), _builder=_builder).value
+    constraint = _int_constaint(core.constexpr(ptr.dtype.element_ty.primitive_bitwidth), _semantic=_semantic).value
     return tl.inline_asm_elementwise(
         asm=
         f"atom.{semantic.value}.{scope.value}.global.cas.b{ptr.dtype.element_ty.primitive_bitwidth} $0, [$1], $2, $3;",
@@ -561,7 +561,7 @@ def atomic_cas(
         dtype=ptr.dtype.element_ty,
         is_pure=False,
         pack=1,
-        _builder=_builder,
+        _semantic=_semantic,
     )
 
 

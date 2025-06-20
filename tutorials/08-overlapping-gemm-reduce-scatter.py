@@ -416,7 +416,7 @@ def torch_gemm_rs(
 
 
 if __name__ == "__main__":
-    if torch.cuda.get_device_capability()[0] <= 9:
+    if torch.cuda.get_device_capability()[0] < 9:
         print("Skip the test because the device is not sm90 or higher")
         import sys
         sys.exit()
