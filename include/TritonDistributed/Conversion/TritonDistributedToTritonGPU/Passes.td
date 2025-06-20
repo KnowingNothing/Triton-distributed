@@ -7,9 +7,9 @@
 include "mlir/Pass/PassBase.td"
 
 def ConvertTritonDistributedToTritonGPU: Pass<"convert-triton-distributed-to-tritongpu", "mlir::ModuleOp"> {
-    let summary = "Convert Triton to TritonGPU(Distributed Extension)";
+    let summary = "Convert TritonDistributed to TritonGPU";
     let description = [{
-      This pass converts the Triton Dialect into the TritonGPU Dialect.
+      This pass converts the TritonDistributed Dialect into the TritonGPU Dialect.
       This is a partial conversion that also affects other dialects
       (namely `Arith`, `Math`, `SCF` and `CF`).
       For these dialects, and many Triton dialect operations the conversions

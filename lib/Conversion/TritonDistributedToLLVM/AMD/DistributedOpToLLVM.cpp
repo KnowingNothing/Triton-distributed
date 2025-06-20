@@ -168,7 +168,7 @@ struct WaitOpConversion
     Value workIDX = rewriter.create<ROCDL::ThreadIdXOp>(loc, i32_ty);
     rewriter.create<cf::BranchOp>(loc, whileEntryBlock, workIDX);
 
-    // while entry blcok
+    // while entry block
     whileEntryBlock->addArgument(workIDX.getType(), loc);
     rewriter.setInsertionPointToEnd(whileEntryBlock);
     Value index = whileEntryBlock->getArgument(0);
