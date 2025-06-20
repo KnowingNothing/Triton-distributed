@@ -203,7 +203,6 @@ def kernel_consumer_gemm_persistent(
         offs_rank = pid_m // pid_m_per_rank
 
         if offs_rank != rank:
-            # wait_eq_sys(barrier_ptr + offs_sig, 1)
             token = dl.wait(barrier_ptr + offs_sig, 1, "sys", "acquire", waitValue=1)
             A = dl.consume_token(A, token)
 

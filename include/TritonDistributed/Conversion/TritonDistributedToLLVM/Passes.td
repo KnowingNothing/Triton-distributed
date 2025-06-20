@@ -10,7 +10,7 @@ include "mlir/Pass/PassBase.td"
 def ConvertTritonDistributedToLLVM : Pass<"convert-triton-distributed-to-llvm", "mlir::ModuleOp"> {
     let summary = "Convert TritonDistributed to LLVM";
     let description = [{
-
+        This pass converts the TritonDistributed Dialect into LLVM Dialect.
     }];
     let constructor = "mlir::triton::createConvertTritonDistributedToLLVMPass()";
 
@@ -40,7 +40,7 @@ def ConvertTritonDistributedToLLVM : Pass<"convert-triton-distributed-to-llvm", 
 
 // AMD Backend
 def ConvertLibDeviceToLLVM : Pass<"convert-lib-device-to-llvm", "mlir::ModuleOp"> {
-    let summary = "Convert Lib Device(User Defined Ops) to LLVM";
+    let summary = "Convert Lib Device (User Defined Ops) to LLVM";
     let constructor = "mlir::triton::createConvertLibDeviceToLLVMPass(/*ftz=*/true)";
 
     let dependentDialects = ["mlir::LLVM::LLVMDialect"];
@@ -55,7 +55,7 @@ def ConvertAMDDistributedToLLVM : Pass<"convert-amd-distributed-to-llvm", "mlir:
     let summary = "Convert TritonDistributed to LLVM";
     let description = [{
         The `convert-amd-distributed-to-llvm` pass performs lowering of
-    the distributed op for AMD backend.
+        the distributed op for AMD backend.
     }];
 
     let constructor = "mlir::triton::createConvertAMDDistributedToLLVMPass(\"\", /*ftz=*/true)";

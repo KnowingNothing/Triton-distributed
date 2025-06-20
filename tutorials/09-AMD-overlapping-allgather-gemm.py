@@ -48,6 +48,7 @@ import numpy as np
 import torch
 import triton
 import triton.language as tl
+import triton_dist.language as dl
 
 from hip import hip
 from typing import Optional, List
@@ -58,9 +59,7 @@ from triton_dist.utils import (
 )
 from triton_dist.kernels.amd import create_ag_gemm_intra_node_context
 from triton_dist.kernels.amd.common_ops import (
-    wait_eq_sys,
-    barrier_all_on_stream,
-)
+    barrier_all_on_stream, )
 
 assert triton.runtime.driver.active.get_current_target().backend == "hip"
 
@@ -196,7 +195,8 @@ def consumer_gemm_persistent_kernel(
 
         # Skip waiting local tensor as we pass it int kernel function as argument.
         if offs_rank != rank:
-            wait_eq_sys(barrier_ptr + offs_sig, 1)
+            token = dl.wait(barrier_ptr + offs_sig, 1, "sys", "acquire", waitValue=1)
+            A = dl.consume_token(A, token)
 
         rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
         rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N

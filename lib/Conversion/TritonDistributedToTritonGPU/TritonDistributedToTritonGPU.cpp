@@ -978,9 +978,9 @@ Value unrealizedCastMaterialization(OpBuilder &builder, Type type,
   return cast.getResult(0);
 }
 
-class SIMTReigonTypeConverter : public TypeConverter {
+class SIMTRegionTypeConverter : public TypeConverter {
 public:
-  SIMTReigonTypeConverter(MLIRContext *context, int numWarps,
+  SIMTRegionTypeConverter(MLIRContext *context, int numWarps,
                           int threadsPerWarp, int numCTAs)
       : context(context), numWarps(numWarps), threadsPerWarp(threadsPerWarp),
         numCTAs(numCTAs) {
@@ -1273,7 +1273,7 @@ struct SIMTExecRegionPromotionPattern
   }
 };
 
-void populateSIMTReigonPromotionPattern(SIMTReigonTypeConverter &typeConverter,
+void populateSIMTReigonPromotionPattern(SIMTRegionTypeConverter &typeConverter,
                                         RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   // tensor dialect
@@ -1379,7 +1379,7 @@ public:
       target.addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                           scf::ReduceReturnOp>();
 
-      SIMTReigonTypeConverter typeConverter(context, numWarps, threadsPerWarp,
+      SIMTRegionTypeConverter typeConverter(context, numWarps, threadsPerWarp,
                                             numCTAs);
       target.addDynamicallyLegalDialect<
           arith::ArithDialect, math::MathDialect, triton::TritonDialect,

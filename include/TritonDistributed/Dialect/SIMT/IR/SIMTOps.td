@@ -48,9 +48,9 @@ class TT_SIMT_Op<string mnemonic, list<Trait> traits = []> :
 def SIMTExecRegionOp : TT_SIMT_Op<"simt_exec_region", [
   RecursiveMemoryEffects,
 ]> {
-  let summary = "perform the code in region with simt form";
+  let summary = "perform the code in region with simt mode";
   let description = [{
-    The `ttg.warp_specialize` op represents executing code in simt.
+    The `simt.simt_exec_region` op represents executing code in simt mode.
   }];
 
   let arguments = (ins Variadic<AnyType>:$initArgs);
