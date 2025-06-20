@@ -93,8 +93,9 @@ def test_ag_gemm(args, autotune=False):
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
 
     debug = args.debug
-
-    ctx = create_ag_gemm_context(A, B, rank, num_ranks, max_M=M, for_correctness=debug)
+    LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
+    ctx = create_ag_gemm_context(A, B, rank, num_ranks, num_local_ranks=LOCAL_WORLD_SIZE, max_M=M,
+                                 for_correctness=debug)
     if rank == 0:
         print(f"all gather with: {ctx.all_gather_method}")
 

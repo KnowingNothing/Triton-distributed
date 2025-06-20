@@ -26,12 +26,11 @@
 from triton.language import core as tl
 from triton.language.core import builtin, tensor
 from typing import List
-from triton.language import semantic
 import builtins
 
 
 # adapted from python/triton/language/core.py
-def dispatch(func, lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool, _builder=None):
+def dispatch(func, lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool, _semantic=None):
     '''
         Dispatch a function to a library
         :param func: the function to dispatch
@@ -40,7 +39,7 @@ def dispatch(func, lib_name: str, lib_path: str, args: list, arg_type_symbol_dic
         :param args: the arguments of the function
         :param arg_type_symbol_dict: the type of the arguments
         :param ret_shape: the shape of the return value
-        :param _builder: the builder
+        :param _semantic: the builder
         :return: the return value of the function
     '''
     if len(arg_type_symbol_dict) == 0:
@@ -73,7 +72,8 @@ def dispatch(func, lib_name: str, lib_path: str, args: list, arg_type_symbol_dic
 
         if symbol == "":
             raise ValueError("Symbol can not be empty")
-        call = func(lib_name, lib_path, symbol, arg_list, [ret_type.to_ir(_builder) for ret_type in ret_types], is_pure)
+        call = func(lib_name, lib_path, symbol, arg_list, [ret_type.to_ir(_semantic.builder) for ret_type in ret_types],
+                    is_pure)
 
         if len(ret_types) == 0:
             return tensor(call, tl.void)
@@ -83,7 +83,7 @@ def dispatch(func, lib_name: str, lib_path: str, args: list, arg_type_symbol_dic
 
 
 @builtin
-def extern_call(lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool, _builder=None):
+def extern_call(lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool, _semantic=None):
     '''
         Dispatch an function to a library
         :param lib_name: the name of the library
@@ -91,14 +91,14 @@ def extern_call(lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: 
         :param args: the arguments of the function
         :param arg_type_symbol_dict: the type of the arguments
         :param is_pure: whether the function is pure
-        :param _builder: the builder
+        :param _semantic: the semantic
         :return: the return value of the function
     '''
     dispatch_args = args.copy()
     all_scalar = True
     arg_types = []
     for i in builtins.range(len(dispatch_args)):
-        dispatch_args[i] = semantic.to_tensor(dispatch_args[i], _builder)
+        dispatch_args[i] = _semantic.to_tensor(dispatch_args[i])
         arg_types.append(dispatch_args[i].dtype)
         if dispatch_args[i].type.is_block():
             all_scalar = False
@@ -113,14 +113,14 @@ def extern_call(lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: 
         raise ValueError(f"length of input args does not match."
                          f"Expect {len(args)}, got {num_args}")
 
-    func = _builder.create_extern_call
-    return dispatch(func, lib_name, lib_path, dispatch_args, arg_type_symbol_dict, is_pure, _builder)
+    func = _semantic.builder.create_extern_call
+    return dispatch(func, lib_name, lib_path, dispatch_args, arg_type_symbol_dict, is_pure, _semantic)
 
 
 # adapted from python/triton/language/core.py: support pointer type inputs
 @builtin
 def extern_elementwise(lib_name: str, lib_path: str, args: list, arg_type_symbol_dict: dict, is_pure: bool,
-                       _builder=None, check_args=True):
+                       _semantic=None, check_args=True):
     '''
         Dispatch an elementwise function to a library
         :param lib_name: the name of the library
@@ -128,7 +128,7 @@ def extern_elementwise(lib_name: str, lib_path: str, args: list, arg_type_symbol
         :param args: the arguments of the function
         :param arg_type_symbol_dict: the type of the arguments
         :param is_pure: whether the function is pure
-        :param _builder: the builder
+        :param _semantic: the semantic
         :return: the return value of the function
     '''
     dispatch_args = args.copy()
@@ -136,7 +136,7 @@ def extern_elementwise(lib_name: str, lib_path: str, args: list, arg_type_symbol
     ret_shape = None
     arg_types = []
     for i in builtins.range(len(dispatch_args)):
-        dispatch_args[i] = semantic.to_tensor(dispatch_args[i], _builder)
+        dispatch_args[i] = _semantic.to_tensor(dispatch_args[i])
         arg_types.append(dispatch_args[i].dtype)
         if dispatch_args[i].type.is_block():
             all_scalar = False
@@ -150,15 +150,15 @@ def extern_elementwise(lib_name: str, lib_path: str, args: list, arg_type_symbol
         if check_args:
             # Get the broadcast shape over all the arguments
             for item in dispatch_args:
-                _, broadcast_arg = semantic.binary_op_type_checking_impl(item, broadcast_arg, _builder,
-                                                                         allow_lhs_ptr=True, allow_rhs_ptr=True,
-                                                                         arithmetic_check=arithmetic_check)
+                _, broadcast_arg = _semantic.binary_op_type_checking_impl(item, broadcast_arg, allow_lhs_ptr=True,
+                                                                          allow_rhs_ptr=True,
+                                                                          arithmetic_check=arithmetic_check)
             # Change the shape of each argument based on the broadcast shape
             for i in builtins.range(len(dispatch_args)):
-                dispatch_args[i], _ = semantic.binary_op_type_checking_impl(dispatch_args[i], broadcast_arg, _builder,
-                                                                            allow_lhs_ptr=True, allow_rhs_ptr=True,
-                                                                            arithmetic_check=arithmetic_check)
+                dispatch_args[i], _ = _semantic.binary_op_type_checking_impl(dispatch_args[i], broadcast_arg,
+                                                                             allow_lhs_ptr=True, allow_rhs_ptr=True,
+                                                                             arithmetic_check=arithmetic_check)
             if not all_scalar:
                 ret_shape = broadcast_arg.shape
-    func = _builder.create_extern_elementwise
-    return tl.dispatch(func, lib_name, lib_path, dispatch_args, arg_type_symbol_dict, ret_shape, is_pure, _builder)
+    func = _semantic.builder.create_extern_elementwise
+    return tl.dispatch(func, lib_name, lib_path, dispatch_args, arg_type_symbol_dict, ret_shape, is_pure, _semantic)

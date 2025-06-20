@@ -4,13 +4,18 @@
 from . import libdevice, libnvshmem_device, language_extra
 
 from .utils import (globaltimer, num_threads, num_warps, smid, convert_custom_float8_sm70, convert_custom_float8_sm80)
-
-from ._experimental_tma import *  # noqa: F403
-from ._experimental_tma import __all__ as _tma_all
+from .gdc import (gdc_launch_dependents, gdc_wait)
 
 __all__ = [
-    "libdevice", "globaltimer", "num_threads", "num_warps", "smid", "convert_custom_float8_sm70",
-    "convert_custom_float8_sm80", "libnvshmem_device", "language_extra", *_tma_all
+    "libdevice",
+    "globaltimer",
+    "num_threads",
+    "num_warps",
+    "smid",
+    "convert_custom_float8_sm70",
+    "convert_custom_float8_sm80",
+    "libnvshmem_device",
+    "language_extra",
+    "gdc_launch_dependents",
+    "gdc_wait",
 ]
-
-del _tma_all

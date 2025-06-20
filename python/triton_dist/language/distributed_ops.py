@@ -23,7 +23,6 @@
 #
 ################################################################################
 from triton.language import core as tlc
-from triton.language.semantic import _str_to_sem, _str_to_scope, to_tensor, _convert_elem_to_ir_value
 from triton.language.core import builtin
 from triton._C.libtriton.distributed import ir
 
@@ -55,26 +54,26 @@ def _str_to_dist_comm_scopre(comm_scope):
 
 
 @builtin
-def wait(barrierPtrs, numBarriers, scope: str, semantic: str, waitValue: int = 1, _builder=None):
+def wait(barrierPtrs, numBarriers, scope: str, semantic: str, waitValue: int = 1, _semantic=None):
     if not barrierPtrs.type.scalar.is_ptr():
         raise ValueError(f"Unsupported barrierPtrs type {barrierPtrs.type.__repr__()} in `distributed.language.wait`")
     elem_ty = barrierPtrs.dtype.element_ty
     require_i64 = False
     if elem_ty.is_int64() or elem_ty.is_uint64():
         require_i64 = True
-    waitValue = _convert_elem_to_ir_value(_builder, waitValue, require_i64=require_i64)
-    scope = _str_to_scope(scope)
-    semantic = _str_to_sem(semantic)
+    waitValue = _semantic._convert_elem_to_ir_value(waitValue, require_i64=require_i64)
+    scope = _semantic._str_to_scope(scope)
+    semantic = _semantic._str_to_sem(semantic)
     return tlc.tensor(
-        _builder.create_distributed_wait(barrierPtrs.handle,
-                                         to_tensor(numBarriers, _builder).handle, waitValue, scope, semantic,
-                                         tlc.int32.to_ir(_builder)), tlc.int32)
+        _semantic.builder.create_distributed_wait(barrierPtrs.handle,
+                                                  _semantic.to_tensor(numBarriers).handle, waitValue, scope, semantic,
+                                                  tlc.int32.to_ir(_semantic.builder)), tlc.int32)
 
 
 @builtin
-def consume_token(value, token, _builder=None):
+def consume_token(value, token, _semantic=None):
     assert token.type.scalar.is_int(), "token must be of int type"
-    handle = _builder.create_distributed_consume_token(value.handle, token.handle)
+    handle = _semantic.builder.create_distributed_consume_token(value.handle, token.handle)
     if isinstance(value, tlc.tensor_descriptor):
         return tlc.tensor_descriptor(handle, value.shape, value.strides, value.block_type)
     else:
@@ -82,31 +81,31 @@ def consume_token(value, token, _builder=None):
 
 
 @builtin
-def rank(axis=-1, _builder=None):
-    axis = _convert_elem_to_ir_value(_builder, axis, require_i64=False)
-    return tlc.tensor(_builder.create_get_rank(axis), tlc.int32)
+def rank(axis=-1, _semantic=None):
+    axis = _semantic._convert_elem_to_ir_value(axis, require_i64=False)
+    return tlc.tensor(_semantic.builder.create_get_rank(axis), tlc.int32)
 
 
 @builtin
-def num_ranks(axis=-1, _builder=None):
-    axis = _convert_elem_to_ir_value(_builder, axis, require_i64=False)
-    return tlc.tensor(_builder.create_get_num_ranks(axis), tlc.int32)
+def num_ranks(axis=-1, _semantic=None):
+    axis = _semantic._convert_elem_to_ir_value(axis, require_i64=False)
+    return tlc.tensor(_semantic.builder.create_get_num_ranks(axis), tlc.int32)
 
 
 @builtin
-def symm_at(ptr, rank, _builder=None):
+def symm_at(ptr, rank, _semantic=None):
     assert not ptr.type.is_block() and ptr.type.is_ptr(), "only support scalar pointer"
-    rank = _convert_elem_to_ir_value(_builder, rank, require_i64=False)
-    return tlc.tensor(_builder.create_symm_at(ptr.handle, rank), ptr.type)
+    rank = _semantic._convert_elem_to_ir_value(rank, require_i64=False)
+    return tlc.tensor(_semantic.builder.create_symm_at(ptr.handle, rank), ptr.type)
 
 
 @builtin
-def notify(ptr, rank, signal=1, sig_op="set", comm_scope="inter_node", _builder=None):
+def notify(ptr, rank, signal=1, sig_op="set", comm_scope="inter_node", _semantic=None):
     assert not ptr.type.is_block() and ptr.type.is_ptr(), "only support scalar pointer"
     assert ptr.dtype.element_ty == tlc.uint64, "the dtype of signal ptr should be uint64"
 
-    rank = _convert_elem_to_ir_value(_builder, rank, require_i64=False)
-    signal = _convert_elem_to_ir_value(_builder, signal, require_i64=True)
+    rank = _semantic._convert_elem_to_ir_value(rank, require_i64=False)
+    signal = _semantic._convert_elem_to_ir_value(signal, require_i64=True)
     sig_op = _str_to_dist_signal_op(sig_op)
     comm_scope = _str_to_dist_comm_scopre(comm_scope)
-    return tlc.tensor(_builder.create_notify(ptr.handle, signal, rank, sig_op, comm_scope), tlc.void)
+    return tlc.tensor(_semantic.builder.create_notify(ptr.handle, signal, rank, sig_op, comm_scope), tlc.void)

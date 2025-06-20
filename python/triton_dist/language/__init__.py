@@ -24,9 +24,8 @@
 ################################################################################
 
 from .distributed_ops import wait, consume_token, rank, num_ranks, symm_at, notify
-from .simt_ops import simt_exec_region
+from .simt_ops import simt_exec_region, extract, insert
 from .core import extern_call
-from . import semantic  # noqa: F401
 
 __all__ = [
     # distributed ops
@@ -38,6 +37,8 @@ __all__ = [
     "notify",
     # simt ops
     "simt_exec_region",
+    "extract",
+    "insert",
     # core
     "extern_call",
 ]

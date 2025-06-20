@@ -43,7 +43,8 @@ std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonDistributedToTritonGPUPass(const std::string &target,
                                               int numWarps,
                                               int threadsPerWarp = 32,
-                                              int numCTAs = 1);
+                                              int numCTAs = 1,
+                                              bool enableSourceRemat = false);
 
 } // namespace triton
 } // namespace mlir
