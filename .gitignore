@@ -65,3 +65,5 @@ python/triton_dist/_C/*nvshmem
 temp_conflicts
 temp_merge_repo
 conflict_list.txt
+
+dev_output/
