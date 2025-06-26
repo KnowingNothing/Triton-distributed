@@ -501,13 +501,13 @@ def update_triton_config(M, N, K, dtype: torch.dtype, world_size, local_world_si
         It's hard to autotune all parameters and record them all, especially when there are so many shapes and devices and dtypes.
         So we just use a simple heuristic rule to update the config.
     """
-    from triton_dist.kernels.nvidia.comm_perf_model import (estimate_reduce_scatter_time, get_nic_bandwidth_per_gpu)
+    from triton_dist.kernels.nvidia.comm_perf_model import (estimate_reduce_scatter_time_ms, get_nic_gbps_per_gpu)
     from triton_dist.kernels.nvidia.gemm_perf_model import \
         estimate_gemm_sol_time_ms
     from triton_dist.utils import get_intranode_max_speed
     gemm_time_ms = estimate_gemm_sol_time_ms(M, N, K, dtype)
-    rs_time_ms = estimate_reduce_scatter_time(M * N * dtype.itemsize, world_size, local_world_size,
-                                              get_intranode_max_speed(), get_nic_bandwidth_per_gpu()) * 1000
+    rs_time_ms = estimate_reduce_scatter_time_ms(M * N * dtype.itemsize, world_size, local_world_size,
+                                                 get_intranode_max_speed(), get_nic_gbps_per_gpu())
     BLOCK_SIZE_M = config.kwargs["BLOCK_SIZE_M"]
     GROUP_SIZE_M = config.kwargs["GROUP_SIZE_M"]
     if gemm_time_ms < rs_time_ms:

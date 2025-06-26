@@ -888,7 +888,7 @@ def add_link_to_pynvshmem():
     update_symlink(triton_dist_root / "python" / "triton_dist" / "pynvshmem",
                    triton_dist_root / "shmem" / "nvshmem_bind" / "pynvshmem" / "python" / "pynvshmem")
     # update pyi
-    update_symlink(triton_dist_root / "python" / "triton_dist" / "_C" / "_pynvshmem",
+    update_symlink(triton_dist_root / "python" / "triton" / "_C" / "_pynvshmem",
                    triton_dist_root / "shmem" / "nvshmem_bind" / "pynvshmem" / "python" / "_pynvshmem")
     # link nvshmem lib
     update_symlink(triton_dist_root / "python" / "triton_dist" / "_C" / "nvshmem",

@@ -28,11 +28,15 @@ import random
 
 import torch
 import torch.distributed
+import triton
+import triton.language as tl
 
 from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.common_ops import (barrier_all_intra_node_non_atomic,
                                                    barrier_all_intra_node_non_atomic_block, barrier_on_this_grid,
-                                                   barrier_all_intra_node_atomic_cas_block)
+                                                   barrier_all_intra_node_atomic_cas_block, bisect_left_kernel,
+                                                   bisect_left_kernel_aligned, bisect_right_kernel,
+                                                   bisect_right_kernel_aligned)
 from triton_dist.utils import check_p2p_native_atomic_supported
 
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
@@ -93,6 +97,87 @@ def test_barrier_all_intra_node():
         barrier_all_intra_node_atomic_cas_block[(1, )](LOCAL_RANK, RANK, LOCAL_WORLD_SIZE, symm_flag)
 
     print("✅ barrier_all_intra_node_atomic_cas_block passed")
+
+
+def bisect_triton(sorted_tensor, values_tensor, side="left", aligned=False):
+
+    @triton.jit
+    def _bisect_kernel(
+        output_ptr,
+        sorted_values_ptr,
+        target_values_ptr,
+        M,
+        N: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+        func: tl.constexpr,
+    ):  # Get thread ID and total threads
+        pid = tl.program_id(0)
+        offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offset < M  # Assuming N is number of values to search
+
+        # Load value for this thread
+        target_values = tl.load(target_values_ptr + offset, mask=mask)
+
+        tl.store(
+            output_ptr + offset,
+            func(sorted_values_ptr, target_values, N),
+            mask=mask,
+        )
+
+    assert sorted_tensor.dim() == 1, "Sorted array must be 1D"
+    assert values_tensor.dim() == 1, "Values array must be 1D"
+
+    n = values_tensor.size(0)
+    output = torch.empty_like(values_tensor, dtype=torch.int64)
+
+    # Calculate launch parameters
+    BLOCK_SIZE = 32
+    grid = (triton.cdiv(n, BLOCK_SIZE), )
+    func = {
+        ("left", False): bisect_left_kernel,
+        ("right", False): bisect_right_kernel,
+        ("left", True): bisect_left_kernel_aligned,
+        ("right", True): bisect_right_kernel_aligned,
+    }[(side, aligned)]
+
+    N = sorted_tensor.size(0)
+
+    _bisect_kernel[grid](
+        output,
+        sorted_tensor,
+        values_tensor,
+        M=values_tensor.size(0),
+        N=N,
+        func=func,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=min(32, BLOCK_SIZE // 32),
+    )
+    return output
+
+
+def test_bisect_cases():
+
+    def _test_bisect(side="left", aligned=False):
+        # Generate test data
+        sorted_tensor = torch.tensor(range(1, 33, 1), device="cuda", dtype=torch.int32)
+
+        values = torch.randint(0, 36, (32, ), device="cuda", dtype=torch.int32)
+
+        # Triton implementation
+        triton_result = bisect_triton(sorted_tensor, values, side=side, aligned=aligned)
+
+        # Reference implementation
+        torch_result = torch.searchsorted(sorted_tensor, values, side=side)
+
+        # Verify results
+        assert torch.allclose(triton_result, torch_result), f"Triton: {triton_result}\nTorch: {torch_result}"
+
+        print(f"bisect_{side} {'aligned' if aligned else ''} passed!")
+
+    _test_bisect(side="right", aligned=False)
+    _test_bisect(side="right", aligned=False)
+    _test_bisect(side="left", aligned=True)
+    _test_bisect(side="left", aligned=False)
 
 
 if __name__ == "__main__":

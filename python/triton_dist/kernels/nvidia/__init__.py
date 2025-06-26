@@ -28,7 +28,7 @@ from .low_latency_allgather import (fast_allgather, create_fast_allgather_contex
                                     _forward_push_2d_kernel, _forward_push_3d_kernel, _forward_push_2d_ll_kernel,
                                     _forward_push_2d_ll_multimem_kernel, _forward_push_numa_2d_ll_kernel,
                                     _forward_push_numa_2d_kernel, _forward_push_numa_2d_ll_multinode_kernel)
-from .allgather_group_gemm import (create_ag_group_gemm_context, ag_group_gemm)
+from .allgather_group_gemm import (create_ag_group_gemm_context, ag_group_gemm, ag_group_gemm_v2)
 from .flash_decode import (gqa_fwd_batch_decode_persistent, kernel_gqa_fwd_batch_decode_split_kv_persistent,
                            gqa_fwd_batch_decode_persistent_aot, gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot,
                            gqa_fwd_batch_decode_intra_rank_aot, get_triton_combine_kv_algo_info,
@@ -50,6 +50,7 @@ __all__ = [
     "_forward_push_numa_2d_ll_multinode_kernel",
     "ag_gemm",
     "ag_group_gemm",
+    "ag_group_gemm_v2",
     "all_to_all_post_process",
     "create_ag_gemm_context",
     "create_ag_group_gemm_context",

@@ -23,7 +23,7 @@
 #
 ################################################################################
 import sys
-from typing import Sequence
+from typing import Sequence, List
 
 import torch
 import torch.distributed
@@ -159,7 +159,7 @@ def nvshmem_create_tensor(shape: Sequence[int], dtype: torch.dtype) -> torch.Ten
     return t
 
 
-def nvshmem_create_tensor_list_intra_node(shape: Sequence[int], dtype: torch.dtype) -> torch.Tensor:
+def nvshmem_create_tensor_list_intra_node(shape: Sequence[int], dtype: torch.dtype) -> List[torch.Tensor]:
     t = nvshmem_create_tensor(shape, dtype)
     local_rank = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE)
     rank = nvshmem_my_pe()
@@ -180,11 +180,11 @@ def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.Proce
 def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
     rank, nranks = group.rank(), group.size()
     if rank == 0:
-        unique_id: bytes = bytearray(nvshmemx_get_uniqueid())
-        unique_id = torch.frombuffer(unique_id, dtype=torch.uint8).cpu().clone()
+        buffer: bytes = bytearray(nvshmemx_get_uniqueid())
+        unique_id: torch.Tensor = torch.frombuffer(buffer, dtype=torch.uint8).cpu().clone()
     else:
         # the default device("cpu") may be modified by set_default_device
-        unique_id = torch.empty(128, dtype=torch.uint8, device="cpu")
+        unique_id: torch.Tensor = torch.empty(128, dtype=torch.uint8, device="cpu")
 
     broadcast_cpu(tensor=unique_id, group=group, src=0)
 
