@@ -226,3 +226,52 @@ def set_signal(ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=Fal
             cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
         )
     CUDA_CHECK(err)
+
+
+# copied from https://github.com/cchan/tccl/blob/main/triton_double_tree_allreduce.py
+@triton.jit
+def load_128(addrs, mask):
+    return tl.inline_asm_elementwise(
+        """
+        {
+            .reg .pred %p0;
+            setp.eq.s32             %p0, $3, 1;
+            @%p0 ld.global.v2.b64   {$0, $1}, [$2];
+        }
+        """,
+        "=l,=l,l,r",
+        args=[addrs, mask.to(tl.int32)],
+        dtype=(tl.int64, tl.int64),
+        is_pure=True,
+        pack=1,
+    )
+
+
+# copied from https://github.com/cchan/tccl/blob/main/triton_double_tree_allreduce.py
+@triton.jit
+def add_v8_bf16(a_hi, a_lo, b_hi, b_lo):
+    #TODO(lsy.314)
+    # v8 doesn't seem necessary and needs to be replaced, given that bf16 can only use x2 add instruction
+    return tl.inline_asm_elementwise(
+        """
+        {
+            .reg .v4 .b32 %acc, %tmp;
+            mov.v4.b32  %acc, 0;
+            mov.b64     {%acc.x, %acc.y}, $2;
+            mov.b64     {%acc.z, %acc.w}, $3;
+            mov.b64     {%tmp.x, %tmp.y}, $4;
+            mov.b64     {%tmp.z, %tmp.w}, $5;
+            add.bf16x2  %acc.x, %acc.x, %tmp.x;
+            add.bf16x2  %acc.y, %acc.y, %tmp.y;
+            add.bf16x2  %acc.z, %acc.z, %tmp.z;
+            add.bf16x2  %acc.w, %acc.w, %tmp.w;
+            mov.b64     $0, {%acc.x, %acc.y};
+            mov.b64     $1, {%acc.z, %acc.w};
+        }
+        """,
+        "=l,=l,l,l,l,l",
+        args=[a_hi, a_lo, b_hi, b_lo],
+        dtype=(tl.int64, tl.int64),
+        is_pure=True,
+        pack=1,
+    )
