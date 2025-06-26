@@ -41,8 +41,9 @@ def get_cmake_dir():
     return cmake_dir
 
 
-def create_symlink_rel(source: Path, target: Path, base_dir: Path, dryrun: bool = False):
-    """if both source/target under base_dir, create link with relative path.
+def create_symlink_rel(target: Path, source: Path, base_dir: Path, dryrun: bool = False):
+    """Make source path a symlink pointing to the target path.
+    if both source/target under base_dir, create link with relative path.
 
     why it's tricky for that?
 
@@ -52,16 +53,16 @@ def create_symlink_rel(source: Path, target: Path, base_dir: Path, dryrun: bool 
     """
     # should relative
     base_dir = base_dir.resolve()
-    target.parent.mkdir(exist_ok=True, parents=True)
-    if source.resolve().is_relative_to(base_dir) and target.resolve().is_relative_to(base_dir):
-        source = source.absolute()
-        target = target.absolute()
-        source = Path(os.path.relpath(source, target.parent))
+    source.parent.mkdir(exist_ok=True, parents=True)
+    if source.is_symlink() or source.exists():
+        source.unlink()
+    if target.resolve().is_relative_to(base_dir) and source.resolve().is_relative_to(base_dir):
+        target = target.resolve()
+        source = source.resolve()
+        target = Path(os.path.relpath(target, source.parent))
 
-    if target.is_symlink() or target.exists():
-        target.unlink()
     if not dryrun:
-        target.symlink_to(source, target_is_directory=source.is_dir())
+        source.symlink_to(target, target_is_directory=target.is_dir())
 
 
 def softlink_apply_patches():
@@ -82,16 +83,17 @@ def softlink_apply_patches():
         # Calculate the relative path
         relative_path = os.path.relpath(root, patches_triton_dir)
         # Construct the path of the target directory
-        target_dir = os.path.join(_3rdparty_triton_dir, relative_path)
+        triton_dir = os.path.join(_3rdparty_triton_dir, relative_path)
 
         # Create the target directory if it does not exist
-        if not os.path.exists(target_dir):
-            os.makedirs(target_dir)
+        if not os.path.exists(triton_dir):
+            os.makedirs(triton_dir)
 
         # Copy files
         for file in files:
-            source_file = os.path.join(root, file)
-            target_file = os.path.join(target_dir, file)
+            patch_file = os.path.join(root, file)
+            origin_file = os.path.join(triton_dir, file)
             # Check if the source file is a relative path
             base_dir = Path(__file__).parent.parent
-            create_symlink_rel(Path(source_file), Path(target_file), base_dir)
+            # make origin_file a softlink to pach_file
+            create_symlink_rel(Path(patch_file), Path(origin_file), base_dir)

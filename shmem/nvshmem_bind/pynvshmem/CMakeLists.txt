@@ -11,19 +11,7 @@ find_program(PYTHON_EXECUTABLE NAMES python3 python)
 find_package(CUDA REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
-execute_process(
-  COMMAND ${PYTHON_EXECUTABLE} "-c"
-          "from __future__ import print_function; import os; import pybind11;
-print(os.path.dirname(pybind11.__file__),end='');"
-  RESULT_VARIABLE _PYTHON_SUCCESS
-  OUTPUT_VARIABLE PYBIND11_DIR)
-message("PYTHON_EXECUTABLE:${PYTHON_EXECUTABLE}")
-if(NOT _PYTHON_SUCCESS MATCHES 0)
-  message("PYBIND11_DIR: ${PYBIND11_DIR}")
-  message(FATAL_ERROR "Pybind11 config Error.")
-endif()
-list(APPEND CMAKE_PREFIX_PATH ${PYBIND11_DIR})
-find_package(pybind11 REQUIRED)
+find_package(pybind11 REQUIRED HINTS "${Python3_SITELIB}")
 
 find_package(NVSHMEM REQUIRED)
 

@@ -76,6 +76,12 @@ def init_seed(seed=0):
     os.environ["NCCL_DEBUG"] = os.getenv("NCCL_DEBUG", "ERROR")
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
     torch.use_deterministic_algorithms(True, warn_only=True)
+    # zero empty takes more kernel launch and may hide uninitialized problem. always set to False
+    # available since torch 2.2: https://docs.pytorch.org/docs/2.2/deterministic.html
+    try:
+        torch.utils.deterministic.fill_uninitialized_memory = False
+    except Exception:
+        logging.warning("torch.utils.fill_uninitialized_memory is available only for torch >=2.2")
     torch.set_printoptions(precision=2)
     torch.manual_seed(3 + seed)
     torch.cuda.manual_seed_all(3 + seed)
@@ -808,7 +814,7 @@ def assert_allclose(x: torch.Tensor, y: torch.Tensor, rtol, atol, verbose=True):
         raise RuntimeError
 
     if verbose:
-        print("all close!")
+        print("✅ all close!")
 
 
 @functools.lru_cache()

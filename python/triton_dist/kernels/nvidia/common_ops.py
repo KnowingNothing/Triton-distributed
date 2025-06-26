@@ -228,6 +228,114 @@ def set_signal(ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=Fal
     CUDA_CHECK(err)
 
 
+@tl.constexpr_function
+def log2(n):
+    return len(bin(n)) - 3
+
+
+@tl.constexpr_function
+def next_power_of_2(n: tl.constexpr):
+    n -= 1
+    n |= n >> 1
+    n |= n >> 2
+    n |= n >> 4
+    n |= n >> 8
+    n |= n >> 16
+    n += 1
+    return n
+
+
+@triton.jit
+def bisect_left_kernel_aligned(sorted_values_ptr,  # Pointer to sorted input array of K
+                               target_values,  # Pointer to search values of N
+                               N: tl.constexpr,  # K should be power of 2
+                               ):
+    # Binary search initialization
+    low = tl.full((target_values.numel, ), 0, dtype=tl.int32)
+    high = tl.full((target_values.numel, ), N, dtype=tl.int32)  # Length of the sorted array
+
+    N_LOG2 = log2(N)
+    # Binary search loop
+    for n in tl.range(N_LOG2):
+        mid = (low + high) // 2
+        mid_val = tl.load(sorted_values_ptr + mid)
+        # Update search bounds
+        low = tl.where(mid_val < target_values, mid + 1, low)
+        high = tl.where(mid_val >= target_values, mid, high)
+
+    low = tl.where(
+        low != high and tl.load(sorted_values_ptr + low) < target_values,
+        low + 1,
+        low,
+    )
+    return low
+
+
+@triton.jit
+def bisect_left_kernel(
+    sorted_values_ptr,  # Pointer to sorted input array of M
+    target_values,  # Pointer to search values of L
+    N: tl.constexpr,
+):
+    # Binary search initialization
+    index = tl.full((target_values.numel, ), -1, dtype=tl.int32)
+
+    # Binary search loop
+    for i in tl.range(N):
+        x = tl.load(sorted_values_ptr + i)
+        # if index > 0 => index
+        # if x > target_value => i
+        # else => -1
+        index = tl.where(index >= 0, index, tl.where(x >= target_values, i, -1))
+    index = tl.where(index == -1, N, index)
+
+    return index
+
+
+@triton.jit
+def bisect_right_kernel(sorted_values_ptr,  # Pointer to sorted input array (1D)
+                        target_values,  # Pointer to search values (1D)
+                        N: tl.constexpr,  # Length of sorted array
+                        ):
+    # Binary search initialization
+    index = tl.full((target_values.numel, ), -1, dtype=tl.int32)
+
+    # Binary search loop
+    for i in tl.range(N):
+        x = tl.load(sorted_values_ptr + i)
+        # if index > 0 => index
+        # if x > target_value => i
+        # else => -1
+        index = tl.where(index >= 0, index, tl.where(x > target_values, i, -1))
+    index = tl.where(index == -1, N, index)
+    return index
+
+
+@triton.jit
+def bisect_right_kernel_aligned(
+    sorted_values_ptr,  # Pointer to sorted input array (1D)
+    target_values,
+    N: tl.constexpr,
+):
+    # Binary search initialization
+    low = tl.full((target_values.numel, ), 0, dtype=tl.int32)
+    high = tl.full((target_values.numel, ), N, dtype=tl.int32)  # Length of the sorted array
+
+    N_LOG2 = log2(N)
+    # Binary search loop
+    for _ in tl.range(N_LOG2):
+        mid = (low + high) // 2
+        mid_val = tl.load(sorted_values_ptr + mid)
+
+        # Update search bounds
+        low = tl.where(mid_val <= target_values, mid + 1, low)
+        high = tl.where(mid_val > target_values, mid, high)
+
+    low = tl.where(low != high and tl.load(sorted_values_ptr + low) <= target_values, low + 1, low)
+    # Store result
+    return low
+
+
 # copied from https://github.com/cchan/tccl/blob/main/triton_double_tree_allreduce.py
 @triton.jit
 def load_128(addrs, mask):
