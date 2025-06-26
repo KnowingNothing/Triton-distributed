@@ -114,6 +114,8 @@ jobs:
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma_multi_barrier
+          # aot compilation
+          - USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_compile_aot.py
           # ag gemm
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness_autotune
