@@ -22,18 +22,17 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
+import argparse
 import os
+
 import torch
 import torch.distributed
 
-import argparse
-
-from triton_dist.kernels.nvidia import (create_ag_group_gemm_context, ag_group_gemm, ag_group_gemm_v2)
-from triton_dist.kernels.nvidia.gemm_perf_model import get_tensorcore_tflops, get_dram_gbps
-from triton_dist.utils import (group_profile, initialize_distributed, TP_GROUP, perf_func, dist_print, assert_allclose,
-                               get_device_max_shared_memory_size)
-from triton_dist.kernels.nvidia.comm_perf_model import estimate_all_gather_time_ms, get_nic_gbps_per_gpu
-from triton_dist.utils import get_intranode_max_speed
+from triton_dist.kernels.nvidia import (ag_group_gemm, create_ag_group_gemm_context)
+from triton_dist.kernels.nvidia.comm_perf_model import (estimate_all_gather_time_ms, get_nic_gbps_per_gpu)
+from triton_dist.kernels.nvidia.gemm_perf_model import (get_dram_gbps, get_tensorcore_tflops)
+from triton_dist.utils import (TP_GROUP, assert_allclose, dist_print, get_device_max_shared_memory_size,
+                               get_intranode_max_speed, group_profile, initialize_distributed, perf_func)
 
 
 def torch_moe_scatter_group_gemm(in_features, expert_weights, topk_ids):
@@ -141,51 +140,53 @@ def perf_test(name, input_len, dtype: torch.dtype, config, debug=False):
         print(f"stage {stage} exceeds max stages {max_stages}, force set to {max_stages}...")
         config["num_stages"] = max_stages
 
-    ctx = create_ag_group_gemm_context(A, B, RANK, WORLD_SIZE, full_topk_ids, max_M=M, BLOCK_M=config["BM"],
-                                       BLOCK_N=config["BN"], BLOCK_K=config["BK"], GROUP_SIZE_M=config["GROUP_SIZE_M"],
-                                       stages=config["num_stages"], warps=config["num_warps"])
+    ctx = create_ag_group_gemm_context(
+        M,
+        N_per_rank,
+        K,
+        E,
+        topk,
+        dtype,
+        RANK,
+        WORLD_SIZE,
+        LOCAL_WORLD_SIZE,
+        BLOCK_SIZE_M=config["BM"],
+        BLOCK_SIZE_N=config["BN"],
+        BLOCK_SIZE_K=config["BK"],
+        GROUP_SIZE_M=config["GROUP_SIZE_M"],
+        stages=config["num_stages"],
+        num_warps=config["num_warps"],
+    )
 
-    result = ag_group_gemm(A, B, ctx)
-    ctx.workspace_tensor.zero_()
-    result_v2 = ag_group_gemm_v2(A, B, ctx, full_topk_ids)
+    C_triton = ag_group_gemm(A, B, ctx, full_topk_ids)
 
-    _, C_golden = torch_ag_group_gemm(tp_group, A, B, full_topk_ids)
+    _, C_torch = torch_ag_group_gemm(tp_group, A, B, full_topk_ids)
 
-    assert_allclose(C_golden, result, atol=1e-3, rtol=1e-3, verbose=False)
     try:
-        assert_allclose(C_golden, result_v2, atol=1e-3, rtol=1e-3, verbose=False)
+        assert_allclose(C_torch, C_triton, atol=1e-3, rtol=1e-3, verbose=False)
     except Exception as e:
-        torch.save(C_golden, f"{name}_C_golden_{RANK}.pt")
-        torch.save(result, f"{name}_result_{RANK}.pt")
-        torch.save(result_v2, f"{name}_result_v2_{RANK}.pt")
+        torch.save(C_torch, f"{name}_C_torch_{RANK}.pt")
+        torch.save(C_triton, f"{name}_C_triton_{RANK}.pt")
         raise e
     else:
         print(f"✅ RANK {RANK} {name} pass")
 
-    def sort_func():
-        return ctx.sort_topk_ids_align_block_size(full_topk_ids, E, WORLD_SIZE, M_per_rank, config["BM"])[0]
-
-    def triton_func():
-        return ag_group_gemm(A, B, ctx)
-
-    def triton_func_v2():
-        return ag_group_gemm_v2(A, B, ctx, full_topk_ids)
-
-    def torch_func():
-        return torch_ag_group_gemm(tp_group, A, B, full_topk_ids)
+    triton_func = lambda: ag_group_gemm(A, B, ctx, full_topk_ids)
+    torch_func = lambda: torch_ag_group_gemm(tp_group, A, B, full_topk_ids)
 
     name = name.lower().replace(" ", "_").replace("-", "_")
     with group_profile(f"ag_moe_{name}_{os.environ['TORCHELASTIC_RUN_ID']}", do_prof=args.profile, group=tp_group):
         torch.cuda._sleep(100000000)
-        _, triton_perf = perf_func(triton_func, iters=args.iters, warmup_iters=args.warmup_iters)
-        torch.cuda._sleep(100000000)
-        _, triton_perf_v2 = perf_func(triton_func_v2, iters=args.iters, warmup_iters=args.warmup_iters)
+        _, duration_triton_ms = perf_func(triton_func, iters=args.iters, warmup_iters=args.warmup_iters)
 
-    _, permute_perf = perf_func(sort_func, iters=args.iters, warmup_iters=args.warmup_iters)
-    _, torch_perf = perf_func(torch_func, iters=args.iters, warmup_iters=args.warmup_iters)
+    sort_func = lambda: ctx.sort_topk_ids_align_block_size(full_topk_ids, E, RANK, WORLD_SIZE, LOCAL_WORLD_SIZE, BM)
+    torch.cuda._sleep(100000000)
+    _, duration_context_ms = perf_func(sort_func, iters=args.iters, warmup_iters=args.warmup_iters)
+    torch.cuda._sleep(100000000)
+    _, duration_torch_ms = perf_func(torch_func, iters=args.iters, warmup_iters=args.warmup_iters)
 
     dist_print(
-        f"RANK {RANK} perf: compute permute {permute_perf:0.3f} ms, dist-triton={triton_perf:0.3f} ms, dist-triton={triton_perf_v2:0.3f} ms, torch={torch_perf:0.3f} ms; speedup={torch_perf/triton_perf:0.2f}",
+        f"RANK {RANK} perf: calc sorted_gather_index {duration_context_ms:0.3f} ms, dist-triton={duration_triton_ms:0.3f} ms, torch={duration_torch_ms:0.3f} ms; speedup={duration_torch_ms/duration_triton_ms:0.2f}",
         need_sync=True,
         allowed_ranks=list(range(WORLD_SIZE)),
     )

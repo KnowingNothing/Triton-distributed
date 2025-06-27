@@ -181,7 +181,7 @@ def threadblock_swizzle_ag_moe_kernel(
     tl.store(ntiles_by_expert_by_stage_ptr + offs_by_expert_by_rank, 0, mask=mask_by_expert_by_rank)
     __syncthreads()
     off_in_expert_in_stage = tl.atomic_add(ntiles_by_expert_by_stage_ptr + expert_id * TP_SIZE + stage, 1,
-                                           mask=mask_tile_idx)
+                                           sem="relaxed", scope="gpu", mask=mask_tile_idx)
     __syncthreads()
 
     # do some cumsum
