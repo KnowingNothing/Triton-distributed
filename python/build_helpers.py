@@ -25,6 +25,7 @@
 import os
 import sysconfig
 import sys
+import shutil
 from pathlib import Path
 
 
@@ -63,6 +64,43 @@ def create_symlink_rel(target: Path, source: Path, base_dir: Path, dryrun: bool 
 
     if not dryrun:
         source.symlink_to(target, target_is_directory=target.is_dir())
+
+
+def copy_file(target: Path, source: Path, base_dir: Path):
+    """Make source path a copy of the target path.
+    if both source/target under base_dir, create link with relative path.
+
+    why it's tricky for that?
+
+    source maybe file or directory. maybe relative or absolute.
+    target maybe file or directory. maybe relative or absolute.
+    base_dir maybe relative or absolute.
+    """
+    # should relative
+    base_dir = base_dir.resolve()
+    source.parent.mkdir(exist_ok=True, parents=True)
+    if source.is_file() or source.is_link():
+        source.unlink()
+    elif source.is_dir():
+        shutil.rmtree(source)
+    else:
+        raise NotADirectoryError(f"Source {source} is not a file or directory.")
+
+    if target.resolve().is_relative_to(base_dir) and source.resolve().is_relative_to(base_dir):
+        target = target.resolve()
+        source = source.resolve()
+        target = Path(os.path.relpath(target, source.parent))
+
+    if target.is_file() or target.is_symlink():
+        source.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, source)
+        print(f"Copy file in build helper: {target} -> {source}")
+    elif target.is_dir():
+        shutil.copytree(target, source, symlinks=True, dirs_exist_ok=False)
+        print(f"Copy directory in build helper: {target} -> {source}")
+
+    else:
+        raise NotADirectoryError(f"Source {source} is not a file or directory.")
 
 
 def softlink_apply_patches():

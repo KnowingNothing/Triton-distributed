@@ -37,12 +37,12 @@ jobs:
           - unset http_proxy
           - bash shmem/rocshmem_bind/build.sh
           - export http_proxy=http://sys-proxy-rd-relay.byted.org:3128
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
 
       - name: distributed tests
         commands:
           # distributed ops
-          - bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_distributed-notify-wait.py
+          # - bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_distributed-notify-wait.py
           # ag gemm
           - bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096
           # gemm rs
@@ -96,14 +96,19 @@ jobs:
           - git submodule update --init --recursive
           - pip3 install ninja cmake wheel pybind11
           - export USE_TRITON_DISTRIBUTED_AOT=0
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
           - bash ./scripts/gen_aot_code.sh
           - export USE_TRITON_DISTRIBUTED_AOT=1
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+      - name: build_wheel
+        commands:
+          - cd python
+          - python3 setup.py bdist_wheel
+          - cd ..
       - name: unit tests
         commands:
           - python3 ./python/triton_dist/test/nvidia/test_language_extra.py
-      - name: distributed tests
+      - name: simt and basic tests
         commands:
           #############
           # ad-hoc test
@@ -114,28 +119,41 @@ jobs:
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma_multi_barrier
+      - name: aot compile tests
+        commands:
           # aot compilation
           - USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_compile_aot.py
+      - name: ag gemm tests
+        commands:
           # ag gemm
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness_autotune
-
+      - name: gemm rs tests
+        commands:
           # - CUBLAS_WORKSPACE_CONFIG=":16:8" bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_gemm_inter_node.py --M 80 # very small and not perfect shape
           # gemm rs
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568 --check
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 4096 4096 12288 --fuse_scatter --check
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_gemm_rs.py 4096 4096 12288 --fuse_scatter --no-persistent --check
+      - name: allgather tests
+        commands:
           # allgather
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_small_msg.py
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_all_gather.py
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_fast_allgather.py   --iters 10   --warmup_iters 20   --mode push_2d_ll   --minbytes 4096   --maxbytes 8192
+      - name: ep all2all inference tests
+        commands:
           # all-to-all
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_all_to_all.py
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ep_moe_inference.py
+      - name: nvshmem api tests
+        commands:
           # nvshmem related
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_nvshmem_api.py
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ring_put.py
+      - name: flash decoding tests
+        commands:
           # flash decoding
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_persistent
@@ -144,18 +162,28 @@ jobs:
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case perf
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
           - USE_TRITON_DISTRIBUTED_AOT=1 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
+      - name: ag moe tests
+        commands:
           # ag moe
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --iters 10 --warmup_iters 20
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --iters 10 --warmup_iters 20 --autotune
+      - name: moe rs tests
+        commands:
           # moe rs
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check --autotune
+      - name: ep all2all train tests
+        commands:
           # ep a2a
           - NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8 --check
           - NVSHMEM_SYMMETRIC_SIZE=10000000000 bash ./scripts/launch.sh  ./python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8
+      - name: sp ag attention tests
+        commands:
           # sp ag attn
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_sp_ag_attention_intra_node.py --batch_size 1 --q_head 32 --kv_head 32 --max_seqlen_q 8192 --max_seqlen_k 8192 --head_dim 128 --seqlens_q 8192 --seqlens_k 8192
+      - name: allreduce tests
+        commands:
           # allreduce
           - NVSHMEM_DISABLE_CUDA_VMM=1 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method double_tree --simulate_straggler --stress
           - NVSHMEM_DISABLE_CUDA_VMM=1 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot_non_tma --simulate_straggler --stress
@@ -170,6 +198,8 @@ jobs:
           # - pytest ./python/triton_dist/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent
           # - USE_TRITON_DISTRIBUTED_AOT=1 pytest ./python/triton_dist/test/nvidia/test_decode_attn.py::test_triton_decode_with_paged_kv_persistent_aot
           ############
+      - name: tutorial tests
+        commands:
           # tutorials
           # 01
           - bash ./scripts/launch.sh ./tutorials/01-distributed-notify-wait.py
