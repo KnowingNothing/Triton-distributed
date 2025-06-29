@@ -15,10 +15,7 @@ from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
 
 dirname = os.path.dirname(os.path.realpath(__file__))
-backends_root_dir = os.path.join(dirname, "../../")
-root_dir = os.path.join(backends_root_dir, "../")
-backend_relpath = os.path.relpath(dirname, backends_root_dir)
-upstream_dirname = os.path.join(os.path.join(root_dir, "3rdparty/triton/third_party"), backend_relpath)
+upstream_dirname = os.path.join(triton.__path__[0], "backends/nvidia")
 include_dirs = [os.path.join(upstream_dirname, "include")]
 libdevice_dir = os.path.join(upstream_dirname, "lib")
 libraries = ['cuda']
