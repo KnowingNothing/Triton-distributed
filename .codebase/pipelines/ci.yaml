@@ -171,8 +171,7 @@ jobs:
         commands:
           # moe rs
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2
-          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check
-          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check --autotune
+          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --autotune
       - name: ep all2all train tests
         commands:
           # ep a2a

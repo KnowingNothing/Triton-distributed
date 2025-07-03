@@ -92,7 +92,7 @@ def perf_test(M, config, pg):
 
     def _triton_ag_func():  # this does not include the local copy latency, which is included in ag_gemm
         current_stream = torch.cuda.current_stream()
-        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
 
         if ctx.is_multinode:
             ctx.ag_internode_stream.wait_stream(current_stream)

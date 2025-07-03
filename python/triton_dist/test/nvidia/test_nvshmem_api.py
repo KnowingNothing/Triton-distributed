@@ -22,20 +22,41 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-import triton
-import triton.language as tl
-from triton_dist.language.extra import libshmem_device
-from triton.language.extra.cuda.language_extra import tid, ntid, __syncthreads, multimem_st_b64, load_v2_b64, st
+import datetime
+import functools
+import os
+
 import torch
 import torch.distributed
+
+import triton
+import triton.language as tl
+from triton.language.extra.cuda.language_extra import (__syncthreads, load_v4_u32, multimem_st_b32, multimem_st_v2,
+                                                       multimem_st_v4, ntid, st, tid)
 from triton_dist import pynvshmem
-import os
-import datetime
+from triton_dist.language.extra import libshmem_device
 
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
 LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
 RANK = int(os.environ.get("RANK", 0))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
+
+
+def conditional_execution(condition_func):
+
+    def decorator(func):
+
+        @functools.wraps(func)  # 保留被装饰函数的元信息
+        def wrapper(*args, **kwargs):
+            if condition_func():
+                return func(*args, **kwargs)
+            else:
+                print(f"{condition_func.__name__} not satisfied. skip {func.__name__}...")
+                return None
+
+        return wrapper
+
+    return decorator
 
 
 def test_nvshmem_basic():
@@ -594,41 +615,81 @@ def test_nvshmem_fcollect(N, dtype: torch.dtype = torch.int8):
 def _if_nvls_supported():
     """  NOTE: Hopper + NVSHMEM_DISABLE_CUDA_VMM=0 does not guarantee that NVLS is supported. for test only """
     major, _ = torch.cuda.get_device_capability()
-    return major >= 9 and os.getenv("NVSHMEM_DISABLE_CUDA_VMM", "1") == "0"
+    nvls_supported = major >= 9 and os.getenv("NVSHMEM_DISABLE_CUDA_VMM", "1") == "0"
+    if not nvls_supported:
+        print("not support MultiCast memory. only works on NVLS hardware and NVSHMEM_DISABLE_CUDA_VMM=0")
+        return False
+    return True
 
 
-def test_nvshmem_mc_ptr(N, dtype: torch.dtype = torch.int8):
+@conditional_execution(_if_nvls_supported)
+def test_nvshmem_multimem_st(N):
 
     @triton.jit
-    def _nvshmem_multimem_st(ptr, nbytes):
+    def _nvshmem_multimem_st_v4(symm_ptr, nbytes):
+        """ TODO(houqi.1993) it's expected that multimem.st.v3.fp32 is supported. but actually no. ptxas won't compile:
+        https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-multimem """
         thread_idx = tid(axis=0)
         block_dim = ntid(axis=0)
         pid = tl.program_id(0)
         npid = tl.num_programs(0)
-        ptr = tl.cast(ptr, tl.pointer_type(tl.int8))
-        mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, ptr)
+        mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, symm_ptr)
+        step = 128 // symm_ptr.dtype.element_ty.primitive_bitwidth  # 128 bits = 16 bytes
         for n in range(thread_idx + block_dim * pid, nbytes // 16, block_dim * npid):
-            val0, val1 = load_v2_b64(ptr + n * 16)
-            multimem_st_b64(tl.cast(mc_ptr, tl.pointer_type(tl.int8)) + n * 16, val0)
-            multimem_st_b64(mc_ptr + n * 16 + 8, val1)
+            val0, val1, val2, val3 = load_v4_u32(symm_ptr + n * step)
+            multimem_st_v4(mc_ptr + n * step, val0, val1, val2, val3)
 
-    t: torch.Tensor = pynvshmem.nvshmem_create_tensor((N, ), dtype)
-    t.fill_(1 + RANK)
-    pynvshmem.nvshmem_barrier_all()
-    if not _if_nvls_supported():
-        print("not support MultiCast memory. only works on NVLS hardware and NVSHMEM_DISABLE_CUDA_VMM=0")
-        return
+    @triton.jit
+    def _nvshmem_multimem_st_v2(symm_ptr, nbytes):
+        thread_idx = tid(axis=0)
+        block_dim = ntid(axis=0)
+        pid = tl.program_id(0)
+        npid = tl.num_programs(0)
+        mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, symm_ptr)
+        step = 128 // symm_ptr.dtype.element_ty.primitive_bitwidth  # 128 bits = 16 bytes
+        for n in range(thread_idx + block_dim * pid, nbytes // 16, block_dim * npid):
+            val0, val1, val2, val3 = load_v4_u32(symm_ptr + n * step)
+            multimem_st_v2(mc_ptr + n * step, val0, val1)
+            multimem_st_v2(mc_ptr + n * step + step // 2, val2, val3)
 
-    if RANK == 0:
-        _nvshmem_multimem_st[(4, )](t, t.nbytes, num_warps=4)
-    pynvshmem.nvshmem_barrier_all()
-    try:
-        torch.testing.assert_close(t, torch.ones_like(t))
-    except Exception as e:
-        print(f"t: {t}")
-        raise e
-    else:
-        print("_nvshmem_multimem_st done")
+    @triton.jit
+    def _nvshmem_multimem_st_b32(symm_ptr, nbytes):
+        thread_idx = tid(axis=0)
+        block_dim = ntid(axis=0)
+        pid = tl.program_id(0)
+        npid = tl.num_programs(0)
+        symm_ptr = tl.cast(symm_ptr, tl.pointer_type(tl.int8))
+        mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, symm_ptr)
+        mc_ptr = tl.cast(mc_ptr, tl.pointer_type(tl.int8))
+        for n in range(thread_idx + block_dim * pid, nbytes // 16, block_dim * npid):
+            val0, val1, val2, val3 = load_v4_u32(symm_ptr + n * 16)
+            multimem_st_b32(mc_ptr + n * 16, val0)
+            multimem_st_b32(mc_ptr + n * 16 + 4, val1)
+            multimem_st_b32(mc_ptr + n * 16 + 8, val2)
+            multimem_st_b32(mc_ptr + n * 16 + 12, val3)
+
+    for dtype in [torch.int32]:  # torch.float32, torch.bfloat16, torch.float16,
+        t: torch.Tensor = pynvshmem.nvshmem_create_tensor((N, ), dtype)
+        t.fill_(1 + RANK)
+        if dtype == torch.int32:
+            t_expected = torch.arange(0, N, dtype=dtype, device="cuda")
+        else:
+            t_expected = torch.ones_like(t)
+        if RANK == 0 and dtype == torch.int32:
+            # if N is large enough, it's enough to cover BF16/FP16 all values, even NaN and Inf
+            t.copy_(t_expected)
+        pynvshmem.nvshmem_barrier_all()
+
+        if RANK == 0:
+            _nvshmem_multimem_st_v2[(4, )](t, t.nbytes, num_warps=4)
+        pynvshmem.nvshmem_barrier_all()
+        try:
+            torch.testing.assert_close(t, t_expected)
+        except Exception as e:
+            print(f"t: {t}")
+            raise e
+        else:
+            print(f"✅ _nvshmem_multimem_st with {dtype} done")
 
 
 def test_nvshmemi_putmem_rma(N, dtype: torch.dtype = torch.int8):
@@ -876,7 +937,7 @@ if __name__ == "__main__":
     test_nvshmem_broadcast(32 * WORLD_SIZE, torch.int8)
     # some ranks hangs. don't know why
     # test_nvshmem_fcollect(1024, torch.int8)
-    test_nvshmem_mc_ptr(1024, torch.int16)
+    test_nvshmem_multimem_st(1024)
 
     test_nvshmemi_putmem_rma(16 * WORLD_SIZE, torch.int8)
     test_nvshmemi_putmem_rma_signal_with_scope(16 * WORLD_SIZE, torch.int8)

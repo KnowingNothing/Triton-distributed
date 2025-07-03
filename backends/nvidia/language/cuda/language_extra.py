@@ -30,6 +30,95 @@ from triton.language.extra.cuda.libdevice import ffs
 
 
 @core.extern
+def _int_constraint(bitwidth: core.constexpr, _semantic=None):
+    # https://docs.nvidia.com/cuda/inline-ptx-assembly/index.html#constraints
+    # PTX has no constraint for int8. use "r"
+    if bitwidth.value == 128:
+        return core.constexpr("q")
+    if bitwidth.value == 64:
+        return core.constexpr("l")
+    elif bitwidth.value == 32:
+        return core.constexpr("r")
+    elif bitwidth.value == 16:
+        return core.constexpr("h")
+    elif bitwidth.value == 8:
+        return core.constexpr("r")
+    else:
+        tl.static_assert(False, "unsupported dtype", _semantic=_semantic)
+
+
+@core.extern
+def _ptx_suffix_to_constraint(suffix: core.constexpr, _semantic=None):
+    if suffix == "f64":
+        return core.constexpr("d")
+    elif suffix == "f32":
+        return core.constexpr("f")
+    elif suffix == "f16x2":
+        return core.constexpr("r")
+    elif suffix == "bf16x2":
+        return core.constexpr("r")
+    elif suffix == "b32":
+        return core.constexpr("r")
+    elif suffix == "s32":
+        return core.constexpr("r")
+    elif suffix == "u32":
+        return core.constexpr("r")
+    else:
+        tl.static_assert(False, "unsupported dtype", _semantic=_semantic)
+
+
+@core.constexpr_function
+def tl_type_to_ptx_suffix(dtype: core.constexpr):
+    if dtype == tl.uint32:
+        return "u32"
+    elif dtype == tl.int32:
+        return "s32"
+    elif dtype == tl.int64:
+        return "b64"
+    else:
+        raise ValueError(f"Unsupported dtype: {dtype}")
+
+
+@core.extern
+def _ptx_suffix_to_tl_type(suffix: core.constexpr, _semantic=None):
+    if suffix == "u32":
+        return tl.uint32
+    elif suffix == "s32":
+        return tl.int32
+    elif suffix == "b32":
+        return tl.int32
+    elif suffix == "b64":
+        return tl.int64
+    elif suffix == "f16":
+        return tl.float16
+    elif suffix == "bf16":
+        return tl.bfloat16
+    elif suffix == "f16x2":
+        return tl.int32
+    elif suffix == "bf16x2":
+        return tl.int32
+    elif suffix == "f32":
+        return tl.float32
+    elif suffix == "f64":
+        return tl.float64
+    else:
+        tl.static_assert(False, "unsupported suffix", _semantic=_semantic)
+
+
+@core.extern
+def pack_b32_v2(val0, val1, _semantic=None):
+    return tl.inline_asm_elementwise(
+        asm="mov.b64 $0, {$1, $2};",
+        constraints=("=l,r,r"),
+        args=[val0, val1],
+        dtype=tl.uint64,
+        is_pure=True,
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
 def __syncthreads(_semantic=None):
     return tl.tensor(_semantic.builder.create_barrier(), tl.void)
 
@@ -49,44 +138,82 @@ def __fence(scope: core.constexpr = core.constexpr("gpu"), _semantic=None):
     )
 
 
-@tl.core.extern
+@core.extern
+def _load_v4_impl(ptr, suffix: core.constexpr, _semantic=None):
+    val_type: core.constexpr = _ptx_suffix_to_tl_type(suffix, _semantic=_semantic)
+    c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
+    return tl.inline_asm_elementwise(
+        asm=f"ld.volatile.global.v4.{suffix.value} {{$0,$1,$2,$3}}, [$4];",
+        constraints=(f"={c.value},={c.value},={c.value},={c.value},l"),
+        args=[ptr],
+        dtype=(val_type, val_type, val_type, val_type),
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
+def _load_v2_impl(ptr, suffix: core.constexpr, _semantic=None):
+    val_type: core.constexpr = _ptx_suffix_to_tl_type(suffix, _semantic=_semantic)
+    c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
+    return tl.inline_asm_elementwise(
+        asm=f"ld.volatile.global.v2.{suffix.value} {{$0,$1}}, [$2];",
+        constraints=(f"={c.value},={c.value},l"),
+        args=[ptr],
+        dtype=(val_type, val_type),
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
 def load_v4_u32(ptr, _semantic=None):
-    return tl.inline_asm_elementwise(
-        asm="""
-        ld.volatile.global.v4.u32 {$0,$1,$2,$3}, [$4];
-        """,
-        constraints=("=r,=r,=r,=r,l"),  # no use output, which is threadId.x
-        args=[ptr],
-        dtype=(tl.int32, tl.int32, tl.int32, tl.int32),
-        is_pure=False,
-        pack=1,
-        _semantic=_semantic,
-    )
+    return _load_v4_impl(ptr, core.constexpr("u32"), _semantic=_semantic)
 
 
-@tl.core.extern
+@core.extern
+def load_v4_b32(ptr, _semantic=None):
+    return _load_v4_impl(ptr, core.constexpr("b32"), _semantic)
+
+
+@core.extern
+def load_v4_s32(ptr, _semantic=None):
+    return _load_v4_impl(ptr, core.constexpr("s32"), _semantic)
+
+
+@core.extern
 def load_v2_b64(ptr, _semantic=None):
+    return _load_v2_impl(ptr, core.constexpr("b64"), _semantic)
+
+
+@core.extern
+def _store_v4_impl(ptr, val0, val1, val2, val3, suffix: core.constexpr, _semantic=None):
+    c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
     return tl.inline_asm_elementwise(
-        asm="""
-        ld.volatile.global.v2.b64 {$0,$1}, [$2];
+        asm=f"""
+        st.volatile.global.v4.{suffix.value} [$1], {{$2,$3,$4,$5}};
+        mov.u32 $0, 0;
         """,
-        constraints=("=l,=l,l"),  # no use output, which is threadId.x
-        args=[ptr],
-        dtype=(tl.int64, tl.int64),
+        constraints=(f"=r,l,{c.value},{c.value},{c.value},{c.value}"),  # no use output
+        args=[ptr, val0, val1, val2, val3],
+        dtype=tl.int32,
         is_pure=False,
         pack=1,
         _semantic=_semantic,
     )
 
 
-@tl.core.extern
-def store_v2_u32(ptr, val0, val1, _semantic=None):
+@core.extern
+def _store_v2_impl(ptr, val0, val1, suffix: core.constexpr, _semantic=None):
+    c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
     return tl.inline_asm_elementwise(
-        asm="""
-        st.volatile.global.v2.u32 [$1], {$2,$3};
+        asm=f"""
+        st.volatile.global.v2.{suffix.value} [$1], {{$2,$3}};
         mov.u32 $0, 0;
         """,
-        constraints=("=r,l,r,r"),  # no use output
+        constraints=(f"=r,l,{c.value},{c.value}"),  # no use output
         args=[ptr, val0, val1],
         dtype=tl.int32,
         is_pure=False,
@@ -95,48 +222,61 @@ def store_v2_u32(ptr, val0, val1, _semantic=None):
     )
 
 
-@tl.core.extern
+@core.extern
+def st_v4_u32(ptr, val0, val1, val2, val3, _semantic=None):
+    return _store_v4_impl(tl.cast(ptr, tl.pi32_t, _semantic=_semantic), val0, val1, val2, val3, core.constexpr("u32"),
+                          _semantic=_semantic)
+
+
+@core.extern
+def st_v4_b32(ptr, val0, val1, val2, val3, _semantic=None):
+    return _store_v4_impl(tl.cast(ptr, tl.pi32_t, _semantic=_semantic), val0, val1, val2, val3, core.constexpr("b32"),
+                          _semantic=_semantic)
+
+
+@core.extern
+def st_v2_u32(ptr, val0, val1, _semantic=None):
+    return _store_v2_impl(tl.cast(ptr, tl.pi32_t, _semantic=_semantic), val0, val1, core.constexpr("u32"),
+                          _semantic=_semantic)
+
+
+@core.extern
+def _multimem_st_impl(ptr, val0, suffix: core.constexpr, _semantic=None):
+    val_type: core.constexpr = _ptx_suffix_to_tl_type(suffix, _semantic=_semantic)
+    c: core.constexpr = _int_constraint(core.constexpr(val_type.primitive_bitwidth), _semantic=_semantic)
+    return tl.inline_asm_elementwise(
+        asm=f"""
+        multimem.st.global.{suffix.value} [$1], $2;
+        mov.u32 $0, 0;
+        """,
+        constraints=(f"=r,l,{c.value}"),  # no use output
+        args=[ptr, val0],
+        dtype=tl.int32,
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
 def multimem_st_b64(ptr, val0, _semantic=None):
-    return tl.inline_asm_elementwise(
-        asm="""
-        multimem.st.global.b64 [$1], $2;
-        mov.u32 $0, 0;
-        """,
-        constraints=("=r,l,l"),  # no use output
-        args=[ptr, val0],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-        _semantic=_semantic,
-    )
+    return _multimem_st_impl(ptr, val0, core.constexpr("b64"), _semantic=_semantic)
 
 
-@tl.core.extern
+@core.extern
 def multimem_st_b32(ptr, val0, _semantic=None):
+    return _multimem_st_impl(ptr, val0, core.constexpr("b32"), _semantic=_semantic)
+
+
+@core.extern
+def _multimem_st_v2_impl(ptr, val0, val1, suffix: core.constexpr, _semantic=None):
+    c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
     return tl.inline_asm_elementwise(
-        asm="""
-        multimem.st.global.b32 [$1], $2;
+        asm=f"""
+        multimem.st.global.v2.{suffix.value} [$1], $2, $3;
         mov.u32 $0, 0;
         """,
-        constraints=("=r,l,r"),  # no use output
-        args=[ptr, val0],
-        dtype=tl.int32,
-        is_pure=False,
-        pack=1,
-        _semantic=_semantic,
-    )
-
-
-@tl.core.extern
-def multimem_st_v2_b32(ptr, val0, val1, _semantic=None):
-    return tl.inline_asm_elementwise(
-        asm="""{
-        .reg .b64 r_combined;
-        mov.b64 r_combined, {$2, $3};
-        multimem.st.global.b64 [$1], r_combined;
-        mov.u32 $0, 0;
-        }""",
-        constraints=("=r,l,r,r"),  # no use output
+        constraints=(f"=r,l,{c.value},{c.value}"),  # no use output
         args=[ptr, val0, val1],
         dtype=tl.int32,
         is_pure=False,
@@ -145,23 +285,143 @@ def multimem_st_v2_b32(ptr, val0, val1, _semantic=None):
     )
 
 
-# TODO(houqi.1993) this is for reduce_scatter
-@tl.core.extern
-def multimem_ld_reduce(ptr, op, _semantic=None):
-    tl.static_assert(ptr.is_ptr(), "multimem_ld_reduce(ptr) expect ptr is a pointer_type")
-    if ptr.dtype == tl.int32:
-        return tl.inline_asm_elementwise(
-            asm="""
-            multimem.ld_reduce.global.b32 [$1], $2;
+@core.extern
+def multimem_st_v2(ptr, val0, val1, _semantic=None):
+    """ no multimem.st.b32.v2. store b32x2 as b64 """
+    if ptr.dtype.element_ty == tl.float32:
+        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f32"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.bfloat16:
+        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("bf16x2"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.float16:
+        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f16x2"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.float64:
+        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f64"), _semantic=_semantic)
+    else:
+        return _multimem_st_impl(ptr, pack_b32_v2(val0, val1, _semantic=_semantic), core.constexpr("b64"),
+                                 _semantic=_semantic)
+
+
+@core.extern
+def _multimem_st_v4_impl(ptr, val0, val1, val2, val3, suffix: core.constexpr, _semantic=None):
+    c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
+    return tl.inline_asm_elementwise(
+        asm=f"""
+        multimem.st.global.v4.{suffix.value} [$1], $2, $3, $4, $5;
+        mov.u32 $0, 0;
+        """,
+        constraints=(f"=r,l,{c.value},{c.value},{c.value},{c.value}"),  # no use output
+        args=[ptr, val0, val1, val2, val3],
+        dtype=tl.int32,
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
+def multimem_st_v4(ptr, val0, val1, val2, val3, _semantic=None):
+    tl.static_assert(ptr.dtype.is_ptr(), _semantic=_semantic)
+    if ptr.dtype.element_ty == tl.float32:
+        return _multimem_st_v4_impl(ptr, val0, val1, val2, val3, core.constexpr("f32"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.bfloat16:
+        return _multimem_st_v4_impl(ptr, val0, val1, val2, val3, core.constexpr("bf16x2"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.float16:
+        return _multimem_st_v4_impl(ptr, val0, val1, val2, val3, core.constexpr("f16x2"), _semantic=_semantic)
+    else:
+        tl.static_assert(False, "unsupported type", _semantic=_semantic)
+
+
+# TODO(houqi.1993) multimem does not work with @%p.
+@triton.jit
+def multimem_st_v4_p_b32(ptr, packed_v4_b32, mask):
+    f1, f2, f3, f4 = packed_v4_b32
+    p1 = pack_b32_v2(f1, f2)
+    p2 = pack_b32_v2(f3, f4)
+    return tl.inline_asm_elementwise(
+        asm="""
+        {
+            .reg .pred %p0;
+            .reg .u64 %r0;
+            setp.eq.s32 %p0, $4, 1;
+            add.u64 %r0, $1, 8;
+            @%p0 multimem.st.global.b64 [$1], $2;
+            @%p0 multimem.st.global.b64 [%r0], $3;
             mov.u32 $0, 0;
-            """,
-            constraints=("=r,l,r"),  # no use output
-            args=[ptr],
-            dtype=tl.int32,
-            is_pure=False,
-            pack=1,
-            _semantic=_semantic,
-        )
+        }
+        """,
+        constraints=("=r,l,l,l,r"),
+        args=[ptr.to(tl.pointer_type(tl.uint64)), p1, p2, mask.to(tl.int32)],
+        dtype=tl.uint32,
+        is_pure=False,
+        pack=1,
+    )
+
+
+@core.extern
+def _multimem_ld_reduce_p_128bit(ptr, mask, suffix: core.constexpr, _semantic=None):
+    # Use with caution: @p and multicast instructions are incompatible;
+    # Mask may not control instruction execution correctly with imperfect tiling.
+    # May be replaced or deprecated in the future. TODO(lsy.314)
+    c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
+    val_type: core.constexpr = _ptx_suffix_to_tl_type(suffix, _semantic=_semantic)
+    return tl.inline_asm_elementwise(
+        asm=f"""
+        {{
+            .reg .pred %p0;
+            setp.eq.s32 %p0, $5, 1;
+            @%p0 multimem.ld_reduce.acquire.sys.global.add.v4.{suffix.value} {{$0,$1,$2,$3}}, [$4];
+        }}
+        """,
+        constraints=(f"={c.value},={c.value},={c.value},={c.value},l,r"),
+        args=[ptr, mask.to(tl.int32, _semantic=_semantic)],
+        dtype=[val_type, val_type, val_type, val_type],
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+# TODO(houqi.1993) there is a BUG with ptxas that multimem does not work with @%p. so mask does not work actually. use with care.
+@core.extern
+def multimem_ld_reduce_p_v4(ptr, mask, _semantic=None):
+    if ptr.dtype.element_ty == tl.bfloat16:
+        return _multimem_ld_reduce_p_128bit(ptr, mask, core.constexpr("bf16x2"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.float16:
+        return _multimem_ld_reduce_p_128bit(ptr, mask, core.constexpr("f16x2"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.float32:
+        return _multimem_ld_reduce_p_128bit(ptr, mask, core.constexpr("f32"), _semantic=_semantic)
+    else:
+        tl.static_assert(False, "Unsupported dtype, only fp16/bf16/fp32 is supported", _semantic=_semantic)
+
+
+@core.extern
+def _multimem_ld_reduce_128bit(ptr, suffix: core.constexpr, _semantic=None):
+    # Use with caution: @p and multicast instructions are incompatible;
+    # Mask may not control instruction execution correctly with imperfect tiling.
+    # May be replaced or deprecated in the future. TODO(lsy.314)
+    c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
+    val_type: core.constexpr = _ptx_suffix_to_tl_type(suffix, _semantic=_semantic)
+    return tl.inline_asm_elementwise(
+        asm=f"multimem.ld_reduce.acquire.sys.global.add.v4.{suffix.value} {{$0,$1,$2,$3}}, [$4];",
+        constraints=(f"={c.value},={c.value},={c.value},={c.value},l"),
+        args=[ptr],
+        dtype=[val_type, val_type, val_type, val_type],
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
+def multimem_ld_reduce_v4(ptr, _semantic=None):
+    if ptr.dtype.element_ty == tl.bfloat16:
+        return _multimem_ld_reduce_128bit(ptr, core.constexpr("bf16x2"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.float16:
+        return _multimem_ld_reduce_128bit(ptr, core.constexpr("f16x2"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.float32:
+        return _multimem_ld_reduce_128bit(ptr, core.constexpr("f32"), _semantic=_semantic)
+    else:
+        tl.static_assert(False, "Unsupported dtype, only fp16/bf16/fp32 is supported", _semantic=_semantic)
 
 
 @core.extern
@@ -190,7 +450,7 @@ def tid(axis: core.constexpr, _semantic=None):
     elif axis == 2:
         return _tid_wrapper(core.constexpr("z"), _semantic=_semantic)
     else:
-        tl.static_assert(False, "axis must be 0, 1 or 2")
+        tl.static_assert(False, "axis must be 0, 1 or 2", _semantic=_semantic)
 
 
 @core.extern
@@ -236,11 +496,11 @@ def ntid(axis: core.constexpr, _semantic=None):
     elif axis == 2:
         return _ntid_wrapper(core.constexpr("z"), _semantic=_semantic)
     else:
-        tl.static_assert(False, "axis must be 0, 1 or 2")
+        tl.static_assert(False, "axis must be 0, 1 or 2", _semantic=_semantic)
 
 
 # @patch_triton_module
-@tl.core.extern
+@core.extern
 def red_release(barrier_ptr, value, scope: core.constexpr = core.constexpr("gpu"), _semantic=None):
     tl.inline_asm_elementwise(
         asm=f"""{{
@@ -265,7 +525,7 @@ def arrive_inc(barrier_ptr, thread_idx, value, scope: core.constexpr):
 
 
 # @patch_triton_module
-@tl.core.extern
+@core.extern
 def arrive_inc_asm(barrier_ptr, thread_idx, value, scope: core.constexpr = "gpu", _semantic=None):
     tl.inline_asm_elementwise(
         asm=f"""{{
@@ -282,34 +542,6 @@ def arrive_inc_asm(barrier_ptr, thread_idx, value, scope: core.constexpr = "gpu"
         pack=1,
         _semantic=_semantic,
     )
-
-
-@core.extern
-def _int_constaint(bitwidth: core.constexpr, _semantic=None):
-    # https://docs.nvidia.com/cuda/inline-ptx-assembly/index.html#constraints
-    # PTX has no constraint for int8. use "r"
-    if bitwidth.value == 128:
-        return core.constexpr("q")
-    if bitwidth.value == 64:
-        return core.constexpr("l")
-    elif bitwidth.value == 32:
-        return core.constexpr("r")
-    elif bitwidth.value == 16:
-        return core.constexpr("h")
-    elif bitwidth.value == 8:
-        return core.constexpr("r")
-    else:
-        tl.static_assert(False, "unsupported dtype")
-
-
-@core.extern
-def _float_constraint(bitwidth: core.constexpr, _semantic=None):
-    if bitwidth.value == 64:
-        return core.constexpr("d")
-    elif bitwidth.value == 32:
-        return core.constexpr("f")
-    else:
-        tl.static_assert(False, "unsupported dtype")
 
 
 @core.extern
@@ -331,7 +563,7 @@ def ld(
         _semantic=_semantic,
     )
     element_ty: tl.dtype = ptr.dtype.element_ty
-    constraint = _int_constaint(core.constexpr(element_ty.primitive_bitwidth), _semantic=_semantic)
+    constraint = _int_constraint(core.constexpr(element_ty.primitive_bitwidth), _semantic=_semantic)
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-ld
     return tl.inline_asm_elementwise(
         asm=f"ld.global.{semantic}.{scope}.b{element_ty.primitive_bitwidth} $0, [$1];",
@@ -344,7 +576,7 @@ def ld(
     )
 
 
-@tl.core.extern
+@core.extern
 def ld_b32(ptr, _semantic=None):
     tl.static_assert(
         ptr.dtype.is_ptr() and ptr.dtype.element_ty.is_int32(),
@@ -354,12 +586,12 @@ def ld_b32(ptr, _semantic=None):
     return ld(ptr, scope="gpu", semantic="relaxed", _semantic=_semantic)
 
 
-@tl.core.extern
+@core.extern
 def ld_acquire(ptr, scope: core.constexpr = "gpu", _semantic=None):
     return ld(ptr, scope, "acquire", _semantic=_semantic)
 
 
-@tl.core.extern
+@core.extern
 def st(
         ptr,
         val,
@@ -390,7 +622,7 @@ def st(
         "semantic should be relaxed or release",
         _semantic=_semantic,
     )
-    constraint = _int_constaint(core.constexpr(dtype.primitive_bitwidth), _semantic=_semantic)
+    constraint = _int_constraint(core.constexpr(dtype.primitive_bitwidth), _semantic=_semantic)
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-st
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#volatile-operation
     return tl.inline_asm_elementwise(
@@ -407,12 +639,12 @@ def st(
     )
 
 
-@tl.core.extern
+@core.extern
 def st_b32(ptr, val0, _semantic=None):
     return st(ptr, val0, scope="gpu", semantic="relaxed", _semantic=_semantic)
 
 
-@tl.core.extern
+@core.extern
 def atomic_add(
     ptr,
     value,
@@ -442,7 +674,7 @@ def atomic_add(
         "semantic should be release, acquire, relaxed or acq_rel",
         _semantic=_semantic,
     )
-    constraint = _int_constaint(core.constexpr(ptr.dtype.element_ty.primitive_bitwidth), _semantic=_semantic).value
+    constraint = _int_constraint(core.constexpr(ptr.dtype.element_ty.primitive_bitwidth), _semantic=_semantic).value
 
     # https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-atom
     # .add requires .u32 or .s32 or .u64 or .f64 or f16 or f16x2 or .f32 or .bf16 or .bf16x2 type for instruction 'atom'
@@ -478,7 +710,7 @@ def wait_eq(barrier_ptr, thread_idx, value, scope: core.constexpr):
     __syncthreads()
 
 
-@tl.core.extern
+@core.extern
 def __shfl_sync_with_mode_i32(
     mask,
     value,
@@ -522,7 +754,7 @@ def __shfl_xor_sync_i32(mask, value, delta):
 
 
 # @patch_triton_module
-@tl.core.extern
+@core.extern
 def __ballot_sync(
     mask,
     predicate,
@@ -539,7 +771,7 @@ def __ballot_sync(
     )
 
 
-@tl.core.extern
+@core.extern
 def atomic_cas(
     ptr,
     value,
@@ -548,7 +780,7 @@ def atomic_cas(
     semantic: core.constexpr,
     _semantic=None,
 ):
-    constraint = _int_constaint(core.constexpr(ptr.dtype.element_ty.primitive_bitwidth), _semantic=_semantic).value
+    constraint = _int_constraint(core.constexpr(ptr.dtype.element_ty.primitive_bitwidth), _semantic=_semantic).value
     return tl.inline_asm_elementwise(
         asm=
         f"atom.{semantic.value}.{scope.value}.global.cas.b{ptr.dtype.element_ty.primitive_bitwidth} $0, [$1], $2, $3;",

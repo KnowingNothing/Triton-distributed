@@ -24,12 +24,11 @@
 ################################################################################
 import argparse
 from typing import Optional
-from triton_dist.kernels.nvidia.reduce_scatter import (
-    kernel_ring_reduce_tma,
-    kernel_ring_reduce_non_tma,
-)
+
 import torch
+
 import triton
+from triton_dist.kernels.nvidia.reduce_scatter import (kernel_ring_reduce_non_tma, kernel_ring_reduce_tma)
 from triton_dist.utils import perf_func
 
 

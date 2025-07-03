@@ -197,9 +197,9 @@ class EPAll2AllLayer(torch.nn.Module):
         output_buf = self.init_output_buffer(num_recv_tokens_per_rank)
         self.dispatch_token(recv_buf_offset_per_expert, num_input_tokens_per_rank)
         self.num_input_tokens_per_rank = num_input_tokens_per_rank
-        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
         self.dispatch_postprocess()
-        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
         # This copy is redundant and is only kept for stress testing, we can remove it during integration.
         copy_out = torch.empty(output_buf.shape, dtype=output_buf.dtype, device=output_buf.device)
         copy_out.copy_(output_buf)
@@ -232,9 +232,9 @@ class EPAll2AllLayer(torch.nn.Module):
     def combine(self, input):
         current_stream = torch.cuda.current_stream()
         self.send_buf.fill_(0)
-        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
         self.output_buf[:input.shape[0]].copy_(input)
         reduce_buf = self.combine_token_intra_node_and_send(self.output_buf)
-        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
         reduce_inter_node = reduce_buf.reshape(self.nnodes, self.max_tokens, self.hidden).sum(dim=0)
         return reduce_inter_node[:self.num_dispatch_token_cur_rank]
