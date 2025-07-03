@@ -34,9 +34,9 @@ import triton.language as tl
 from typing import List, Union
 from triton_dist import pynvshmem
 from triton_dist.language.extra import libshmem_device
-from triton.language.extra.cuda.language_extra import tid, __syncthreads, atomic_cas, ntid, multimem_st_b64, load_v2_b64
-from triton_dist.kernels.nvidia.moe_reduce_rs import get_flat_tid
-from triton_dist.kernels.nvidia.common_ops import (barrier_all_on_stream, load_128, add_v8_bf16, barrier_on_this_grid)
+from triton.language.extra.cuda.language_extra import tid, __syncthreads, atomic_cas, ntid, multimem_st_b64, load_v2_b64, multimem_ld_reduce_p_v4, multimem_st_v4_p_b32
+from triton_dist.kernels.nvidia.common_ops import (barrier_all_on_stream, load_128, add_v8_bf16, barrier_on_this_grid,
+                                                   get_flat_tid)
 from triton_dist.kernels.nvidia.reduce_scatter import kernel_ring_reduce_tma
 import functools
 import dataclasses
@@ -270,113 +270,19 @@ def get_tree_parent_and_children(N, rank):
 
 
 @triton.jit
-def _multimem_ld_reduce_128bit(ptr, mask, dtype: tl.constexpr):
-    # Use with caution: @p and multicast instructions are incompatible;
-    # Mask may not control instruction execution correctly with imperfect tiling.
-    # May be replaced or deprecated in the future. TODO(lsy.314)
-    return tl.inline_asm_elementwise(
-        asm=f"""
-        {{
-            .reg .pred %p0;
-            setp.eq.s32 %p0, $5, 1;
-            @%p0 multimem.ld_reduce.acquire.sys.global.add.v4.{dtype} {{$0,$1,$2,$3}}, [$4];
-        }}
-        """,
-        constraints=("=r,=r,=r,=r,l,r"),
-        args=[ptr, mask.to(tl.int32)],
-        dtype=[tl.float32, tl.float32, tl.float32, tl.float32],
-        is_pure=False,
-        pack=1,
-    )
-
-
-@triton.jit
-def multimem_ld_reduce_v4_fp32(ptr, mask):
-    return _multimem_ld_reduce_128bit(ptr, mask, tl.constexpr("f32"))
-
-
-@triton.jit
-def multimem_ld_reduce_v4_bf16x2(ptr, mask):
-    return _multimem_ld_reduce_128bit(ptr, mask, tl.constexpr("bf16x2"))
-
-
-@triton.jit
-def multimem_ld_reduce_v4_fp16x2(ptr, mask):
-    return _multimem_ld_reduce_128bit(ptr, mask, tl.constexpr("f16x2"))
-
-
-# TODO(houqi.1993) multimem does not work with @%p.
-@triton.jit
-def multimem_ld_reduce_v4(ptr, mask):
-    if ptr.dtype.element_ty == tl.bfloat16:
-        return multimem_ld_reduce_v4_bf16x2(ptr, mask)
-    elif ptr.dtype.element_ty == tl.float16:
-        return multimem_ld_reduce_v4_fp16x2(ptr, mask)
-    elif ptr.dtype.element_ty == tl.float32:
-        return multimem_ld_reduce_v4_fp32(ptr, mask)
-    else:
-        tl.static_assert(False, "Unsupported dtype, only fp16/bf16/fp32 is supported")
-
-
-@triton.jit
-def pack_b64_v2(f1, f2):
-    return tl.inline_asm_elementwise(
-        asm="""
-        {
-            mov.b64 $0, {$1, $2};
-        }
-        """,
-        constraints=("=l,r,r"),
-        args=[f1, f2],
-        dtype=tl.uint64,
-        is_pure=True,
-        pack=1,
-    )
-
-
-# TODO(houqi.1993) multimem does not work with @%p.
-@triton.jit
-def st_v4_b32(ptr, packed_v4_b32, mask):
+def st_p_v4_b32(ptr, packed_v4_b32, mask):
     f1, f2, f3, f4 = packed_v4_b32
-    p1 = pack_b64_v2(f1, f2)
-    p2 = pack_b64_v2(f3, f4)
     return tl.inline_asm_elementwise(
         asm="""
         {
             .reg .pred %p0;
-            setp.eq.s32 %p0, $4, 1;
-            @%p0 st.global.v2.b64 [$1], {$2, $3};
+            setp.eq.s32 %p0, $6, 1;
+            @%p0 st.global.v4.b32 [$1], {$2, $3, $4, $5};
             mov.u32 $0, 0;
         }
         """,
-        constraints=("=r,l,l,l,r"),
-        args=[ptr.to(tl.pointer_type(tl.uint64)), p1, p2, mask.to(tl.int32)],
-        dtype=tl.uint32,
-        is_pure=False,
-        pack=1,
-    )
-
-
-# TODO(houqi.1993) multimem does not work with @%p.
-@triton.jit
-def multimem_st_v4_b32(ptr, packed_v4_b32, mask):
-    f1, f2, f3, f4 = packed_v4_b32
-    p1 = pack_b64_v2(f1, f2)
-    p2 = pack_b64_v2(f3, f4)
-    return tl.inline_asm_elementwise(
-        asm="""
-        {
-            .reg .pred %p0;
-            .reg .u64 %r0;
-            setp.eq.s32 %p0, $4, 1;
-            add.u64 %r0, $1, 8;
-            @%p0 multimem.st.global.b64 [$1], $2;
-            @%p0 multimem.st.global.b64 [%r0], $3;
-            mov.u32 $0, 0;
-        }
-        """,
-        constraints=("=r,l,l,l,r"),
-        args=[ptr.to(tl.pointer_type(tl.uint64)), p1, p2, mask.to(tl.int32)],
+        constraints=("=r,l,r,r,r,r,r"),
+        args=[ptr, f1, f2, f3, f4, mask.to(tl.int32)],
         dtype=tl.uint32,
         is_pure=False,
         pack=1,
@@ -722,8 +628,8 @@ def intra_node_one_shot_ld_reduce_kernel(data_ptr, out_ptr, elems, BLOCK_SIZE: t
             0,
             BLOCK_SIZE * tl.constexpr(data_ptr.dtype.element_ty.primitive_bitwidth) // 128) * VEC_SIZE
         mask = offs < elems
-        packed_v4_b32 = multimem_ld_reduce_v4(data_mc_ptr + offs, mask)
-        st_v4_b32(out_ptr + offs, packed_v4_b32, mask)
+        packed_v4_b32 = multimem_ld_reduce_p_v4(data_mc_ptr + offs, mask)
+        st_p_v4_b32(out_ptr + offs, packed_v4_b32, mask)
 
 
 @triton.jit
@@ -742,8 +648,9 @@ def intra_node_two_shot_multimem_kernel(symm_ptr, grid_barrier_ptr, elems, BLOCK
         offs = block_id * BLOCK_SIZE + tl.arange(
             0,
             BLOCK_SIZE * tl.constexpr(symm_ptr.dtype.element_ty.primitive_bitwidth) // 128) * VEC_SIZE
-        packed_v4_b32 = multimem_ld_reduce_v4(data_mc_ptr + offs, offs < elems)
-        multimem_st_v4_b32(data_mc_ptr + offs, packed_v4_b32, offs < elems)
+        packed_v4_b32 = multimem_ld_reduce_p_v4(data_mc_ptr + offs, offs < elems)
+        # TODO(houqi.1993) ptxas BUG that multimem.st does not support %p syntax
+        multimem_st_v4_p_b32(data_mc_ptr + offs, packed_v4_b32, offs < elems)
     if pid == 0:
         libshmem_device.barrier_all_block()
     barrier_on_this_grid(grid_barrier_ptr)
@@ -771,7 +678,7 @@ def intra_node_one_shot_push_1d_op(
     if ctx.signal_stages == 1:
         ctx.reset_barriers()
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
 
     _run_straggler(ctx, straggler_option)
     grid = (min(num_tiles, max_sm), ) if max_sm > 0 else (num_tiles, )
@@ -816,7 +723,7 @@ def intra_node_one_shot_nvshmem_push_tma_op(ctx: AllReduceContext, local_input: 
     if ctx.signal_stages == 1:
         ctx.reset_barriers()
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
     _run_straggler(ctx, straggler_option)
 
     num_sms = 32 if max_sm < 0 else max_sm
@@ -855,7 +762,7 @@ def intra_node_one_shot_multicast_all_reduce_op(
     assert os.getenv("NVSHMEM_DISABLE_CUDA_VMM", "1") == "0", "Set NVSHMEM_DISABLE_CUDA_VMM=0 for multicast."
     ctx.scatter_bufs.copy_(local_input)
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
     _run_straggler(ctx, straggler_option)
 
     assert local_input.dtype in [torch.float, torch.bfloat16, torch.float16]
@@ -964,7 +871,7 @@ def intra_node_two_shot_multicast_all_reduce_op(
         then use multimem.st to gather all shards.
 
         Notes:
-            - This is an out-of-place operator. The `output` parameter is a dummy argument, 
+            - This is an out-of-place operator. The `output` parameter is a dummy argument,
             only to ensure consistency of the interface with other operators.
             The result is not copied into `output`; instead, it returns the symmetric buffer directly.
     """
@@ -1027,7 +934,7 @@ def intra_node_two_shot_push_multicast_1d_op(
     if ctx.signal_stages == 1:
         ctx.reset_barriers()
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
     _run_straggler(ctx, straggler_option)
 
     if max_sm > 0:

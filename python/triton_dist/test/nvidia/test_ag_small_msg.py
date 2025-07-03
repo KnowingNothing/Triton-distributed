@@ -162,12 +162,12 @@ if __name__ == "__main__":
     comm_buf = pynvshmem.nvshmem_create_tensor([WORLD_SIZE * WORLD_SIZE], torch.int32)
     comm_buf.fill_(0)
     symm_data.fill_(RANK)
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
     torch.cuda.synchronize()
 
     def func():
         if not use_block_sync:
-            pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+            pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
         results = ag_intra_node_nvlink_small_msg(symm_data, comm_buf, RANK, WORLD_SIZE,
                                                  need_block_level_sync=use_block_sync)
         return results

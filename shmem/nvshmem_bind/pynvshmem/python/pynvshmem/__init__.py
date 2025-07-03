@@ -23,14 +23,14 @@
 #
 ################################################################################
 import sys
-from typing import Sequence, List
+from typing import Optional, Sequence, List, Tuple
 
 import torch
 import torch.distributed
 from cuda import cudart
 
 try:
-    from triton._C._pynvshmem import nvshmem_malloc, nvshmem_free, nvshmem_ptr, nvshmem_team_n_pes, nvshmem_team_my_pe, nvshmem_my_pe, nvshmemx_get_uniqueid, nvshmemx_init_attr_with_uniqueid, nvshmem_barrier_all
+    from triton._C._pynvshmem import nvshmem_malloc, nvshmem_free, nvshmem_ptr, nvshmem_team_n_pes, nvshmem_team_my_pe, nvshmem_my_pe, nvshmemx_get_uniqueid, nvshmemx_init_attr_with_uniqueid, nvshmem_barrier_all, _nvshmemx_putmem_on_stream, _nvshmemx_barrier_all_on_stream
     from triton._C._pynvshmem import *  # noqa: F403
 except Exception as e:
     print(
@@ -145,6 +145,7 @@ def symm_tensor(tensor: torch.Tensor, peer: int) -> torch.Tensor:
     assert getattr(tensor, "__symm_tensor__", False), "tensor is not a symm_tensor"
     if peer == nvshmem_my_pe():
         return tensor
+
     buffer = SymmCudaBuffer(ptr=nvshmem_ptr(tensor.data_ptr(), peer), nbytes=tensor.nbytes, dtype=tensor.dtype,
                             own_data=False)
     return torch.as_tensor(buffer, device="cuda").view(tensor.dtype).view(tensor.shape)
@@ -192,3 +193,33 @@ def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
     nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)
     nvshmem_barrier_all()
     torch.cuda.synchronize()
+
+
+def _unwrap_stream(stream: Tuple[torch.cuda.Stream, None, int]) -> int:
+    """
+    Unwraps the stream if it is a torch.cuda.Stream, otherwise returns the current stream.
+    """
+    if stream is None:
+        stream = torch.cuda.current_stream()
+    if isinstance(stream, torch.cuda.Stream):
+        stream = stream.cuda_stream
+    return stream
+
+
+def nvshmemx_putmem_on_stream(dest: torch.Tensor, source: torch.Tensor, peer: int,
+                              stream: Optional[torch.cuda.Stream] = None):
+    """
+    stream: Tuple[torch.cuda.Stream, int, None]
+    """
+    assert dest.is_cuda and source.is_cuda, "dest and source must be CUDA tensors"
+    assert dest.dtype == source.dtype, "dest and source must have the same dtype"
+    assert dest.numel() == source.numel(), "dest and source must have the same number of elements"
+    _nvshmemx_putmem_on_stream(dest.data_ptr(), source.data_ptr(),
+                               source.numel() * source.element_size(), peer, _unwrap_stream(stream))
+
+
+def nvshmemx_barrier_all_on_stream(stream: Optional[torch.cuda.Stream] = None):
+    """
+    nvshmemx_barrier_all_on_stream does not support CUDAGraph
+    """
+    _nvshmemx_barrier_all_on_stream(_unwrap_stream(stream))

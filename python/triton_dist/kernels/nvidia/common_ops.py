@@ -22,21 +22,15 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
+from typing import Optional
 import triton
 import torch
 import triton.language as tl
 import triton_dist.language as dl
 from triton_dist.utils import CUDA_CHECK
 from cuda import cuda
-from triton.language.extra.cuda.language_extra import (
-    tid,
-    st,
-    ld,
-    __syncthreads,
-    atomic_add,
-    ld_acquire,
-    atomic_cas,
-)
+from triton.language.extra.cuda.language_extra import (ntid, tid, st, ld, __syncthreads, atomic_add, ld_acquire,
+                                                       atomic_cas)
 
 from triton_dist import pynvshmem
 from triton_dist.utils import check_p2p_native_atomic_supported
@@ -177,12 +171,12 @@ class BarrierAllContext:
             pynvshmem.nvshmem_barrier_all()
 
 
-def barrier_all_on_stream(ctx: BarrierAllContext, stream: torch.cuda.Stream):
+def barrier_all_on_stream(ctx: BarrierAllContext, stream: Optional[torch.cuda.Stream] = None):
     """
     barrier_all_on_stream does not support CUDAGraph
     """
     if ctx is None or not ctx.is_intra_node:
-        return pynvshmem.nvshmemx_barrier_all_on_stream(stream.cuda_stream)
+        return pynvshmem.nvshmemx_barrier_all_on_stream(stream)
 
     if check_p2p_native_atomic_supported():
         barrier_all_intra_node_atomic_cas_block[(1, )](ctx.local_rank, ctx.rank, ctx.num_local_ranks, ctx.symm_barrier)
@@ -192,7 +186,8 @@ def barrier_all_on_stream(ctx: BarrierAllContext, stream: torch.cuda.Stream):
         ctx.target_value += 1
 
 
-def wait_eq(ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=False):
+def wait_eq(ptr: int, signal: int, stream: Optional[torch.cuda.Stream] = None, require_i64=False):
+    stream = stream or torch.cuda.current_stream()
     if not require_i64:
         (err, ) = cuda.cuStreamWaitValue32(
             stream.cuda_stream,
@@ -210,7 +205,8 @@ def wait_eq(ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=False)
     CUDA_CHECK(err)
 
 
-def set_signal(ptr: int, signal: int, stream: torch.cuda.Stream, require_i64=False):
+def set_signal(ptr: int, signal: int, stream: Optional[torch.cuda.Stream] = None, require_i64=False):
+    stream = stream or torch.cuda.current_stream()
     if not require_i64:
         (err, ) = cuda.cuStreamWriteValue32(
             stream.cuda_stream,
@@ -383,3 +379,10 @@ def add_v8_bf16(a_hi, a_lo, b_hi, b_lo):
         is_pure=True,
         pack=1,
     )
+
+
+@triton.jit
+def get_flat_tid():
+    tid_x, tid_y, tid_z = tid(0), tid(1), tid(2)
+    ntid_x, ntid_y = ntid(0), ntid(1)
+    return tid_z * ntid_y * ntid_x + tid_y * ntid_x + tid_x

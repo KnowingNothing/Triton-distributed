@@ -334,7 +334,6 @@ def kernel_gemm_rs_producer_non_persistent(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
 
     M_per_rank = M // WORLD_SIZE
-    # TODO(houqi.1993) M_per_rank % BLOCK_SIZE_M == 0 is guaranteed by the caller for multi-node
     pid_m, pid_n = swizzle_2d(pid, num_pid_m, num_pid_n, GROUP_SIZE_M)
 
     if NNODES != 1:  # with complex threadblock swizzle logic
@@ -538,11 +537,11 @@ def gemm_rs_op(input, weight, ctx: GEMMReduceScatterTensorParallelContext, persi
 
     assert M % world_size == 0
     assert weight.shape[1] == local_K
-    local_M = M // world_size
+    M_per_rank = M // world_size
     current_stream = torch.cuda.current_stream()
     rs_stream.wait_stream(current_stream)
 
-    output = torch.empty((local_M, N), dtype=output_dtype, device=input.device)
+    output = torch.empty((M_per_rank, N), dtype=output_dtype, device=input.device)
     workspace = torch.zeros((world_size, ), dtype=torch.int32, device=input.device)
     gemm_out = ctx.get_gemm_out_buf(input)
     scatter_signal = ctx.rs_ctx.scatter_signal_buf
@@ -573,13 +572,14 @@ def gemm_rs_op(input, weight, ctx: GEMMReduceScatterTensorParallelContext, persi
 
     if not fuse_scatter:
         with torch.cuda.stream(rs_stream):
-            output = reduce_scatter_2d_op(gemm_out, ctx.rs_ctx)
+            # don't allocate memory on other stream: error-prune
+            reduce_scatter_2d_op(gemm_out, ctx.rs_ctx, output)
         current_stream.wait_stream(rs_stream)
     else:
         barrier_all_on_stream(None, current_stream)
         ring_reduce(gemm_out, output, ctx.rs_ctx.local_rank, local_world_size)
         barrier_all_on_stream(None, current_stream)
-    return output[:local_M]
+    return output
 
 
 def gemm_rs(a, b, ctx, persistent=True, fuse_scatter=False):

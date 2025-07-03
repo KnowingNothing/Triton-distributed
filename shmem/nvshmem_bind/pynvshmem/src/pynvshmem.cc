@@ -174,7 +174,7 @@ PYBIND11_MODULE(_pynvshmem, m) {
     check_nvshmem_init();
     nvshmem_barrier_all();
   });
-  m.def("nvshmemx_barrier_all_on_stream", [](intptr_t stream) {
+  m.def("_nvshmemx_barrier_all_on_stream", [](intptr_t stream) {
     nvshmemx_barrier_all_on_stream((cudaStream_t)stream);
   });
 
@@ -189,7 +189,7 @@ PYBIND11_MODULE(_pynvshmem, m) {
           nvshmem_getmem((void *)dest, (const void *)source, nelems, pe);
         });
 
-  m.def("nvshmemx_putmem_on_stream",
+  m.def("_nvshmemx_putmem_on_stream",
         [](intptr_t dest, const intptr_t source, size_t nelems, int pe,
            intptr_t stream) {
           check_nvshmem_init();

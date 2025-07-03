@@ -391,7 +391,7 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     comm_buf = pynvshmem.nvshmem_create_tensor([max_blocks * num_ranks], torch.int32)
     comm_buf.fill_(0)
     barriers[rank].fill_(0)
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
     torch.cuda.synchronize()
 
     ag_stream = torch.cuda.Stream()
@@ -429,7 +429,7 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     A.copy_(torch.randn([M_per_rank, K], dtype=dtype, device=device))
     B.copy_(torch.randn([N_per_rank, K], dtype=dtype, device=device))
     workspaces[rank].copy_(torch.randn([M, K], dtype=dtype, device=device))
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream.cuda_stream)
+    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
     torch.cuda.synchronize()
     C = run_ag_gemm_persistent()
 

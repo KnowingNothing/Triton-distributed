@@ -378,7 +378,7 @@ def gemm_rs_multi_node_persistent_op(input, weight, ctx: GEMMReduceScatterTensor
     computed(barrier[wait_rank] = 1), the corresponding reduce-scatterwill be perform.
     """
     with torch.cuda.stream(rs_stream):
-        output = reduce_scatter_2d_op(gemm_out, ctx.rs_ctx)
+        output = reduce_scatter_2d_op(gemm_out, ctx.rs_ctx, output=output)
     current_stream.wait_stream(rs_stream)
 
     return output[:orig_M_per_rank]
