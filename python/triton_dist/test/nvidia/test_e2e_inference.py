@@ -45,6 +45,7 @@ def parse_args() -> Namespace:
     p.add_argument("--profile", action="store_true", help="Enable profiling")
     p.add_argument("--no_graph", action="store_true", help="Disable CUDA graph")
     p.add_argument("--triton_dist", action="store_true", help="Use triton_dist for distributed inference")
+    p.add_argument("--triton_dist_AR", action="store_true", help="Use triton_dist_AR for distributed inference")
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     return p.parse_args()
 
@@ -102,6 +103,12 @@ if __name__ == "__main__":
     if args.triton_dist:
         engine.logger.log("🔗 Using triton_dist for distributed inference.", "info")
         engine.backend = 'triton_dist'
+    elif args.triton_dist_AR:
+        engine.logger.log("🔗 Using triton_dist_AR for distributed inference.", "info")
+        engine.backend = 'triton_dist_AR'
+    else:
+        engine.logger.log("🔗 Using torch native backend for inference.", "info")
+        engine.backend = 'torch'
 
     engine.serve(input_ids=input_ids, gen_len=gen_len)
     engine.logger.log("✅ Inference completed!", "success")

@@ -75,7 +75,7 @@ class Engine:
         self.logger.log("Capturing CUDA Graph...", "info")
         self.mempool = torch.cuda.graphs.graph_pool_handle()
         static_input_ids = torch.full(
-            (bsz, 1), 1225, dtype=torch.long).cuda() if self.backend == 'torch' else torch.full(
+            (bsz, 1), 1225, dtype=torch.long).cuda() if self.backend != 'triton_dist' else torch.full(
                 (bsz // self.model.world_size, 1), 1225, dtype=torch.long).cuda()
         static_position_ids = torch.full((bsz, 1), 1225, dtype=torch.long).cuda()
 
@@ -108,11 +108,6 @@ class Engine:
         position_ids = past_len[:, None].long() + torch.arange(input_len).long().cuda()
         return position_ids
 
-    def set_triton_dist(self, max_M: int = 4096):
-        assert self.backend == 'triton_dist'
-        self.model.set_fwd(mode='triton_dist')
-        self.model.init_triton_dist_ctx(max_M=max_M)
-
     def serve(self, input_ids: torch.Tensor, gen_len: int):
         bsz = input_ids.shape[0]
         self.logger.log(f"Benchmarking {self.model.model_name} with prefill {input_ids.shape}, gen_len={gen_len}",
@@ -128,7 +123,11 @@ class Engine:
 
         if self.backend == 'triton_dist':
             next_token = next_token.split(bsz // self.model.world_size, dim=0)[self.model.rank]
-            self.set_triton_dist(max_M=bsz)
+            self.model.set_fwd(mode='triton_dist')
+            self.model.init_triton_dist_ctx(max_M=bsz)
+        elif self.backend == 'triton_dist_AR':
+            self.model.set_fwd(mode='triton_dist_AR')
+            self.model.init_triton_dist_AR_ctx(max_M=bsz, ar_method='two_shot_ld_reduce')
 
         if self.no_graph:
 

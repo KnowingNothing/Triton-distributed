@@ -72,6 +72,9 @@ class Qwen3Layer:
         elif mode == 'torch':
             self.attn.fwd = self.attn.torch_fwd
             self.mlp.fwd = self.mlp.torch_fwd
+        elif mode == 'triton_dist_AR':
+            self.attn.fwd = self.attn.dist_triton_AR_fwd
+            self.mlp.fwd = self.mlp.dist_triton_AR_fwd
         else:
             raise ValueError(f"Unsupported mode: {mode}, choose from ['dist_triton', 'torch']")
 
@@ -165,6 +168,18 @@ class Qwen3:
             layer.attn.rs_ctx = self.layers[0].attn.rs_ctx
             layer.mlp.ag_ctx = self.layers[0].mlp.ag_ctx
             layer.mlp.rs_ctx = self.layers[0].mlp.rs_ctx
+
+    def init_triton_dist_AR_ctx(self, max_M: int = 128, ar_method: str = 'two_shot_ld_reduce'):
+        self.layers[0].attn._init_AR_ctx(max_M=max_M, method=ar_method, dtype=self.dtype)
+        self.layers[0].mlp._init_AR_ctx(M=max_M, method=ar_method, dtype=self.dtype)
+
+        for layer in self.layers[1:]:
+            layer.attn.ctx = self.layers[0].attn.ctx
+            layer.attn.ar_method = self.layers[0].attn.ar_method
+            layer.attn.ar_output = self.layers[0].attn.ar_output
+            layer.mlp.ctx = self.layers[0].mlp.ctx
+            layer.mlp.ar_method = self.layers[0].mlp.ar_method
+            layer.mlp.ar_output = self.layers[0].mlp.ar_output
 
     @torch.inference_mode()
     def inference(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, kv_cache: KV_Cache,

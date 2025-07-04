@@ -35,6 +35,8 @@ from triton_dist import pynvshmem
 from triton_dist.layers.nvidia.tp_mlp import TP_MLP
 from triton_dist.utils import perf_func, dist_print, group_profile
 
+from triton_dist.kernels.nvidia.allreduce import str_to_method
+
 THRESHOLD_MAP = {
     torch.float16: 1e-2,
     torch.bfloat16: 2e-2,
@@ -92,6 +94,13 @@ def parse_args():
     parser.add_argument("--ag_gemm_persistent", default=False, action="store_true")
     parser.add_argument("--gemm_rs_persistent", default=False, action="store_true")
     parser.add_argument("--seed", type=int, default=42)
+
+    # for triton_dist_AR
+    parser.add_argument(
+        "--ar_method",
+        type=str,
+        default=None,
+    )
 
     return parser.parse_args()
 
@@ -173,95 +182,127 @@ if __name__ == "__main__":
     gemm_stream = torch.cuda.Stream()
     ag_internode_stream = torch.cuda.Stream()
 
-    mlp._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream,
-                  ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
-                  stages=stages)
-    out_triton = mlp.dist_triton_fwd(x_triton_dist)
+    if args.ar_method is None:
+        # triton_dist fwd
+        mlp._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream,
+                      ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
+                      stages=stages)
+        out_triton = mlp.dist_triton_fwd(x_triton_dist)
+        out = golden.split(M_per_rank, dim=0)[RANK].contiguous()
+        check_allclose(out_triton, out, atol=ATOL, rtol=RTOL)
 
-    out = golden.split(M_per_rank, dim=0)[RANK].contiguous()
-    check_allclose(out_triton, out, atol=ATOL, rtol=RTOL)
+        # Efficiency Test
+        mempool = torch.cuda.graph_pool_handle()
+        torch_graph = make_cuda_graph(mempool, partial(mlp.torch_fwd, x))
+        triton_dist_graph = make_cuda_graph(
+            mempool,
+            partial(mlp.dist_triton_fwd, x_triton_dist, ag_gemm_persistent=AG_GEMM_PERSISTENT,
+                    gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True))
 
-    # Efficiency Test
-    mempool = torch.cuda.graph_pool_handle()
-    torch_graph = make_cuda_graph(mempool, partial(mlp.torch_fwd, x))
-    triton_dist_graph = make_cuda_graph(
-        mempool,
-        partial(mlp.dist_triton_fwd, x_triton_dist, ag_gemm_persistent=AG_GEMM_PERSISTENT,
-                gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True))
+        profile = args.profile
+        with group_profile("tp_mlp", profile, group=TP_GROUP):
+            torch.cuda.synchronize()
+            _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+            pynvshmem.nvshmem_barrier_all()
+            torch.cuda.synchronize()
 
-    profile = args.profile
-    with group_profile("tp_mlp", profile, group=TP_GROUP):
-        torch.cuda.synchronize()
-        _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-        pynvshmem.nvshmem_barrier_all()
-        torch.cuda.synchronize()
+            torch.cuda.synchronize()
+            _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+            pynvshmem.nvshmem_barrier_all()
+            torch.cuda.synchronize()
 
-        torch.cuda.synchronize()
-        _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-        pynvshmem.nvshmem_barrier_all()
-        torch.cuda.synchronize()
+        dist_print(f"torch tp mlp e2e #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
+        dist_print(f"dist-triton tp mlp e2e #{RANK}", dist_triton_perf, dist_triton_perf,
+                   f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
-    dist_print(f"torch tp mlp e2e #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-    dist_print(f"dist-triton tp mlp e2e #{RANK}", dist_triton_perf, need_sync=True,
-               allowed_ranks=list(range(WORLD_SIZE)))
+        # we need to del cuda graphs to avoid dist hang
+        del torch_graph, triton_dist_graph, mempool
 
-    # we need to del cuda graphs to avoid dist hang
-    del torch_graph, triton_dist_graph, mempool
+        # benchmark ag gemm
 
-    # benchmark ag gemm
+        mempool = torch.cuda.graph_pool_handle()
+        torch_graph = make_cuda_graph(mempool, partial(mlp.torch_ag_gemm, x_triton_dist))
+        triton_dist_graph = make_cuda_graph(
+            mempool, partial(mlp.dist_triton_ag_gemm, x_triton_dist, persistent=AG_GEMM_PERSISTENT, autotune=True))
+        check_allclose(mlp.torch_ag_gemm(x_triton_dist),
+                       mlp.dist_triton_ag_gemm(x_triton_dist, persistent=AG_GEMM_PERSISTENT, autotune=True), atol=ATOL,
+                       rtol=RTOL)
 
-    mempool = torch.cuda.graph_pool_handle()
-    torch_graph = make_cuda_graph(mempool, partial(mlp.torch_ag_gemm, x_triton_dist))
-    triton_dist_graph = make_cuda_graph(
-        mempool, partial(mlp.dist_triton_ag_gemm, x_triton_dist, persistent=AG_GEMM_PERSISTENT, autotune=True))
-    check_allclose(mlp.torch_ag_gemm(x_triton_dist),
-                   mlp.dist_triton_ag_gemm(x_triton_dist, persistent=AG_GEMM_PERSISTENT, autotune=True), atol=ATOL,
-                   rtol=RTOL)
+        N, K = mlp.gate_up_proj.size()
+        with group_profile(f"tp_mlp_ag_gemm_{M}x{N}x{K}", profile, group=TP_GROUP):
+            torch.cuda.synchronize()
+            _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+            pynvshmem.nvshmem_barrier_all()
+            torch.cuda.synchronize()
 
-    N, K = mlp.gate_up_proj.size()
-    with group_profile(f"tp_mlp_ag_gemm_{M}x{N}x{K}", profile, group=TP_GROUP):
-        torch.cuda.synchronize()
-        _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-        pynvshmem.nvshmem_barrier_all()
-        torch.cuda.synchronize()
+            torch.cuda.synchronize()
+            _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+            pynvshmem.nvshmem_barrier_all()
+            torch.cuda.synchronize()
 
-        torch.cuda.synchronize()
-        _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-        pynvshmem.nvshmem_barrier_all()
-        torch.cuda.synchronize()
+        dist_print(f"torch tp mlp ag_gemm_{M}x{N}x{K} #{RANK}", torch_perf, need_sync=True,
+                   allowed_ranks=list(range(WORLD_SIZE)))
+        dist_print(f"dist-triton tp mlp ag_gemm_{M}x{N}x{K} #{RANK}", dist_triton_perf,
+                   f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
-    dist_print(f"torch tp mlp ag_gemm_{M}x{N}x{K} #{RANK}", torch_perf, need_sync=True,
-               allowed_ranks=list(range(WORLD_SIZE)))
-    dist_print(f"dist-triton tp mlp ag_gemm_{M}x{N}x{K} #{RANK}", dist_triton_perf, need_sync=True,
-               allowed_ranks=list(range(WORLD_SIZE)))
+        del torch_graph, triton_dist_graph, mempool
 
-    del torch_graph, triton_dist_graph, mempool
+        # benchmark gemm rs
+        N, K = mlp.down_proj.size()
+        x = rand_tensor([M, K], dtype=DTYPE)
+        mempool = torch.cuda.graph_pool_handle()
+        torch_graph = make_cuda_graph(mempool, partial(mlp.torch_gemm_rs, x))
+        triton_dist_graph = make_cuda_graph(mempool, partial(mlp.dist_triton_gemm_rs, x, persistent=GEMM_RS_PERSISTENT))
+        check_allclose(mlp.torch_gemm_rs(x), mlp.dist_triton_gemm_rs(x, persistent=GEMM_RS_PERSISTENT), atol=ATOL,
+                       rtol=RTOL)
 
-    # benchmark gemm rs
-    N, K = mlp.down_proj.size()
-    x = rand_tensor([M, K], dtype=DTYPE)
-    mempool = torch.cuda.graph_pool_handle()
-    torch_graph = make_cuda_graph(mempool, partial(mlp.torch_gemm_rs, x))
-    triton_dist_graph = make_cuda_graph(mempool, partial(mlp.dist_triton_gemm_rs, x, persistent=GEMM_RS_PERSISTENT))
-    check_allclose(mlp.torch_gemm_rs(x), mlp.dist_triton_gemm_rs(x, persistent=GEMM_RS_PERSISTENT), atol=ATOL,
-                   rtol=RTOL)
+        with group_profile(f"tp_mlp_gemm_rs_{M}x{N}x{K}", profile, group=TP_GROUP):
+            torch.cuda.synchronize()
+            _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+            pynvshmem.nvshmem_barrier_all()
+            torch.cuda.synchronize()
 
-    with group_profile(f"tp_mlp_gemm_rs_{M}x{N}x{K}", profile, group=TP_GROUP):
-        torch.cuda.synchronize()
-        _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-        pynvshmem.nvshmem_barrier_all()
-        torch.cuda.synchronize()
+            torch.cuda.synchronize()
+            _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+            pynvshmem.nvshmem_barrier_all()
+            torch.cuda.synchronize()
 
-        torch.cuda.synchronize()
-        _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-        pynvshmem.nvshmem_barrier_all()
-        torch.cuda.synchronize()
+        dist_print(f"torch tp mlp gemm_rs_{M}x{N}x{K} #{RANK}", torch_perf, need_sync=True,
+                   allowed_ranks=list(range(WORLD_SIZE)))
+        dist_print(f"dist-triton tp mlp gemm_rs_{M}x{N}x{K} #{RANK}", dist_triton_perf,
+                   f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
-    dist_print(f"torch tp mlp gemm_rs_{M}x{N}x{K} #{RANK}", torch_perf, need_sync=True,
-               allowed_ranks=list(range(WORLD_SIZE)))
-    dist_print(f"dist-triton tp mlp gemm_rs_{M}x{N}x{K} #{RANK}", dist_triton_perf, need_sync=True,
-               allowed_ranks=list(range(WORLD_SIZE)))
+        del torch_graph, triton_dist_graph, mempool
 
-    del torch_graph, triton_dist_graph, mempool
+    else:
+        # triton_dist AR fwd
+        ar_method = str_to_method(args.ar_method)
+        mlp._init_AR_ctx(M=M, method=ar_method, dtype=DTYPE, signal_stages=args.warmup + args.iters + 32)
+        out_triton_AR = mlp.dist_triton_AR_fwd(x)
+        check_allclose(out_triton_AR, golden, atol=ATOL, rtol=RTOL)
+
+        # Efficiency Test
+        mempool = torch.cuda.graph_pool_handle()
+        torch_graph = make_cuda_graph(mempool, partial(mlp.torch_fwd, x))
+        triton_dist_graph = make_cuda_graph(mempool, partial(mlp.dist_triton_AR_fwd, x))
+
+        profile = args.profile
+        with group_profile("tp_mlp", profile, group=TP_GROUP):
+            torch.cuda.synchronize()
+            _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+            pynvshmem.nvshmem_barrier_all()
+            torch.cuda.synchronize()
+
+            torch.cuda.synchronize()
+            _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+            pynvshmem.nvshmem_barrier_all()
+            torch.cuda.synchronize()
+
+        dist_print(f"torch tp mlp e2e #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
+        dist_print(f"dist-triton_AR_{args.ar_method} tp mlp e2e #{RANK}", dist_triton_perf,
+                   f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
+
+        # we need to del cuda graphs to avoid dist hang
+        del torch_graph, triton_dist_graph, mempool
 
     torch.distributed.destroy_process_group(TP_GROUP)

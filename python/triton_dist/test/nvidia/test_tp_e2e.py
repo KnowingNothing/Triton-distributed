@@ -90,6 +90,13 @@ def parse_args():
     parser.add_argument("--check", default=False, action="store_true", help="check correctness")
     parser.add_argument("--seed", type=int, default=42)
 
+    # for triton_dist_AR
+    parser.add_argument(
+        "--ar_method",
+        type=str,
+        default=None,
+    )
+
     return parser.parse_args()
 
 
@@ -159,28 +166,23 @@ if __name__ == "__main__":
 
         # torch prefill
         logits = model.inference(input_ids=input_ids, position_ids=position_ids, kv_cache=kv_cache)
-        check_allclose(logits.softmax(dim=-1), golden.softmax(dim=-1), atol=ATOL, rtol=RTOL)
+        check_allclose(logits.softmax(dim=-1, dtype=torch.float32), golden.softmax(dim=-1, dtype=torch.float32),
+                       atol=ATOL, rtol=RTOL)
 
-        # triton dist prefill
-        model.init_triton_dist_ctx(max_M=BSZ * SEQ_LEN)
-        model.set_fwd(mode='triton_dist')
-        input_ids = input_ids.split(BSZ // WORLD_SIZE, dim=0)[RANK]
-        logits = model.inference(input_ids=input_ids, position_ids=position_ids, kv_cache=kv_cache)
-        golden = golden.split(BSZ // WORLD_SIZE, dim=0)[RANK]
-        check_allclose(logits.softmax(dim=-1), golden.softmax(dim=-1), atol=ATOL, rtol=RTOL)
-
-        # decode
-        input_ids = torch.randint(0, 1000, (BSZ, 1), dtype=torch.long, device="cuda")
-        position_ids = torch.arange(SEQ_LEN, SEQ_LEN + 1, dtype=torch.long, device="cuda").unsqueeze(0).repeat(BSZ, 1)
-        kv_cache.kv_offset.fill_(SEQ_LEN)
-
-        model.set_fwd(mode='torch')
-        logits_torch = model.inference(input_ids=input_ids, position_ids=position_ids, kv_cache=kv_cache)
-        model.set_fwd(mode='triton_dist')
-        input_ids = input_ids.split(BSZ // WORLD_SIZE, dim=0)[RANK]
-        logits_triton_dist = model.inference(input_ids=input_ids, position_ids=position_ids, kv_cache=kv_cache)
-        golden = logits_torch.split(BSZ // WORLD_SIZE, dim=0)[RANK]
-        check_allclose(logits_triton_dist.softmax(dim=-1), golden.softmax(dim=-1), atol=ATOL, rtol=RTOL)
+        if args.ar_method is None:
+            model.init_triton_dist_ctx(max_M=BSZ * SEQ_LEN)
+            model.set_fwd(mode='triton_dist')
+            input_ids = input_ids.split(BSZ // WORLD_SIZE, dim=0)[RANK]
+            logits = model.inference(input_ids=input_ids, position_ids=position_ids, kv_cache=kv_cache)
+            golden = golden.split(BSZ // WORLD_SIZE, dim=0)[RANK]
+            check_allclose(logits.softmax(dim=-1, dtype=torch.float32), golden.softmax(dim=-1, dtype=torch.float32),
+                           atol=ATOL, rtol=RTOL)
+        else:
+            model.init_triton_dist_AR_ctx(max_M=BSZ * SEQ_LEN, ar_method=args.ar_method)
+            model.set_fwd(mode='triton_dist_AR')
+            logits = model.inference(input_ids=input_ids, position_ids=position_ids, kv_cache=kv_cache)
+            check_allclose(logits.softmax(dim=-1, dtype=torch.float32), golden.softmax(dim=-1, dtype=torch.float32),
+                           atol=ATOL, rtol=RTOL)
 
         exit(0)
 
@@ -188,7 +190,10 @@ if __name__ == "__main__":
     # Efficiency Test
     if MODE == 'prefill':
         # prefill
-        model.init_triton_dist_ctx(max_M=BSZ * SEQ_LEN)
+        if args.ar_method is None:
+            model.init_triton_dist_ctx(max_M=BSZ * SEQ_LEN)
+        else:
+            model.init_triton_dist_AR_ctx(max_M=BSZ * SEQ_LEN, ar_method=args.ar_method)
         input_ids = torch.randint(0, 1000, (BSZ, SEQ_LEN), dtype=torch.long, device="cuda")
         position_ids = torch.arange(0, SEQ_LEN, dtype=torch.int64, device="cuda").unsqueeze(0).expand(BSZ, -1)
         kv_cache.kv_offset.fill_(0)
@@ -196,9 +201,14 @@ if __name__ == "__main__":
         model.set_fwd(mode='torch')
         torch_graph = make_cuda_graph(mempool, partial(model.inference, input_ids, position_ids, kv_cache, True))
 
-        dist_x = input_ids.split(BSZ // WORLD_SIZE, dim=0)[RANK].contiguous()
-        model.set_fwd(mode='triton_dist')
-        triton_dist_graph = make_cuda_graph(mempool, partial(model.inference, dist_x, position_ids, kv_cache, True))
+        if args.ar_method is None:
+            dist_x = input_ids.split(BSZ // WORLD_SIZE, dim=0)[RANK].contiguous()
+            model.set_fwd(mode='triton_dist')
+            triton_dist_graph = make_cuda_graph(mempool, partial(model.inference, dist_x, position_ids, kv_cache, True))
+        else:
+            model.set_fwd(mode='triton_dist_AR')
+            triton_dist_graph = make_cuda_graph(mempool,
+                                                partial(model.inference, input_ids, position_ids, kv_cache, True))
 
         with group_profile("tp_e2e_prefill", profile, group=TP_GROUP):
             torch.cuda.synchronize()
@@ -212,12 +222,19 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         dist_print(f"torch prefill #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        dist_print(f"dist-triton prefill #{RANK}", dist_triton_perf, need_sync=True,
-                   allowed_ranks=list(range(WORLD_SIZE)))
+        if args.ar_method is None:
+            dist_print(f"dist-triton prefill #{RANK}", dist_triton_perf, f"{torch_perf/dist_triton_perf}x",
+                       need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
+        else:
+            dist_print(f"dist-triton-AR_{args.ar_method} prefill #{RANK}", dist_triton_perf,
+                       f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         del torch_graph, triton_dist_graph, mempool
     else:
         # decode
-        model.init_triton_dist_ctx(max_M=BSZ)
+        if args.ar_method is None:
+            model.init_triton_dist_ctx(max_M=BSZ)
+        else:
+            model.init_triton_dist_AR_ctx(max_M=BSZ, ar_method=args.ar_method)
         input_ids = torch.randint(0, 1000, (BSZ, 1), dtype=torch.long, device="cuda")
         position_ids = torch.arange(SEQ_LEN, SEQ_LEN + 1, dtype=torch.int64, device="cuda").unsqueeze(0).expand(BSZ, -1)
         kv_cache.kv_offset.fill_(SEQ_LEN)
@@ -225,9 +242,14 @@ if __name__ == "__main__":
         model.set_fwd(mode='torch')
         torch_graph = make_cuda_graph(mempool, partial(model.inference, input_ids, position_ids, kv_cache, True))
 
-        dist_x = input_ids.split(BSZ // WORLD_SIZE, dim=0)[RANK].contiguous()
-        model.set_fwd(mode='triton_dist')
-        triton_dist_graph = make_cuda_graph(mempool, partial(model.inference, dist_x, position_ids, kv_cache, True))
+        if args.ar_method is None:
+            dist_x = input_ids.split(BSZ // WORLD_SIZE, dim=0)[RANK].contiguous()
+            model.set_fwd(mode='triton_dist')
+            triton_dist_graph = make_cuda_graph(mempool, partial(model.inference, dist_x, position_ids, kv_cache, True))
+        else:
+            model.set_fwd(mode='triton_dist_AR')
+            triton_dist_graph = make_cuda_graph(mempool,
+                                                partial(model.inference, input_ids, position_ids, kv_cache, True))
 
         with group_profile("tp_e2e_decode", profile, group=TP_GROUP):
             torch.cuda.synchronize()
@@ -241,8 +263,12 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         dist_print(f"torch decode #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        dist_print(f"dist-triton decode #{RANK}", dist_triton_perf, need_sync=True,
-                   allowed_ranks=list(range(WORLD_SIZE)))
+        if args.ar_method is None:
+            dist_print(f"dist-triton decode #{RANK}", dist_triton_perf, f"{torch_perf/dist_triton_perf}x",
+                       need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
+        else:
+            dist_print(f"dist-triton-AR_{args.ar_method} decode #{RANK}", dist_triton_perf,
+                       f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         del torch_graph, triton_dist_graph, mempool
 
     torch.distributed.destroy_process_group()

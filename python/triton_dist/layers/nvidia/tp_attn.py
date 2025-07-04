@@ -33,6 +33,7 @@ from triton_dist.kernels.nvidia.allgather_gemm import AllGatherGEMMTensorParalle
 from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs
 
 from triton_dist.layers.nvidia.kv_cache import KV_Cache
+from triton_dist.kernels.nvidia.allreduce import (create_allreduce_ctx, all_reduce)
 
 try:
     from flash_attn_interface import flash_attn_with_kvcache
@@ -138,6 +139,16 @@ class TP_Attn:
         pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
         torch.cuda.synchronize()
 
+    def _init_AR_ctx(self, max_M, method, dtype=torch.bfloat16, signal_stages=1):
+        self.ar_method = method
+        input_tensor = torch.empty([max_M, self.K], dtype=dtype, device="meta")
+        self.ctx = create_allreduce_ctx(
+            input=input_tensor,
+            method=method,
+            signal_stages=signal_stages,
+        )
+        self.ar_output = torch.empty_like(input_tensor, device="cuda", dtype=dtype).contiguous()
+
     @torch.inference_mode()
     def apply_rotary_pos_emb(self, q: torch.Tensor, k: torch.Tensor, position_ids: torch.Tensor,
                              cos_sin_cache: torch.Tensor):
@@ -218,6 +229,44 @@ class TP_Attn:
         out = gemm_rs(out.view(bsz * self.world_size * q_len, -1), self.wo, self.rs_ctx, persistent=gemm_rs_persistent,
                       fuse_scatter=True).view(bsz, q_len, -1)
         return out
+
+    @torch.inference_mode()
+    def dist_triton_AR_fwd(self, x, position_ids, cos_sin_cache, kv_cache: KV_Cache, layer_idx: int):
+        """
+        triton_dist AR forward pass for attention with Tensor Parallelism.
+        Activations related to head dimensions are sharded. Final output is AllReduced.
+        x: input tensor, shape [batch_size, q_len, hidden_size_in] (replicated on each rank)
+        """
+        bsz, q_len, _ = x.size()
+        qkv = torch.nn.functional.linear(x, self.wqkv)
+
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        v = v.view(bsz, q_len, -1, self.head_dim)
+
+        # qk norm
+        if hasattr(self, 'q_norm_eps'):
+            q = layer_norm(q.contiguous().view(bsz, q_len, -1, self.head_dim), self.q_norm_eps,
+                           self.q_norm_w).view(bsz, q_len, -1)
+        if hasattr(self, 'k_norm_eps'):
+            k = layer_norm(k.contiguous().view(bsz, q_len, -1, self.head_dim), self.k_norm_eps,
+                           self.k_norm_w).view(bsz, q_len, -1)
+        # RoPE
+        q, k = self.apply_rotary_pos_emb(q, k, position_ids, cos_sin_cache)
+        k_cache, v_cache, kv_offset = kv_cache.update_kv_cache(k, v, layer_idx)
+
+        # FlashAttn
+        out = flash_attn_with_kvcache(q=q, k_cache=k_cache, v_cache=v_cache, k=k, v=v, cache_seqlens=kv_offset,
+                                      causal=True)
+
+        out = torch.nn.functional.linear(out.view(bsz, q_len, -1), self.wo).view(bsz * q_len, -1)
+        if self.world_size > 1:
+            out = all_reduce(
+                input=out.contiguous(),
+                output=self.ar_output,
+                method=self.ar_method,
+                ctx=self.ctx,
+            )
+        return out.view(bsz, q_len, -1)
 
     def fwd(self, x: torch.Tensor, position_ids: torch.Tensor, cos_sin_cache: torch.Tensor, kv_cache: KV_Cache,
             layer_idx: int):

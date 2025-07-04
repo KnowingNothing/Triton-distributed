@@ -96,6 +96,13 @@ def parse_args():
     parser.add_argument("--gemm_rs_persistent", default=False, action="store_true")
     parser.add_argument("--seed", type=int, default=42)
 
+    # for triton_dist_AR
+    parser.add_argument(
+        "--ar_method",
+        type=str,
+        default=None,
+    )
+
     return parser.parse_args()
 
 
@@ -159,7 +166,8 @@ if __name__ == "__main__":
         world_size=WORLD_SIZE,
     )
     bsz_per_rank = BSZ // WORLD_SIZE
-    assert BSZ % WORLD_SIZE == 0, f"BSZ {BSZ} must be divisible by WORLD_SIZE {WORLD_SIZE}"
+    if args.ar_method is None:
+        assert BSZ % WORLD_SIZE == 0, f"BSZ {BSZ} must be divisible by WORLD_SIZE {WORLD_SIZE}"
     BLOCK_M = 128
     BLOCK_N = 128
     BLOCK_K = 128
@@ -189,32 +197,42 @@ if __name__ == "__main__":
         out_torch = attn.torch_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
         check_allclose(out_torch, golden, atol=ATOL, rtol=RTOL)
 
-        # dist triton prefill
-        M = BSZ * SEQ_LEN
-        attn._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream,
-                       ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
-                       stages=stages)
-        dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
+        if args.ar_method is None:
+            # dist triton prefill
+            M = BSZ * SEQ_LEN
+            attn._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream,
+                           ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
+                           stages=stages)
+            dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
 
-        out_triton = attn.dist_triton_fwd(dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
-                                          ag_gemm_persistent=AG_GEMM_PERSISTENT, gemm_rs_persistent=GEMM_RS_PERSISTENT,
-                                          autotune=True)
-        out = golden.split(bsz_per_rank, dim=0)[RANK].contiguous()
-        check_allclose(out_triton, out, atol=ATOL, rtol=RTOL)
+            out_triton = attn.dist_triton_fwd(dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
+                                              ag_gemm_persistent=AG_GEMM_PERSISTENT,
+                                              gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True)
+            out = golden.split(bsz_per_rank, dim=0)[RANK].contiguous()
+            check_allclose(out_triton, out, atol=ATOL, rtol=RTOL)
+        else:
+            # dist triton prefill with AR
+            M = BSZ * SEQ_LEN
+            attn._init_AR_ctx(max_M=M, method=args.ar_method, dtype=DTYPE)
+            out_triton = attn.dist_triton_AR_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
+            check_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
 
-        # prefill
+        # Efficiency Test
         x = rand_tensor([BSZ, SEQ_LEN, K], dtype=DTYPE)
         position_ids = torch.arange(0, SEQ_LEN, dtype=torch.int64, device="cuda").unsqueeze(0).expand(BSZ, -1)
         kv_cache.kv_offset.fill_(0)
         mempool = torch.cuda.graph_pool_handle()
         torch_graph = make_cuda_graph(mempool,
                                       partial(attn.torch_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
-
-        dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
-        triton_dist_graph = make_cuda_graph(
-            mempool,
-            partial(attn.dist_triton_fwd, dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
-                    ag_gemm_persistent=AG_GEMM_PERSISTENT, gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True))
+        if args.ar_method is None:
+            dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
+            triton_dist_graph = make_cuda_graph(
+                mempool,
+                partial(attn.dist_triton_fwd, dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
+                        ag_gemm_persistent=AG_GEMM_PERSISTENT, gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True))
+        else:
+            triton_dist_graph = make_cuda_graph(
+                mempool, partial(attn.dist_triton_AR_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
 
         with group_profile("tp_attn_prefill", profile, group=TP_GROUP):
             torch.cuda.synchronize()
@@ -228,8 +246,12 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         dist_print(f"torch attn prefill #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        dist_print(f"dist-triton attn prefill #{RANK}", dist_triton_perf, need_sync=True,
-                   allowed_ranks=list(range(WORLD_SIZE)))
+        if args.ar_method is None:
+            dist_print(f"dist-triton attn prefill #{RANK}", dist_triton_perf, f"{torch_perf/dist_triton_perf}x",
+                       need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
+        else:
+            dist_print(f"dist-triton_AR_{args.ar_method} attn prefill #{RANK}", dist_triton_perf,
+                       f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         del torch_graph, triton_dist_graph, mempool
 
     else:
@@ -241,18 +263,23 @@ if __name__ == "__main__":
         kv_cache.rand_fill_kv_cache(SEQ_LEN)
 
         out_torch = attn.torch_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
-        out_torch = out_torch.split(bsz_per_rank, dim=0)[RANK].contiguous()
 
         # triton decode
         M = BSZ
-        attn._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream,
-                       ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
-                       stages=stages)
-        dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
-        out_triton = attn.dist_triton_fwd(dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
-                                          ag_gemm_persistent=AG_GEMM_PERSISTENT, gemm_rs_persistent=GEMM_RS_PERSISTENT,
-                                          autotune=True)
-        check_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
+        if args.ar_method is None:
+            out_torch = out_torch.split(bsz_per_rank, dim=0)[RANK].contiguous()
+            attn._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream,
+                           ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
+                           stages=stages)
+            dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
+            out_triton = attn.dist_triton_fwd(dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
+                                              ag_gemm_persistent=AG_GEMM_PERSISTENT,
+                                              gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True)
+            check_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
+        else:
+            attn._init_AR_ctx(max_M=M, method=args.ar_method, dtype=DTYPE)
+            out_triton = attn.dist_triton_AR_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
+            check_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
 
         # Efficiency Test
 
@@ -263,11 +290,15 @@ if __name__ == "__main__":
         torch_graph = make_cuda_graph(mempool,
                                       partial(attn.torch_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
 
-        dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
-        triton_dist_graph = make_cuda_graph(
-            mempool,
-            partial(attn.dist_triton_fwd, dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
-                    ag_gemm_persistent=AG_GEMM_PERSISTENT, gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True))
+        if args.ar_method is None:
+            dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
+            triton_dist_graph = make_cuda_graph(
+                mempool,
+                partial(attn.dist_triton_fwd, dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
+                        ag_gemm_persistent=AG_GEMM_PERSISTENT, gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True))
+        else:
+            triton_dist_graph = make_cuda_graph(
+                mempool, partial(attn.dist_triton_AR_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
 
         with group_profile("tp_attn_decode", profile, group=TP_GROUP):
             torch.cuda.synchronize()
@@ -281,8 +312,12 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         dist_print(f"torch attn decode #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        dist_print(f"dist-triton attn decode #{RANK}", dist_triton_perf, need_sync=True,
-                   allowed_ranks=list(range(WORLD_SIZE)))
+        if args.ar_method is None:
+            dist_print(f"dist-triton attn decode #{RANK}", dist_triton_perf, f"{torch_perf/dist_triton_perf}x",
+                       need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
+        else:
+            dist_print(f"dist-triton_AR_{args.ar_method} attn decode #{RANK}", dist_triton_perf,
+                       f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         del torch_graph, triton_dist_graph, mempool
 
     torch.distributed.destroy_process_group()

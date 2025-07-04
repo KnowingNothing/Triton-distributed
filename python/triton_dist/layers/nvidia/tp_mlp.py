@@ -30,6 +30,7 @@ import torch.distributed
 from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.allgather_gemm import AllGatherGEMMTensorParallelContext, get_auto_all_gather_method, ag_gemm
 from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs
+from triton_dist.kernels.nvidia.allreduce import (create_allreduce_ctx, all_reduce)
 
 
 def shard_local(tensor: torch.Tensor, world_size: int, dim: int, local_rank: int):
@@ -73,7 +74,7 @@ class TP_MLP:
         self.gate_up_proj = torch.cat((gate_proj, up_proj),
                                       dim=0).to("cuda", non_blocking=True)  # [MLP_size * 2 // world_size, hidden_size]
         self.down_proj = shard_local(mlp.down_proj.weight.detach(), self.world_size, 1,
-                                     self.rank).to("cuda", non_blocking=True)  # [MLP_size // world_size, hidden_size]
+                                     self.rank).to("cuda", non_blocking=True)  # [hidden_size, MLP_size // world_size]
 
         self.act_fn = mlp.act_fn
         self.ag_N_per_rank = self.gate_up_proj.shape[0]
@@ -152,6 +153,32 @@ class TP_MLP:
         if is_3d_input:
             out = out.view(bsz, seq, -1)
         return out
+
+    def _init_AR_ctx(self, M, method, dtype=torch.bfloat16, signal_stages=1):
+        self.ar_method = method
+        N = self.down_proj.shape[0]
+        input_tensor = torch.empty([M, N], dtype=dtype, device="meta")
+        self.ctx = create_allreduce_ctx(
+            input=input_tensor,
+            method=method,
+            signal_stages=signal_stages,
+        )
+        self.ar_output = torch.empty_like(input_tensor, device="cuda", dtype=dtype).contiguous()
+
+    @torch.inference_mode()
+    def dist_triton_AR_fwd(self, x):
+        """
+        triton_dist AR forward pass for TP.
+        This version uses gemm + gemm + AllReduce
+        x: input tensor, shape [batch_size, seq_len, hidden_size] or [batch_size * seq_len, hidden_size]
+        """
+        out_fused = torch.nn.functional.linear(x, self.gate_up_proj)
+        wg, w1 = torch.chunk(out_fused, 2, dim=-1)
+        out = self.act_fn(wg) * w1
+        out = torch.nn.functional.linear(out, self.down_proj).view_as(self.ar_output)
+        if self.world_size > 1:
+            out = all_reduce(out.contiguous(), self.ar_output, method=self.ar_method, ctx=self.ctx)
+        return out.view_as(x)
 
     @torch.inference_mode()
     def fwd(self, x: torch.Tensor):
