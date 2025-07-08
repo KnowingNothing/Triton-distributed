@@ -33,6 +33,7 @@ from triton_dist.utils import dist_print
 from triton_dist.kernels.amd.common_ops import barrier_all_on_stream
 from triton.language.extra.hip.libdevice import store_release_system, __syncthreads
 import pyrocshmem
+from triton.language.extra.hip.libdevice import thread_idx
 
 
 @triton.jit
@@ -78,7 +79,9 @@ def producer_consumer_kernel(
             # TODO(zhengxuegui.0): use `dl.notify` instead of the libdevice.
             set_value = queue_repeat * 2 + 1
             set_value = set_value.to(tl.int32)
-            store_release_system(remote_signal_ptr + queue_offset, set_value)
+            if thread_idx(0) == 0:
+                store_release_system(remote_signal_ptr + queue_offset, set_value)
+            __syncthreads()
     elif pid < NUM_PRODUCER_SMS + NUM_CONSUMER_SMS:
         #
         # Consumer
@@ -100,7 +103,9 @@ def producer_consumer_kernel(
             __syncthreads()
             set_value = queue_repeat * 2 + 2
             set_value = set_value.to(tl.int32)
-            store_release_system(cur_signal_ptr + queue_offset, set_value)
+            if thread_idx(0) == 0:
+                store_release_system(cur_signal_ptr + queue_offset, set_value)
+            __syncthreads()
     else:
         pass
 
@@ -163,13 +168,13 @@ def main(TP_GROUP):
     # is visible to all the other ranks.
     # This is usually used for intra-node.
     torch.cuda.synchronize()
-    barrier_all_on_stream(rank, num_ranks, comm_buf_ptr, stream)
+    torch.distributed.barrier()
 
     # Prepare torch local data
     input_data = torch.randn((INPUT_SIZE * BLOCK_SIZE, ), dtype=torch.float32).cuda()
     output_data = torch.empty_like(input_data)
 
-    NUM_REPEAS = 20
+    NUM_REPEAS = 2000
     # For distributed programming, you have to run it multiple times to ensure
     # your program is correct, including reseting signals, avoiding racing, etc.
     for iters in range(NUM_REPEAS):
@@ -178,6 +183,7 @@ def main(TP_GROUP):
         # by using flipping barriers. We will cover this optimization in future tutorial.
         # TODO: tutorial for flipping barriers.
         signal_bufs[rank].fill_(0)
+        barrier_all_on_stream(rank, num_ranks, comm_buf_ptr, stream)
 
         producer_consumer_kernel[(20, )](  # use 20 SMs
             rank,
