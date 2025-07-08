@@ -299,7 +299,7 @@ def matmul_fuse_scatter(a, b, scatter_bufs_ptr, rank, num_ranks, transpose_weigh
     assert a.is_contiguous(), "Matrix A must be contiguous"
     M, K = a.shape
 
-    alignment = 256
+    alignment = 128
     assert M % alignment == 0 and N % alignment == 0 and K % alignment == 0
 
     # Allocates output.
@@ -410,7 +410,6 @@ def create_gemm_rs_intra_node_context(max_M, N, output_dtype, rank, num_ranks, t
 
     torch.cuda.synchronize()
     torch.distributed.barrier()
-    scatter_streams_pool = [torch.cuda.Stream(priority=-1) for i in range(num_ranks)]  # noqa: F841
 
     ret = GEMMReduceScatterTensorParallelContext(
         rank=rank,
