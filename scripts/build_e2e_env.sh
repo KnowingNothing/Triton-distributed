@@ -25,13 +25,16 @@
 
 #!/bin/bash
 
-export http_proxy=http://sys-proxy-rd-relay.byted.org:3128  https_proxy=http://sys-proxy-rd-relay.byted.org:3128  no_proxy=code.byted.org
+export http_proxy=http://sys-proxy-rd-relay.byted.org:3128
+export https_proxy=http://sys-proxy-rd-relay.byted.org:3128
+export no_proxy=code.byted.org
 
-# --- Dynamically detect CUDA version ---
-cuda_version_full=""
-parsed_cuda_slug="" # Slug for the URL, e.g., cu121
-
+# --- NVIDIA CUDA ---
 if command -v nvcc &> /dev/null; then
+    echo "NVIDIA CUDA compiler (nvcc) found. Proceeding with CUDA-specific installations."
+    cuda_version_full=""
+    parsed_cuda_slug=""
+
     cuda_version_output=$(nvcc --version)
     if [[ $cuda_version_output =~ release[[:space:]]+([0-9]+)\.([0-9]+) ]]; then
         cuda_major="${BASH_REMATCH[1]}"
@@ -44,80 +47,88 @@ if command -v nvcc &> /dev/null; then
         echo "Output was: $cuda_version_output"
         exit 1
     fi
-else
-    echo "Error: 'nvcc' command not found. Cannot automatically detect CUDA version."
-    echo "If CUDA is installed, please ensure 'nvcc' is in your PATH."
-    exit 1
-fi
 
-# --- Dynamically detect PyTorch version ---
-pytorch_version_full=""
-parsed_pytorch_slug="" # Slug for the URL, e.g., torch2.1
+    pytorch_version_full=""
+    parsed_pytorch_slug=""
 
-PY_EXECUTABLE=""
-if command -v python3 &> /dev/null; then
-    PY_EXECUTABLE="python3"
-elif command -v python &> /dev/null; then
-    PY_EXECUTABLE="python"
-else
-    echo "Error: Neither 'python3' nor 'python' command found. Cannot detect PyTorch version."
-    exit 1
-fi
-
-pytorch_version_output=$($PY_EXECUTABLE -c "import sys; sys.path.append('.'); import torch; print(torch.__version__)" 2>/dev/null)
-if [[ -n "$pytorch_version_output" ]]; then
-    # Remove +cudaX.X or .dev suffixes etc.
-    pytorch_cleaned_version=$(echo "$pytorch_version_output" | sed -E 's/\+.*//' | sed -E 's/\.dev.*//')
-    if [[ $pytorch_cleaned_version =~ ^([0-9]+)\.([0-9]+) ]]; then # Match start of string for major.minor
-        torch_major="${BASH_REMATCH[1]}"
-        torch_minor="${BASH_REMATCH[2]}"
-        # We care about major.minor for the slug
-        parsed_pytorch_slug="torch${torch_major}.${torch_minor}"
-        echo "Detected PyTorch version: $pytorch_version_output (Using slug: $parsed_pytorch_slug)"
+    PY_EXECUTABLE=""
+    if command -v python3 &> /dev/null; then
+        PY_EXECUTABLE="python3"
+    elif command -v python &> /dev/null; then
+        PY_EXECUTABLE="python"
     else
-        echo "Error: Could not parse major.minor PyTorch version from '$pytorch_version_output'."
+        echo "Error: Neither 'python3' nor 'python' command found. Cannot detect PyTorch version."
         exit 1
     fi
+
+    pytorch_version_output=$($PY_EXECUTABLE -c "import sys; sys.path.append('.'); import torch; print(torch.__version__)" 2>/dev/null)
+    if [[ -n "$pytorch_version_output" ]]; then
+        pytorch_cleaned_version=$(echo "$pytorch_version_output" | sed -E 's/\+.*//' | sed -E 's/\.dev.*//')
+        if [[ $pytorch_cleaned_version =~ ^([0-9]+)\.([0-9]+) ]]; then
+            torch_major="${BASH_REMATCH[1]}"
+            torch_minor="${BASH_REMATCH[2]}"
+            parsed_pytorch_slug="torch${torch_major}.${torch_minor}"
+            echo "Detected PyTorch version: $pytorch_version_output (Using slug: $parsed_pytorch_slug)"
+        else
+            echo "Error: Could not parse major.minor PyTorch version from '$pytorch_version_output'."
+            exit 1
+        fi
+    else
+        echo "Error: Could not import PyTorch or get its version."
+        echo "Please ensure PyTorch is installed in the current Python environment ($PY_EXECUTABLE)."
+        exit 1
+    fi
+
+    # --- flashinfer and flash-attn ---
+    if [[ -z "$parsed_cuda_slug" || -z "$parsed_pytorch_slug" ]]; then
+        echo "Error: CUDA slug or PyTorch slug could not be determined. Exiting."
+        exit 1
+    fi
+
+    echo "Installing CUDA-specific libraries..."
+    flashinfer_whl_url="https://flashinfer.ai/whl/${parsed_cuda_slug}/${parsed_pytorch_slug}/"
+    pip install flashinfer-python -i "$flashinfer_whl_url"
+    pip install flash-attn --no-build-isolation
+    echo "Finished installing CUDA-specific libraries."
+# --- AMD ROCm ---
+elif command -v hipcc &> /dev/null; then
+    echo "AMD ROCm compiler (hipcc) found. Proceeding with ROCm-specific installations."
+    echo "Note: flashinfer does not currently support ROCm and will be skipped."
+    echo "Finished installing ROCm-specific libraries."
 else
-    echo "Error: Could not import PyTorch or get its version."
-    echo "Please ensure PyTorch is installed in the current Python environment ($PY_EXECUTABLE)."
-    exit 1
+    echo "NVIDIA CUDA compiler (nvcc) and AMD ROCm compiler (hipcc) not found."
+    echo "Assuming a non-GPU environment. Skipping flashinfer and flash-attn installation."
 fi
 
-# --- Build URL and install ---
-if [[ -z "$parsed_cuda_slug" || -z "$parsed_pytorch_slug" ]]; then
-    echo "Error: CUDA slug or PyTorch slug could not be determined. Exiting."
-    exit 1
-fi
+# --- Install common packages ---
+echo "Installing common packages: transformers and numpy..."
+pip install transformers==4.51.3 numpy==1.26.4 termcolor
 
-flashinfer_whl_url="https://flashinfer.ai/whl/${parsed_cuda_slug}/${parsed_pytorch_slug}/"
-pip install flashinfer-python -i "$flashinfer_whl_url"
-pip install flash-attn --no-build-isolation
-pip install transformers==4.51.3 numpy==1.26
-
+# --- Download Hugging Face model ---
 MODEL_NAME="Qwen/Qwen3-32B"
 while true; do
-  echo "Download: $MODEL_NAME (timeout: 60s)..."
+  echo "Attempting to download model: $MODEL_NAME (timeout: 120s)..."
+  # Use timeout to prevent the script from hanging indefinitely.
   timeout 120s huggingface-cli download "$MODEL_NAME"
 
   EXIT_CODE=$?
 
   if [ $EXIT_CODE -eq 0 ]; then
-    echo "model '$MODEL_NAME' download successfully!"
+    echo "Model '$MODEL_NAME' downloaded successfully!"
     break
   elif [ $EXIT_CODE -eq 124 ]; then
-    echo "Timeout!"
+    echo "Download timed out. Retrying in 5 seconds..."
   else
-
     echo "Download failed with exit code $EXIT_CODE. Retrying in 5 seconds..."
   fi
 
   sleep 5
 done
 
+# --- Final check ---
 if [[ $? -eq 0 ]]; then
-    echo "e2e env installation successful."
+    echo "E2E environment installation successful."
 else
-    echo "Error: e2e env installation failed."
+    echo "Error: E2E environment installation failed."
     exit 1
 fi

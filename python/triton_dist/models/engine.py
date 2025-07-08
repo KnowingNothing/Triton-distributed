@@ -28,18 +28,19 @@ import torch.distributed
 from tqdm import tqdm
 from datetime import datetime
 
-from triton_dist.layers.nvidia.kv_cache import KV_Cache
+from triton_dist.models.kv_cache import KV_Cache
 from triton_dist.models import AutoLLM, AutoTokenizer, ModelConfig
 from triton_dist.models.utils import logger, sample_token
 
 
 class Engine:
 
-    def __init__(self, model_config: ModelConfig, temperature: float, top_p: float, verbose: bool = False):
+    def __init__(self, model_config: ModelConfig, temperature: float, top_p: float, verbose: bool = False, group=None):
 
         self.logger = logger
         self.logger.log("✅ Start Engine...", "success")
         self.model_config = model_config
+        self.group = group
 
         self.temperature = temperature
         self.top_p = top_p
@@ -52,7 +53,7 @@ class Engine:
 
     def _init_model(self):
         self.logger.log(f"Initializing model {self.model_config}...", "info")
-        self.model = AutoLLM.from_pretrained(self.model_config)
+        self.model = AutoLLM.from_pretrained(self.model_config, self.group)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_config)
         self.logger.log(f"Model {self.model_config} initialized!", "success")
 
@@ -181,3 +182,6 @@ class Engine:
         output_ids = torch.cat(output_ids, dim=1).cpu()
         if self.verbose:
             print(self.tokenizer.batch_decode(output_ids, skip_special_tokens=True))
+
+        del self.model_launch
+        torch.distributed.destroy_process_group()

@@ -30,9 +30,23 @@ import gc
 from transformers import Qwen3ForCausalLM, Qwen3Config
 from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer
 
-from triton_dist.layers.nvidia.tp_mlp import TP_MLP
-from triton_dist.layers.nvidia.tp_attn import TP_Attn, layer_norm, _set_cos_sin_cache
-from triton_dist.layers.nvidia.kv_cache import KV_Cache
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not available. Please ensure you have a compatible GPU and CUDA installed.")
+try:
+    if torch.version.cuda:
+        from triton_dist.layers.nvidia.tp_mlp import TP_MLP
+        from triton_dist.layers.nvidia.tp_attn import TP_Attn, layer_norm, _set_cos_sin_cache
+        from triton_dist.models.kv_cache import KV_Cache
+        PLATFORM = 'nvidia'
+    elif torch.version.hip:
+        from triton_dist.layers.amd.tp_mlp import TP_MLP
+        from triton_dist.layers.amd.tp_attn import TP_Attn, layer_norm, _set_cos_sin_cache
+        from triton_dist.models.kv_cache import KV_Cache
+        PLATFORM = 'amd'
+except ImportError as e:
+    raise ImportError(
+        "Required Triton Dist layers not found. Please ensure you have the correct Triton Dist package installed."
+    ) from e
 
 
 class Qwen3Layer:
@@ -42,7 +56,7 @@ class Qwen3Layer:
     It initializes the parameters and sets the forward pass method based on the mode.
     """
 
-    def __init__(self, layer_idx) -> None:
+    def __init__(self, layer_idx, group) -> None:
 
         self.attn = None
         self.mlp = None
@@ -52,12 +66,13 @@ class Qwen3Layer:
         self.post_norm_w = None
 
         self.layer_idx = layer_idx
+        self.group = group
 
     def init_parameters(self, hf_layer: Qwen3DecoderLayer, rank: int, world_size: int):
-        self.mlp = TP_MLP(rank=rank, world_size=world_size)
+        self.mlp = TP_MLP(rank=rank, world_size=world_size, group=self.group)
         self.mlp._init_parameters(hf_layer.mlp)
 
-        self.attn = TP_Attn(rank=rank, world_size=world_size)
+        self.attn = TP_Attn(rank=rank, world_size=world_size, group=self.group)
         self.attn._init_parameters(hf_layer.self_attn)
 
         self.input_norm_eps = hf_layer.input_layernorm.variance_epsilon
@@ -102,7 +117,7 @@ class Qwen3:
     It supports both torch and triton_dist modes for forward pass.
     """
 
-    def __init__(self, model_config) -> None:
+    def __init__(self, model_config, group) -> None:
         self.dtype = model_config.dtype
         self.config = Qwen3Config.from_pretrained(model_config.model_name, local_files_only=model_config.local_only)
         self.model_name = model_config.model_name
@@ -117,6 +132,7 @@ class Qwen3:
 
         self.rank = model_config.rank
         self.world_size = model_config.world_size
+        self.group = group
 
         self.init_parameters()
         self.set_fwd()
@@ -136,7 +152,7 @@ class Qwen3:
         self.layers: list[Qwen3Layer] = []
 
         for idx, hf_layer in enumerate(hf_model.model.layers):
-            layer = Qwen3Layer(idx)
+            layer = Qwen3Layer(idx, self.group)
             layer.init_parameters(hf_layer=hf_layer, rank=self.rank, world_size=self.world_size)
             self.layers.append(layer)
             hf_model.model.layers[idx] = None
@@ -150,10 +166,14 @@ class Qwen3:
         BLOCK_N = 128
         BLOCK_K = 128
         stages = 3
-        self.ag_intranode_stream = torch.cuda.Stream(priority=-1)
+        if PLATFORM == 'nvidia':
+            self.ag_intranode_stream = torch.cuda.Stream(priority=-1)
+        elif PLATFORM == 'amd':
+            self.ag_intranode_stream = [torch.cuda.Stream(priority=-1) for i in range(self.world_size)]
+        else:
+            raise RuntimeError(f"Unsupported platform: {PLATFORM}. Supported platforms are 'nvidia' and 'amd'.")
         self.gemm_stream = torch.cuda.Stream()
         self.ag_internode_stream = torch.cuda.Stream()
-
         self.layers[0].attn._init_ctx(max_M=max_M, gemm_stream=self.gemm_stream,
                                       ag_intranode_stream=self.ag_intranode_stream,
                                       ag_internode_stream=self.ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
@@ -162,7 +182,6 @@ class Qwen3:
                                      ag_intranode_stream=self.ag_intranode_stream,
                                      ag_internode_stream=self.ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
                                      BLOCK_K=BLOCK_K, stages=stages)
-
         for layer in self.layers[1:]:
             layer.attn.ag_ctx = self.layers[0].attn.ag_ctx
             layer.attn.rs_ctx = self.layers[0].attn.rs_ctx

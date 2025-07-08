@@ -29,7 +29,14 @@ from datetime import datetime
 import logging
 import numpy as np
 import random
-import flashinfer
+
+if torch.version.cuda:
+    PLATFORM = 'nvidia'
+    import flashinfer
+elif torch.version.hip:
+    PLATFORM = 'amd'
+else:
+    raise RuntimeError("Unsupported platform: neither CUDA nor HIP is available.")
 
 
 class MyLogger:
@@ -69,13 +76,21 @@ def seed_everything(seed):
 
 @torch.inference_mode()
 def sample_token(logits: torch.Tensor, temperature=0.6, top_p=0.95, top_k=-1):
-    if temperature == 0.0:
-        token = logits.argmax(dim=-1, keepdim=True)
-    else:
-        if temperature != 1.0:
-            logits = logits / temperature
-        assert top_k == -1
-        probs = logits.softmax(dim=-1)
-        token = flashinfer.sampling.top_p_sampling_from_probs(probs=probs, top_p=top_p)
-        token = token.unsqueeze(-1)
+    if PLATFORM == 'nvidia':
+        if temperature == 0.0:
+            token = logits.argmax(dim=-1, keepdim=True)
+        else:
+            if temperature != 1.0:
+                logits = logits / temperature
+            assert top_k == -1
+            probs = logits.softmax(dim=-1)
+            token = flashinfer.sampling.top_p_sampling_from_probs(probs=probs, top_p=top_p)
+            token = token.unsqueeze(-1)
+    elif PLATFORM == 'amd':
+        if temperature == 0.0:
+            token = logits.argmax(dim=-1, keepdim=True)
+        else:
+            raise NotImplementedError(
+                "AMD platform does not support temperature sampling yet. Please use temperature=0.0 for argmax sampling."
+            )
     return token

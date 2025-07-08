@@ -37,9 +37,9 @@ class AutoLLM:
     }
 
     @staticmethod
-    def from_pretrained(config: ModelConfig):
+    def from_pretrained(config: ModelConfig, group=None):
         if config.model_name in AutoLLM.model_mapping:
-            return AutoLLM.model_mapping[config.model_name](config)
+            return AutoLLM.model_mapping[config.model_name](config, group)
         else:
             raise ValueError(f"Model {config.model_name} not found in model mapping, "
                              f"available models: {AutoLLM.model_mapping.keys()}")

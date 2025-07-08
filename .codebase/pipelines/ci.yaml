@@ -31,7 +31,7 @@ jobs:
       - name: build
         commands:
           - python3 -m pip install cmake==3.26 ninja wheel lit numpy plotly pandas pytest scipy==1.10.1 matplotlib tabulate pybind11 setuptools==69.0.0 tqdm
-          - python3 -m pip install -i https://test.pypi.org/simple hip-python>=6.3.0
+          - python3 -m pip install -i https://test.pypi.org/simple "hip-python>=6.3.0"
           - git submodule update --init --recursive
           # some unknown proxy issue caused apt install fail for some packages
           - unset http_proxy
@@ -52,6 +52,20 @@ jobs:
           - bash ./scripts/launch_amd.sh ./tutorials/09-AMD-overlapping-allgather-gemm.py
           # 10
           - bash ./scripts/launch_amd.sh ./tutorials/10-AMD-overlapping-gemm-reduce-scatter.py
+
+      - name: e2e tests
+        commands:
+          - bash ./scripts/build_e2e_env.sh
+          - CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_tp_mlp.py --M 4096 --model Qwen/Qwen3-32B
+          - CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_tp_mlp.py --M 4096 --model Qwen/Qwen3-32B --per_op
+          - CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_tp_attn.py --bsz 32 --seq_len 128 --model Qwen/Qwen3-32B --mode prefill
+          - CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_tp_attn.py --bsz 4096 --seq_len 128 --model Qwen/Qwen3-32B --mode decode
+          - CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_tp_e2e.py --bsz 16 --seq_len 256 --model Qwen/Qwen3-32B --check
+          - CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_tp_e2e.py --bsz 32 --seq_len 128 --model Qwen/Qwen3-32B --mode prefill
+          - CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_tp_e2e.py --bsz 4096 --seq_len 128 --model Qwen/Qwen3-32B --mode decode
+          - CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_e2e_inference.py --bsz 4096 --gen_len 128 --max_length 150
+          - CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_e2e_inference.py --bsz 4096 --gen_len 128 --max_length 150 --triton_dist
+
 
   triton-nvidia-pre-merge:
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3

@@ -28,7 +28,7 @@ Dependencies with other versions may also work well, but this is not guaranteed.
     ```
     for AMD GPU, use torch with rocm support and hip-python
     ```sh
-    python3 -m pip install -i https://test.pypi.org/simple hip-python>=6.3.0
+    python3 -m pip install -i https://test.pypi.org/simple "hip-python>=6.3.0"
     ```
 4. Apply NVSHMEM fix
 (Disclaimer: This step is because of NVSHMEM license requirements, it is illegal to release any modified codes or patch.)

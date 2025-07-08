@@ -22,6 +22,7 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
+import os
 import torch
 import dataclasses
 import triton
@@ -33,9 +34,7 @@ from triton_dist.utils import HIP_CHECK
 from typing import Optional, List
 import pyrocshmem
 from triton_dist.kernels.amd.common_ops import (
-    barrier_all_ipc,
-    barrier_all_on_stream,
-)
+    barrier_all_ipc, )
 
 
 def cp_engine_producer_all_gather_full_mesh_push_multi_stream(
@@ -100,41 +99,32 @@ def cp_engine_producer_all_gather_full_mesh_push_multi_stream(
             HIP_CHECK(cp_res)
 
 
-@triton.autotune(
-    configs=[
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'waves_per_eu': 2,
-                'kpack': 1, 'matrix_instr_nonkdim': 16
-            }, num_warps=8, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'waves_per_eu': 0},
-            num_warps=8, num_stages=2),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'waves_per_eu': 2,
-                'kpack': 1, 'matrix_instr_nonkdim': 16
-            }, num_warps=8, num_stages=2),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'waves_per_eu': 0,
-                'kpack': 1
-            }, num_warps=8, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'waves_per_eu': 0},
-            num_warps=8, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'waves_per_eu': 2},
-            num_warps=8, num_stages=2),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'waves_per_eu': 0,
-                'kpack': 1
-            }, num_warps=8, num_stages=2),
-    ],
-    key=['M', 'N', 'K'],
-    use_cuda_graph=True,
-)
+def matmul_get_configs():
+    configs = []
+    mma_instr_sizes = [16, None]
+    kpack_options = [1, None]
+    for BM in [128, 256]:
+        for BN in [128, 256]:
+            for BK in [64, 128]:
+                for WAVES in [0, 2]:
+                    for s in [2, 3, 4]:
+                        for w in [4, 8]:
+                            for mma_size in mma_instr_sizes:
+                                for kpack in kpack_options:
+                                    kwargs = {'num_stages': s, 'num_warps': w}
+                                    first_arg = {
+                                        'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 1,
+                                        'waves_per_eu': WAVES
+                                    }
+                                    if kpack is not None:
+                                        first_arg['kpack'] = kpack
+                                    if mma_size is not None:
+                                        first_arg['matrix_instr_nonkdim'] = mma_size
+                                    configs.append(triton.Config(first_arg, **kwargs))
+    return configs
+
+
+@triton.autotune(configs=matmul_get_configs(), key=["M", "N", "K"])
 @triton.heuristics({'EVEN_K': lambda args: args['K'] % args['BLOCK_SIZE_K'] == 0})
 @triton.jit
 def kernel_consumer_gemm_persistent(
@@ -322,6 +312,9 @@ def ag_gemm_intra_node_op(a, b, c, rank, num_ranks, workspace_tensors, one, barr
 
     current_stream.wait_stream(gemm_stream)
 
+    if os.getenv('CUDA_GRAPH') in ['1', 'true', 'True']:
+        for ag_stream in ag_streams:
+            current_stream.wait_stream(ag_stream)
     return compiled
 
 
@@ -398,16 +391,13 @@ def create_ag_gemm_intra_node_context(max_M, N, K, input_dtype, output_dtype, ra
     comm_bufs[rank].fill_(0)
     comm_buf_ptr = torch.tensor([t.data_ptr() for t in comm_bufs], device=torch.cuda.current_device(),
                                 requires_grad=False)
-
     current_stream = torch.cuda.current_stream()
 
     torch.cuda.synchronize()
-    barrier_all_on_stream(rank, num_ranks, comm_buf_ptr, current_stream)
-
+    torch.distributed.barrier()
     _ag_streams = [torch.cuda.Stream(priority=-1) for i in range(num_ranks)] if ag_streams is None else ag_streams
     _gemm_stream = current_stream if gemm_stream is None else gemm_stream
-    one = torch.ones((1024, ), dtype=torch.int32).cuda()
-
+    one = torch.ones((1024, ), dtype=torch.int32, device=torch.cuda.current_device())
     ret = AllGatherGEMMTensorParallelContext(
         rank=rank,
         num_ranks=num_ranks,
@@ -426,7 +416,6 @@ def create_ag_gemm_intra_node_context(max_M, N, K, input_dtype, output_dtype, ra
         stages=stages,
         autotune=autotune,
     )
-
     return ret
 
 
