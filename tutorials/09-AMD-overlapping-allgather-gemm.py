@@ -38,7 +38,7 @@ In doing so, you will learn about:
 .. code-block:: bash
 
     # To run this tutorial
-    bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/tutorials/09-AMD-overlapping-allgather-gemm.py
+    bash scripts/launch_amd.sh tutorials/09-AMD-overlapping-allgather-gemm.py
 
 """
 

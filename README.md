@@ -140,7 +140,7 @@ def all_to_all_kernel(
         )
 ```
 
-Also, users can combine the communication part with computation part to design overlapping kernels. We have provided example implementations in `third_party/distributed/distributed/kernels`.
+Also, users can combine the communication part with computation part to design overlapping kernels. We have provided example implementations in `python/triton_dist/kernels`.
 
 ## Performance
 Triton-distributed can achieve comparable or better performance than hand-tuned libraries.
@@ -192,14 +192,14 @@ Computation
 Communication
 - [x] NVLink
 - [x] IB
-- [ ] PCIe 
+- [ ] PCIe
 ### Performance
 - [ ] Performance report
 
 ## License
 The Triton-distributed project is under MIT license.
 Part of our code is under Apache-2.0 License:
-- `third_party/distributed/distributed/kernels/flash_decode.py`
+- `python/triton_dist/kernels/nvidia/flash_decode.py`
 
 Triton's original code is partially under Apache-2.0 License, these files include:
 - `include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`

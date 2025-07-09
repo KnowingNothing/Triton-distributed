@@ -29,11 +29,11 @@ import torch
 import torch.distributed
 from functools import partial
 from transformers import AutoModelForCausalLM
+import nvshmem
 
-from triton_dist import pynvshmem
 from triton_dist.layers.nvidia.tp_attn import TP_Attn, _set_cos_sin_cache
 from triton_dist.models.kv_cache import KV_Cache
-from triton_dist.utils import perf_func, dist_print, group_profile
+from triton_dist.utils import perf_func, dist_print, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream
 
 THRESHOLD_MAP = {
     torch.float16: 1e-2,
@@ -136,7 +136,7 @@ if __name__ == "__main__":
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
+    init_nvshmem_by_torch_process_group(TP_GROUP)
     DTYPE = DTYPE_MAP[args.dtype]
     ATOL = THRESHOLD_MAP[DTYPE]
     RTOL = THRESHOLD_MAP[DTYPE]
@@ -237,12 +237,12 @@ if __name__ == "__main__":
         with group_profile("tp_attn_prefill", profile, group=TP_GROUP):
             torch.cuda.synchronize()
             _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
             torch.cuda.synchronize()
             _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
         dist_print(f"torch attn prefill #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
@@ -255,7 +255,7 @@ if __name__ == "__main__":
         del torch_graph, triton_dist_graph, mempool
 
     else:
-        # decoce
+        # decode
         # torch decode
         x = rand_tensor([BSZ, 1, K], dtype=DTYPE)
         position_ids = torch.arange(SEQ_LEN, SEQ_LEN + 1, dtype=torch.int64, device="cuda").unsqueeze(0).expand(BSZ, -1)
@@ -303,12 +303,12 @@ if __name__ == "__main__":
         with group_profile("tp_attn_decode", profile, group=TP_GROUP):
             torch.cuda.synchronize()
             _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
             torch.cuda.synchronize()
             _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
         dist_print(f"torch attn decode #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
@@ -320,4 +320,6 @@ if __name__ == "__main__":
                        f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         del torch_graph, triton_dist_graph, mempool
 
+    attn.finalize()
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group()

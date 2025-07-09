@@ -27,8 +27,6 @@ import triton
 import triton.language as tl
 import triton_dist.language as dl
 
-from triton_dist import pynvshmem
-
 from typing import List
 import math
 
@@ -37,8 +35,7 @@ from cuda import cudart
 
 from triton_dist.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import __syncthreads, tid
-from triton_dist.utils import CUDA_CHECK
-from triton_dist.kernels.nvidia.common_ops import barrier_all_on_stream
+from triton_dist.utils import CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors
 
 ##################################################
 
@@ -65,22 +62,28 @@ def create_sp_ag_attention_context_inter_node(
     head_dim,
     input_dtype,
     output_dtype,
-    local_rank,
+    rank,
+    local_world_size,
     world_size,
     device,
 ):
-    ag_k_buffers: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-        [batch_size * max_seqlen_k, kv_head, head_dim],
-        input_dtype,
+    local_rank = rank % local_world_size
+    ag_k_buffers: List[torch.Tensor] = nvshmem_create_tensors(
+        shape=(batch_size * max_seqlen_k, kv_head, head_dim),
+        dtype=input_dtype,
+        rank=rank,
+        local_world_size=local_world_size,
     )
-    ag_k_buffer: torch.Tensor = ag_k_buffers[local_rank]
+    ag_k_buffer = ag_k_buffers[local_rank]
     ag_k_buffers_ptr: torch.Tensor = torch.tensor([t.data_ptr() for t in ag_k_buffers], device=device)
 
-    ag_v_buffers: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-        [batch_size * max_seqlen_k, kv_head, head_dim],
-        input_dtype,
+    ag_v_buffers: List[torch.Tensor] = nvshmem_create_tensors(
+        shape=(batch_size * max_seqlen_k, kv_head, head_dim),
+        dtype=input_dtype,
+        rank=rank,
+        local_world_size=local_world_size,
     )
-    ag_v_buffer: torch.Tensor = ag_v_buffers[local_rank]
+    ag_v_buffer = ag_v_buffers[local_rank]
     ag_v_buffers_ptr: torch.Tensor = torch.tensor([t.data_ptr() for t in ag_v_buffers], device=device)
 
     attn_output_buffer = torch.empty(
@@ -91,10 +94,7 @@ def create_sp_ag_attention_context_inter_node(
         device=device,
     )
 
-    signal_buffer: torch.Tensor = pynvshmem.nvshmem_create_tensor(
-        [world_size * batch_size],
-        torch.uint64,
-    )
+    signal_buffer: torch.Tensor = nvshmem_create_tensor((world_size * batch_size, ), NVSHMEM_SIGNAL_DTYPE)
 
     # stream for copy
     ag_stream = torch.cuda.Stream()
@@ -242,7 +242,7 @@ def cp_engine_producer_kv_all_gather(
             v_src_ptr = v_shard.data_ptr() + byte_start // world_size
             _cp_engine_copy_data(v_dst_ptr, v_src_ptr, cp_size, compute_stream)
 
-    barrier_all_on_stream(None, compute_stream)
+    nvshmem_barrier_all_on_stream(compute_stream)
     ag_stream.wait_stream(compute_stream)
 
     with torch.cuda.stream(ag_stream):
@@ -251,7 +251,7 @@ def cp_engine_producer_kv_all_gather(
         all_gather_push_2d_kernel[(world_size * batch_size, )](v_buffer, byte_per_token, signal_buffer, cu_seqlens_k,
                                                                nnodes, world_size, rank, 2, batch_size)
 
-    barrier_all_on_stream(None, ag_stream)
+    nvshmem_barrier_all_on_stream(ag_stream)
     compute_stream.wait_stream(ag_stream)
 
 
@@ -591,4 +591,4 @@ def fused_sp_ag_attn_inter_node(
         )
 
     compute_stream.wait_stream(ctx.ag_stream)
-    barrier_all_on_stream(None, compute_stream)
+    nvshmem_barrier_all_on_stream(compute_stream)

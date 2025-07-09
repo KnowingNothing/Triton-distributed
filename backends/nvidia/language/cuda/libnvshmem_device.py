@@ -28,6 +28,7 @@ from triton_dist.language.core import extern_call
 import sys
 
 pi_u64_t = tl.core.pointer_type(tl.core.dtype("uint64"))
+pi_i64_t = tl.core.pointer_type(tl.core.dtype("int64"))
 
 
 def _pointer_type_hash(self):
@@ -494,7 +495,7 @@ def _putmem_signal_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, SCOP
             tl.cast(dest, tl.pointer_type(tl.void), _semantic=_semantic),
             tl.cast(source, tl.pointer_type(tl.void), _semantic=_semantic),
             tl.cast(nbytes, tl.uint64, _semantic=_semantic),
-            sig_addr,  # no cast: pointer type should be aligned
+            tl.cast(sig_addr, pi_u64_t, _semantic=_semantic),  # TODO(houqi.1993) should be uint64.
             tl.cast(signal, tl.uint64, _semantic=_semantic),
             tl.cast(sig_op, tl.int32, _semantic=_semantic),
             tl.cast(pe, tl.int32, _semantic=_semantic),
@@ -563,7 +564,7 @@ def signal_op(sig_addr, signal, sig_op, pe, _semantic=None):
         "libnvshmem_device",
         "",
         [
-            sig_addr,  # no cast: pointer type should be aligned
+            tl.cast(sig_addr, pi_u64_t, _semantic=_semantic),  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _semantic=_semantic),
             tl.cast(sig_op, tl.int32, _semantic=_semantic),
             tl.cast(pe, tl.int32, _semantic=_semantic),
@@ -581,12 +582,13 @@ def signal_op(sig_addr, signal, sig_op, pe, _semantic=None):
 
 @core.extern
 def signal_wait_until(sig_addr, cmp_, cmp_val, _semantic=None):
-    tl.static_assert(sig_addr.dtype == pi_u64_t, "sig_addr should be a pointer of uint64_t", _semantic=_semantic)
+    tl.static_assert(sig_addr.dtype == pi_u64_t or sig_addr.dtype == pi_i64_t,
+                     "sig_addr should be a pointer of uint64_t/int64_t", _semantic=_semantic)
     return extern_call(
         "libnvshmem_device",
         "",
         [
-            sig_addr,
+            tl.cast(sig_addr, pi_u64_t, _semantic=_semantic),
             tl.cast(cmp_, tl.int32, _semantic=_semantic),
             tl.cast(cmp_val, tl.uint64, _semantic=_semantic),
         ],  # no cast
@@ -910,7 +912,7 @@ def _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, 
             tl.cast(dest, tl.pointer_type(tl.void), _semantic=_semantic),
             tl.cast(source, tl.pointer_type(tl.void), _semantic=_semantic),
             tl.cast(nbytes, tl.uint64, _semantic=_semantic),
-            sig_addr,  # no cast: pointer type should be aligned
+            tl.cast(sig_addr, pi_u64_t, _semantic=_semantic),  # no cast: pointer type should be aligned
             tl.cast(signal, tl.uint64, _semantic=_semantic),
             tl.cast(sig_op, tl.int32, _semantic=_semantic),
             tl.cast(pe, tl.int32, _semantic=_semantic),

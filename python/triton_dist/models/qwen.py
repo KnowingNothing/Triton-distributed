@@ -58,8 +58,8 @@ class Qwen3Layer:
 
     def __init__(self, layer_idx, group) -> None:
 
-        self.attn = None
-        self.mlp = None
+        self.attn: TP_Attn = None
+        self.mlp: TP_MLP = None
         self.input_norm_eps = None
         self.input_norm_w = None
         self.post_norm_eps = None
@@ -136,6 +136,7 @@ class Qwen3:
 
         self.init_parameters()
         self.set_fwd()
+        self.use_ar = False
 
     def set_fwd(self, mode: str = 'torch'):
         for layer in self.layers:
@@ -188,6 +189,8 @@ class Qwen3:
             layer.mlp.ag_ctx = self.layers[0].mlp.ag_ctx
             layer.mlp.rs_ctx = self.layers[0].mlp.rs_ctx
 
+        self.use_ar = False
+
     def init_triton_dist_AR_ctx(self, max_M: int = 128, ar_method: str = 'two_shot_ld_reduce'):
         self.layers[0].attn._init_AR_ctx(max_M=max_M, method=ar_method, dtype=self.dtype)
         self.layers[0].mlp._init_AR_ctx(M=max_M, method=ar_method, dtype=self.dtype)
@@ -199,6 +202,11 @@ class Qwen3:
             layer.mlp.ctx = self.layers[0].mlp.ctx
             layer.mlp.ar_method = self.layers[0].mlp.ar_method
             layer.mlp.ar_output = self.layers[0].mlp.ar_output
+        self.use_ar = True
+
+    def finalize(self):
+        self.layers[0].attn.finalize()
+        self.layers[0].mlp.finalize()
 
     @torch.inference_mode()
     def inference(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, kv_cache: KV_Cache,

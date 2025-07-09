@@ -22,21 +22,19 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-import torch
-
-from triton_dist import pynvshmem
-
 import argparse
-import os
-import numpy as np
 import datetime
+import os
 import random
-
-from itertools import accumulate
 from functools import partial
+from itertools import accumulate
 
-from triton_dist.utils import get_torch_prof_ctx, perf_func, dist_print
-from triton_dist.kernels.nvidia import fused_sp_ag_attn_inter_node, create_sp_ag_attention_context_inter_node
+import numpy as np
+import torch
+import nvshmem.core
+from triton_dist.kernels.nvidia import (create_sp_ag_attention_context_inter_node, fused_sp_ag_attn_inter_node)
+from triton_dist.utils import (dist_print, get_torch_prof_ctx, init_nvshmem_by_torch_process_group, perf_func,
+                               nvshmem_barrier_all_on_stream)
 
 ##################################################
 
@@ -95,7 +93,8 @@ class FusedSequenceParallelAttn(torch.nn.Module):
             self.head_dim,
             self.input_dtype,
             self.output_dtype,
-            self.local_rank,
+            self.rank,
+            self.local_world_size,
             self.world_size,
             self.device,
         )
@@ -385,7 +384,7 @@ if __name__ == "__main__":
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
+    init_nvshmem_by_torch_process_group(TP_GROUP)
 
     rank = TP_GROUP.rank()
     world_size = TP_GROUP.size()
@@ -478,13 +477,13 @@ if __name__ == "__main__":
                 partial(torch_module.forward, q_shard, k_shard, v_shard, cu_seqlens_q, cu_seqlens_k), iters=iters,
                 warmup_iters=warmup_iters)
 
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
             output, perf = perf_func(partial(module.forward, q_shard, k_shard, v_shard, cu_seqlens_q, cu_seqlens_k),
                                      iters=iters, warmup_iters=warmup_iters)
 
-        pynvshmem.nvshmem_barrier_all()
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
         torch.cuda.synchronize()
 
     if args.profile:
@@ -502,4 +501,5 @@ if __name__ == "__main__":
     dist_print(f"dist-triton #{RANK}", perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
     dist_print(f"torch #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group()

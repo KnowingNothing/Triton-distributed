@@ -28,11 +28,12 @@ import torch.distributed
 
 import argparse
 import os
+import nvshmem.core
 
 from triton_dist.kernels.nvidia import (ag_gemm, create_ag_gemm_context, gemm_persistent)
 from triton_dist.kernels.nvidia.allgather import cp_engine_producer_all_gather_intra_node, cp_engine_producer_all_gather_inter_node
-from triton_dist.utils import (get_torch_prof_ctx, initialize_distributed, TP_GROUP, perf_func, dist_print)
-from triton_dist import pynvshmem
+from triton_dist.utils import (get_torch_prof_ctx, initialize_distributed, TP_GROUP, perf_func, dist_print,
+                               nvshmem_barrier_all_on_stream)
 
 dtype = torch.float16
 
@@ -92,7 +93,7 @@ def perf_test(M, config, pg):
 
     def _triton_ag_func():  # this does not include the local copy latency, which is included in ag_gemm
         current_stream = torch.cuda.current_stream()
-        pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
+        nvshmem_barrier_all_on_stream(current_stream)
 
         if ctx.is_multinode:
             ctx.ag_internode_stream.wait_stream(current_stream)
@@ -104,14 +105,14 @@ def perf_test(M, config, pg):
                 ctx.rank,
                 ctx.num_ranks,
                 A,
-                ctx.workspace_tensors,
-                ctx.barrier_tensors,
+                ctx.symm_workspaces,
+                ctx.symm_barriers,
                 ctx.ag_intranode_stream,
                 for_correctness=ctx.for_correctness,
                 all_gather_method=ctx.all_gather_method,
             )
         else:
-            cp_engine_producer_all_gather_inter_node(A, ctx.workspace_tensors, ctx.barrier_tensors, ctx.barrier_target,
+            cp_engine_producer_all_gather_inter_node(A, ctx.symm_workspaces, ctx.symm_barriers, ctx.barrier_target,
                                                      ctx.rank, ctx.num_local_ranks, ctx.num_ranks,
                                                      ctx.ag_intranode_stream, ctx.ag_internode_stream,
                                                      for_correctness=ctx.for_correctness,
@@ -131,7 +132,7 @@ def perf_test(M, config, pg):
     for i in range(5):
         A.copy_(torch.randn([M_per_rank, K], dtype=dtype, device="cuda"))
         B.copy_(torch.randn([N_per_rank, K], dtype=dtype, device="cuda"))
-        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
         torch.cuda.synchronize()
         C = _triton_func()
 
@@ -227,4 +228,5 @@ if __name__ == "__main__":
                 )
         print(f"csv file is dumped into {csv_file}")
 
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group()

@@ -30,12 +30,11 @@ import argparse
 from functools import partial
 from transformers import AutoModelForCausalLM
 
-from triton_dist import pynvshmem
-from triton_dist.models.kv_cache import KV_Cache
 from triton_dist.models.config import ModelConfig
 from triton_dist.models import AutoLLM
+from triton_dist.models.kv_cache import KV_Cache
 from triton_dist.models.utils import seed_everything
-from triton_dist.utils import perf_func, dist_print, group_profile
+from triton_dist.utils import finalize_distributed, perf_func, dist_print, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream
 
 THRESHOLD_MAP = {
     torch.float16: 1e-2,
@@ -105,6 +104,24 @@ DTYPE_MAP = {
     "float16": torch.float16,
 }
 
+
+def run_hf_baseline(input_ids, position_ids):
+    # golden
+    hf_model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=DTYPE,
+                                                    attn_implementation="flash_attention_2").cuda().eval()
+    with torch.inference_mode():
+        golden = hf_model.forward(
+            input_ids=input_ids,
+            position_ids=position_ids,
+        ).logits.float()
+    golden = golden[:, -1:, :].contiguous()
+
+    del hf_model
+    gc.collect()
+    torch.cuda.empty_cache()
+    return golden
+
+
 if __name__ == "__main__":
     args = parse_args()
     RANK = int(os.environ.get("RANK", 0))
@@ -129,41 +146,29 @@ if __name__ == "__main__":
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
+    init_nvshmem_by_torch_process_group(TP_GROUP)
     DTYPE = DTYPE_MAP[args.dtype]
     ATOL = THRESHOLD_MAP[DTYPE]
     RTOL = THRESHOLD_MAP[DTYPE]
     MODE = args.mode
-
-    model_config = ModelConfig(model_name=args.model, max_length=args.seq_len + 4, dtype=DTYPE, rank=RANK,
-                               world_size=WORLD_SIZE, local_only=True)
-    model = AutoLLM.from_pretrained(model_config)
     seed_everything(args.seed)
 
     BSZ = args.bsz
     SEQ_LEN = args.seq_len
-    input_ids = torch.randint(10, 1000, (BSZ, SEQ_LEN), dtype=torch.long, device="cuda")
-    position_ids = torch.arange(0, SEQ_LEN, dtype=torch.long, device="cuda").unsqueeze(0).repeat(BSZ, 1)
+
+    if args.check:
+        input_ids = torch.randint(10, 1000, (BSZ, SEQ_LEN), dtype=torch.long, device="cuda")
+        position_ids = torch.arange(0, SEQ_LEN, dtype=torch.long, device="cuda").unsqueeze(0).repeat(BSZ, 1)
+        # this consumes too much memory and is too easy to raise OOM error. runs this and free the model before load AutoLLM.pfrom_pretrained
+        golden = run_hf_baseline(input_ids, position_ids)
+
+    model_config = ModelConfig(model_name=args.model, max_length=args.seq_len + 4, dtype=DTYPE, rank=RANK,
+                               world_size=WORLD_SIZE, local_only=True)
+    model = AutoLLM.from_pretrained(model_config)
     kv_cache = KV_Cache(num_layers=model.num_layers, kv_heads=model.num_key_value_heads, head_dim=model.head_dim,
                         batch_size=BSZ, dtype=DTYPE, max_length=model.max_length, world_size=WORLD_SIZE)
 
     if args.check:
-        # Precision Test
-
-        # golden
-        hf_model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=DTYPE,
-                                                        attn_implementation="flash_attention_2").cuda().eval()
-        with torch.inference_mode():
-            golden = hf_model.forward(
-                input_ids=input_ids,
-                position_ids=position_ids,
-            ).logits.float()
-        golden = golden[:, -1:, :].contiguous()
-
-        del hf_model
-        gc.collect()
-        torch.cuda.empty_cache()
-
         # torch prefill
         logits = model.inference(input_ids=input_ids, position_ids=position_ids, kv_cache=kv_cache)
         check_allclose(logits.softmax(dim=-1, dtype=torch.float32), golden.softmax(dim=-1, dtype=torch.float32),
@@ -184,6 +189,8 @@ if __name__ == "__main__":
             check_allclose(logits.softmax(dim=-1, dtype=torch.float32), golden.softmax(dim=-1, dtype=torch.float32),
                            atol=ATOL, rtol=RTOL)
 
+        model.finalize()
+        finalize_distributed()
         exit(0)
 
     profile = args.profile
@@ -213,12 +220,12 @@ if __name__ == "__main__":
         with group_profile("tp_e2e_prefill", profile, group=TP_GROUP):
             torch.cuda.synchronize()
             _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
             torch.cuda.synchronize()
             _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
         dist_print(f"torch prefill #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
@@ -254,12 +261,12 @@ if __name__ == "__main__":
         with group_profile("tp_e2e_decode", profile, group=TP_GROUP):
             torch.cuda.synchronize()
             _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
             torch.cuda.synchronize()
             _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
         dist_print(f"torch decode #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
@@ -271,4 +278,5 @@ if __name__ == "__main__":
                        f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         del torch_graph, triton_dist_graph, mempool
 
-    torch.distributed.destroy_process_group()
+    model.finalize()
+    finalize_distributed()

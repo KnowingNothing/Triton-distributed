@@ -23,17 +23,19 @@
 #
 ################################################################################
 from typing import Optional
-import triton
+
+import nvshmem.bindings
+import nvshmem.core
 import torch
+from cuda import cuda
+
+import triton
 import triton.language as tl
 import triton_dist.language as dl
-from triton_dist.utils import CUDA_CHECK
-from cuda import cuda
-from triton.language.extra.cuda.language_extra import (ntid, tid, st, ld, __syncthreads, atomic_add, ld_acquire,
-                                                       atomic_cas)
-
-from triton_dist import pynvshmem
-from triton_dist.utils import check_p2p_native_atomic_supported
+from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add, atomic_cas, ld, ld_acquire, ntid, st,
+                                                       tid)
+from triton_dist.utils import (CUDA_CHECK, check_p2p_native_atomic_supported, nvshmem_barrier_all_on_stream,
+                               nvshmem_create_tensor)
 
 
 @triton.jit
@@ -163,12 +165,12 @@ class BarrierAllContext:
     def __init__(self, is_intra_node):
         self.is_intra_node = is_intra_node
         if self.is_intra_node:
-            self.rank = pynvshmem.nvshmem_my_pe()
-            self.local_rank = pynvshmem.nvshmem_team_my_pe(pynvshmem.NVSHMEMX_TEAM_NODE)
-            self.num_local_ranks = pynvshmem.nvshmem_team_n_pes(pynvshmem.NVSHMEMX_TEAM_NODE)
-            self.symm_barrier = pynvshmem.nvshmem_create_tensor((1, ), torch.int32)
+            self.rank = nvshmem.bindings.nvshmem.my_pe()
+            self.local_rank = nvshmem.bindings.nvshmem.team_my_pe(nvshmem.core.Teams.TEAM_NODE)
+            self.num_local_ranks = nvshmem.bindings.nvshmem.team_n_pes(nvshmem.core.Teams.TEAM_NODE)
+            self.symm_barrier = nvshmem_create_tensor((1, ), torch.int32)
             self.symm_barrier.fill_(0)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
 
 def barrier_all_on_stream(ctx: BarrierAllContext, stream: Optional[torch.cuda.Stream] = None):
@@ -176,7 +178,7 @@ def barrier_all_on_stream(ctx: BarrierAllContext, stream: Optional[torch.cuda.St
     barrier_all_on_stream does not support CUDAGraph
     """
     if ctx is None or not ctx.is_intra_node:
-        return pynvshmem.nvshmemx_barrier_all_on_stream(stream)
+        return nvshmem_barrier_all_on_stream(stream)
 
     if check_p2p_native_atomic_supported():
         barrier_all_intra_node_atomic_cas_block[(1, )](ctx.local_rank, ctx.rank, ctx.num_local_ranks, ctx.symm_barrier)
@@ -334,7 +336,7 @@ def bisect_right_kernel_aligned(
 
 # copied from https://github.com/cchan/tccl/blob/main/triton_double_tree_allreduce.py
 @triton.jit
-def load_128(addrs, mask):
+def load_b64_v2(addrs, mask):
     return tl.inline_asm_elementwise(
         """
         {

@@ -138,6 +138,12 @@ class NVSHMEMHelper:
     @staticmethod
     @functools.lru_cache()
     def get_nvshmem_home():
+        try:
+            import nvidia.nvshmem
+            return Path(nvidia.nvshmem.__file__).parent
+        except Exception:
+            pass
+
         return Path(
             os.environ.get(
                 "NVSHMEM_HOME",
@@ -153,6 +159,12 @@ class NVSHMEMHelper:
     @functools.lru_cache()
     def get_nvshmem_lib():
         return NVSHMEMHelper.get_nvshmem_home() / "lib"
+
+
+    @staticmethod
+    @functools.lru_cache()
+    def get_nvshmemi_bc():
+        return NVSHMEMHelper.get_nvshmem_lib() / "libnvshmem_device.bc"
 
 
     @staticmethod
@@ -323,8 +335,9 @@ class CUDAOptions:
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get('libdevice', None):
             extern_libs['libdevice'] = knobs.nvidia.libdevice_path or str(default_libdir / 'libdevice.10.bc')
-        nvshmem_device_lib = knobs.nvidia.libdevice_path or str(default_libdir / 'libnvshmem_device.bc')
-        nvshmemi_device_lib =knobs.nvidia.libdevice_path or str(default_libdir / 'libnvshmemi_device.bc')
+        nvshmem_libdir = NVSHMEMHelper.get_nvshmem_lib()
+        nvshmem_device_lib = os.getenv("NVSHMEM_LIBDEVICE_PATH", None) or str(nvshmem_libdir / 'libnvshmem_device.bc')
+        nvshmemi_device_lib = os.getenv("NVSHMEMI_LIBDEVICE_PATH", None) or str(nvshmem_libdir / 'libnvshmemi_device.bc')
 
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
         object.__setattr__(self, 'nvshmem_device_lib', nvshmem_device_lib)

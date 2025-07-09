@@ -198,11 +198,11 @@ pip3 install -e python --verbose --no-build-isolation
 ### Test your installation
 #### GEMM ReduceScatter example on single node
 ```sh
-bash ./third_party/distributed/launch_amd.sh ./third_party/distributed/distributed/test/amd/test_ag_gemm_intra_node.py 8192 8192 29568
+bash scripts/launch_amd.sh python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 8192 29568
  ```
 and see the following (reduced) output
 ```sh
-torchrun --node_rank=0 --nproc_per_node=8 --nnodes=1 ./third_party/distributed/distributed/test/amd/test_ag_gemm_intra_node.py 8192 8192 29568
+torchrun --node_rank=0 --nproc_per_node=8 --nnodes=1 python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 8192 29568
 ✅ Triton and Torch match
 ```
 

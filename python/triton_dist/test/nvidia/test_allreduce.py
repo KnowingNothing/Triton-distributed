@@ -29,15 +29,8 @@ from typing import Optional
 import torch
 import triton
 import torch.distributed as dist
-from triton_dist.kernels.nvidia.allreduce import (
-    create_allreduce_ctx,
-    all_reduce,
-)
-from triton_dist.utils import (
-    group_profile,
-    initialize_distributed,
-    perf_func,
-)
+from triton_dist.kernels.nvidia.allreduce import (create_allreduce_ctx, all_reduce)
+from triton_dist.utils import (assert_allclose, group_profile, initialize_distributed, finalize_distributed, perf_func)
 
 DATA_SIZES = [
     128,  # 128B
@@ -80,18 +73,11 @@ def _generate_shape(num_elem: int):
             return (m, num_elem // m)
 
 
-def _create_data(
-    M,
-    N,
-    method,
-    dtype=torch.float32,
-    signal_stages=1,
-):
-    input = torch.rand([M, N], dtype=dtype, device="cuda")
+def _create_data(numel, dtype=torch.float32):
+    input = torch.rand((numel, ), dtype=dtype, device="cuda")
     if args.debug:
-        input = input.fill_((RANK + 1) / 100)
-    ctx = create_allreduce_ctx(input, method, signal_stages)
-    return input, ctx
+        input = input.fill_((RANK + 1) / 10)
+    return input
 
 
 def torch_all_reduce(
@@ -103,34 +89,48 @@ def torch_all_reduce(
     return output
 
 
+def _randint_with_align(max_M, alignment: int):
+    return random.randint(1, max_M // alignment) * alignment
+
+
+def _random_straggler_option():
+    rank = random.randint(0, WORLD_SIZE - 1)
+    # this may be not accurate. but never mind
+    clock_rate = torch.cuda.clock_rate() * 1e6
+    cycles = random.randint(0, clock_rate * 0.1)  # 0ms ~ 100ms
+    return (rank, cycles)
+
+
 def stress_test(dtype, args, test_method="two_shot_multicast"):
     random.seed(args.seed)  # set all ranks to the same seed
 
-    def _randint_with_align(alignment: int):
-        test_m = random.randint(1, args.max_M)
-        return triton.cdiv(test_m, alignment) * alignment
+    atol, rtol = {
+        torch.bfloat16: (3e-2, 3e-2),
+        torch.float16: (1e-2, 1e-2),
+        torch.float32: (1e-3, 1e-3),
+    }[dtype]
+
+    rank = int(os.getenv("RANK"))
+    world_size = int(os.getenv("WORLD_SIZE"))
+    local_world_size = int(os.getenv("LOCAL_WORLD_SIZE"))
+    ctx = create_allreduce_ctx(args.max_nbytes, dtype, rank, world_size, local_world_size, method=test_method,
+                               signal_stages=1)
 
     for n in range(args.iters):
         # generate data for verify
         tensor_inputs = []
         for _ in range(args.verify_shapes):
-            test_M = _randint_with_align(WORLD_SIZE * args.alignment)
-            input, ctx = _create_data(
-                test_M,
-                args.N,
-                method=test_method,
-                dtype=dtype,
-            )
-            tensor_inputs.append((input, ctx))
+            test_M = _randint_with_align(args.max_nbytes, WORLD_SIZE * args.alignment)
+            tensor_inputs.append(_create_data(test_M, dtype=dtype))
 
         triton_out_list, torch_out_list = [], []
 
-        for input, ctx in tensor_inputs:
+        for input in tensor_inputs:
             output = torch.empty_like(input)
             res = all_reduce(input, output, method=test_method, ctx=ctx)
             triton_out_list.append(res)
 
-        for input, _ in tensor_inputs:
+        for input in tensor_inputs:
             res = torch_all_reduce(
                 TP_GROUP,
                 input,
@@ -139,42 +139,7 @@ def stress_test(dtype, args, test_method="two_shot_multicast"):
 
         # verify
         for idx, (triton_res, torch_res) in enumerate(zip(triton_out_list, torch_out_list)):
-            check_failed = False
-            for i in range(TP_GROUP.size()):
-                torch.distributed.barrier(TP_GROUP)
-                if TP_GROUP.rank() == i:
-                    if not torch.allclose(triton_res, torch_res, atol=6e-2, rtol=6e-2):
-                        check_failed = True
-                        print("❌ check failed")
-                        print(f"Rank {TP_GROUP.rank()}")
-                        print("shape, numel:", triton_res.shape, triton_res.shape.numel())
-                        print("Diff")
-                        print(torch_res - triton_res)
-                        diff_loc = ~torch.isclose(triton_res, torch_res, atol=6e-2, rtol=6e-2)
-                        diff_indices = diff_loc.nonzero(as_tuple=False)
-                        #print(f"diff locations:\n{diff_indices}")
-                        print(f"diff rows:\n{torch.unique(diff_indices[:, 0])}")
-                        num_diff = torch.sum(diff_loc)
-                        diff_rate = num_diff / triton_res.shape.numel()
-                        print(f"diff count: {num_diff} ({diff_rate*100:.3f}%), {list(triton_res.shape)}")
-                        print("triton_res@diff:")
-                        print(triton_res[diff_loc])
-                        print("input@diff:")
-                        print(tensor_inputs[idx][0][diff_loc])
-                        print("golden@diff:")
-                        print(torch_res[diff_loc])
-                        print("Max diff", torch.max(torch.abs(torch_res - triton_res)))
-                        print("Avg diff", torch.mean(torch.abs(torch_res - triton_res)))
-                        print("---------------------Wrong Answer!---------------------")
-            if check_failed:
-                exit(1)
-
-        # just runs, check if hangs
-        straggler_option = None if not args.simulate_straggler else (random.randint(
-            0,
-            TP_GROUP.size() - 1), random.randint(1e9, 1e9 + 1e8))  # straggler id, straggler_latency (ns)
-        if straggler_option and RANK == straggler_option[0]:
-            print(f"straggler id {straggler_option[0]}, latency {straggler_option[1] / 1000 / 1000 / 1000} s")
+            assert_allclose(triton_res, torch_res, atol=atol, rtol=rtol, verbose=False)
 
         output = torch.empty_like(input)
         for j in range(args.verify_hang):
@@ -183,7 +148,7 @@ def stress_test(dtype, args, test_method="two_shot_multicast"):
                 output,
                 method=test_method,
                 ctx=ctx,
-                straggler_option=straggler_option,
+                straggler_option=_random_straggler_option() if args.simulate_straggler else None,
             )
 
         if (n + 1) % 10 == 0:
@@ -194,23 +159,27 @@ def stress_test(dtype, args, test_method="two_shot_multicast"):
     if TP_GROUP.rank() == 0:
         print(f"✅ {test_method} Pass!")
 
+    ctx.finalize()
+
 
 def _is_one_shot(method):
     return "one_shot" in method
 
 
-def run_perf(dtype, test_method, warmup=5, iters=10):
+def run_perf(dtype: torch.dtype, test_method, warmup=5, iters=10):
     bytes_per_elem = torch.finfo(dtype).bits // 8
     if test_method in ["double_tree", "one_shot_non_tma", "one_shot_tma"]:
         available_ds = DATA_SIZES[:13]
     else:
         available_ds = DATA_SIZES
 
+    ctx = create_allreduce_ctx(available_ds[-1] // dtype.itemsize, dtype, RANK, WORLD_SIZE, LOCAL_WORLD_SIZE,
+                               method=test_method, signal_stages=1)
+
     for nbytes in available_ds:
         num_elem = nbytes // bytes_per_elem
-        M, N = _generate_shape(num_elem)
 
-        local_input, ctx = _create_data(M, N, method=test_method, signal_stages=warmup + iters, dtype=dtype)
+        local_input = _create_data(num_elem, dtype=dtype)
         output = torch.empty_like(local_input)
 
         def allreduce_op():
@@ -221,7 +190,7 @@ def run_perf(dtype, test_method, warmup=5, iters=10):
                 ctx=ctx,
             )
 
-        torch.cuda._sleep(1000000000)  # in case CPU bound
+        torch.cuda._sleep(100000000)  # in case CPU bound
         _, duration_ms = perf_func(
             allreduce_op,
             warmup_iters=warmup,
@@ -239,6 +208,8 @@ def run_perf(dtype, test_method, warmup=5, iters=10):
                 f" Latency = {duration_ms * 1000:0.2f} us, HW Bandwith = {hw_bw:0.2f} GB/s, Algo Bandwith = {algo_bw:0.2f} GB/s   "
             )
 
+        ctx.finalize()
+
 
 if __name__ == "__main__":
     TP_GROUP = initialize_distributed()
@@ -247,8 +218,7 @@ if __name__ == "__main__":
     LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--max_M", type=int, default=1024)
-    parser.add_argument("--N", type=int, default=4096)
+    parser.add_argument("--max_nbytes", type=int, default=1024 * 4096)
     parser.add_argument("--iters", type=int, default=10)
     parser.add_argument("--warmup_iters", type=int, default=5)
     parser.add_argument("--verify_shapes", type=int, default=25)
@@ -284,4 +254,4 @@ if __name__ == "__main__":
         with group_profile(f"all_reduce_{os.environ['TORCHELASTIC_RUN_ID']}", args.profile, group=TP_GROUP):
             run_perf(DTYPE, args.method, warmup=args.warmup_iters, iters=args.iters)
 
-    torch.distributed.destroy_process_group()
+    finalize_distributed()

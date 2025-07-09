@@ -22,9 +22,7 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-from triton_dist import pynvshmem
 import torch
-import torch.distributed
 from dataclasses import dataclass
 from typing import List
 
@@ -43,6 +41,7 @@ from triton.language.extra.cuda.language_extra import (
     st,
     multimem_st_b64,
 )
+from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_free_tensor_sync, nvshmem_create_tensor
 
 
 @triton.jit(do_not_specialize=["rank", "signal_target"])
@@ -797,11 +796,16 @@ class FastAllGatherContext:
         self.num_nodes = num_nodes
         self.signal_target = signal_target
 
+    def finalize(self):
+        nvshmem_free_tensor_sync(self.signal_tensor)
+        for ll_buffer in self.ll_buffers:
+            nvshmem_free_tensor_sync(ll_buffer)
+
 
 def create_fast_allgather_context(rank, node, num_ranks, num_nodes, max_buffer_size: int = 2 * 32 * 1024 * 1024):
-    signal_tensor = pynvshmem.nvshmem_create_tensor((num_ranks, ), torch.uint64)
+    signal_tensor = nvshmem_create_tensor((num_ranks, ), NVSHMEM_SIGNAL_DTYPE)
     signal_tensor.zero_()
-    ll_buffers = [pynvshmem.nvshmem_create_tensor((max_buffer_size, ), torch.int8) for _ in range(2)]
+    ll_buffers = [nvshmem_create_tensor((max_buffer_size, ), torch.int8) for _ in range(2)]
     grid_barrier = torch.zeros((1, ), dtype=torch.uint32, device="cuda")
 
     ctx = FastAllGatherContext(

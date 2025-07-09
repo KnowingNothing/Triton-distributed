@@ -4,6 +4,7 @@
 from __future__ import annotations
 import hashlib
 import json
+
 from .._C.libtriton import get_cache_invalidating_env_vars, ir
 from ..backends import backends
 from ..backends.compiler import Language
@@ -499,8 +500,8 @@ class CompiledKernel:
         if hasattr(self.metadata, 'use_nvshmem'):
             if self.metadata.use_nvshmem:
                 # patch function with nvshmem
-                from triton_dist import pynvshmem
-                pynvshmem.nvshmemx_cumodule_init(self.module)
+                import nvshmem.bindings
+                nvshmem.bindings.nvshmem.cumodule_init(self.module)
         elif hasattr(self.metadata, 'use_rocshmem'):
             if self.metadata.use_rocshmem:
                 pass

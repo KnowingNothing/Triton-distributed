@@ -137,7 +137,7 @@ def all_to_all_kernel(
         )
 ```
 
-此外，用户可以将通信部分与计算部分结合，设计计算-通信融合的kernel。我们在`third_party/distributed/distributed/kernels`目录下提供了示例实现。
+此外，用户可以将通信部分与计算部分结合，设计计算-通信融合的kernel。我们在`python/triton_dist/kernels`目录下提供了示例实现。
 
 ## Performance
 Triton-distributed 可以达到和手写分布式算子库接近的性能，有时候还能更好。
@@ -187,7 +187,7 @@ Triton-distributed 可以达到和手写分布式算子库接近的性能，有�
 通信能力
 - [x] NVLink
 - [x] IB
-- [ ] PCIe 
+- [ ] PCIe
 
 ### 性能
 - [ ] Performance report
@@ -195,7 +195,7 @@ Triton-distributed 可以达到和手写分布式算子库接近的性能，有�
 ## 许可协议
 Triton-distributed 主体是 MIT license.
 我们的代码中有一些是 Apache-2.0 License的:
-- `third_party/distributed/distributed/kernels/flash_decode.py`
+- `python/triton_dist/kernels/nvidia/flash_decode.py`
 
 Triton原本又些代码也是 Apache-2.0 License的:
 - `include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`

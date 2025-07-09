@@ -111,7 +111,7 @@ while true; do
   # Use timeout to prevent the script from hanging indefinitely.
   timeout 120s huggingface-cli download "$MODEL_NAME"
 
-  EXIT_CODE=$?
+    EXIT_CODE=$?
 
   if [ $EXIT_CODE -eq 0 ]; then
     echo "Model '$MODEL_NAME' downloaded successfully!"
