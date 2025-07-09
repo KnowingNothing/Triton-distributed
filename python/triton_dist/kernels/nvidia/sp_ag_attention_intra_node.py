@@ -27,15 +27,13 @@ import triton
 import triton.language as tl
 import triton_dist.language as dl
 
-from triton_dist import pynvshmem
-
 from typing import List
 import math
 
 from dataclasses import dataclass
 from cuda import cudart
 
-from triton_dist.utils import CUDA_CHECK
+from triton_dist.utils import CUDA_CHECK, nvshmem_create_tensors, nvshmem_free_tensor_sync
 from triton_dist.kernels.nvidia.common_ops import barrier_all_on_stream, BarrierAllContext
 
 ##################################################
@@ -53,6 +51,10 @@ class SPAllGatherAttentionContextIntraNode:
     ag_stream: torch.cuda.Stream
     barrier: BarrierAllContext
 
+    def finalize(self):
+        nvshmem_free_tensor_sync(self.ag_k_buffer)
+        nvshmem_free_tensor_sync(self.ag_v_buffer)
+
 
 def create_sp_ag_attention_context_intra_node(
     batch_size,
@@ -64,20 +66,15 @@ def create_sp_ag_attention_context_intra_node(
     input_dtype,
     output_dtype,
     rank,
+    world_size,
     device,
 ):
-    ag_k_buffers: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-        [batch_size * max_seqlen_k, kv_head, head_dim],
-        input_dtype,
-    )
-    ag_k_buffer: torch.Tensor = ag_k_buffers[rank]
+    ag_k_buffers = nvshmem_create_tensors((batch_size * max_seqlen_k, kv_head, head_dim), input_dtype, rank, world_size)
+    ag_k_buffer = ag_k_buffers[rank]
     ag_k_buffers_ptr: torch.Tensor = torch.tensor([t.data_ptr() for t in ag_k_buffers], device=device)
 
-    ag_v_buffers: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-        [batch_size * max_seqlen_k, kv_head, head_dim],
-        input_dtype,
-    )
-    ag_v_buffer: torch.Tensor = ag_v_buffers[rank]
+    ag_v_buffers = nvshmem_create_tensors((batch_size * max_seqlen_k, kv_head, head_dim), input_dtype, rank, world_size)
+    ag_v_buffer = ag_v_buffers[rank]
     ag_v_buffers_ptr: torch.Tensor = torch.tensor([t.data_ptr() for t in ag_v_buffers], device=device)
 
     attn_output_buffer = torch.empty(

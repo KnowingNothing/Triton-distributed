@@ -28,9 +28,9 @@ from torch import nn
 import torch.distributed
 import flashinfer
 
-from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.allgather_gemm import AllGatherGEMMTensorParallelContext, get_auto_all_gather_method, ag_gemm
 from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs
+from triton_dist.utils import nvshmem_barrier_all_on_stream
 from triton_dist.kernels.nvidia.allreduce import (create_allreduce_ctx, all_reduce)
 
 try:
@@ -82,12 +82,16 @@ class TP_Attn:
     """
 
     def __init__(self, rank=0, world_size=8, group=None):
+        # TODO does not support multiple node
         self.rank = rank
         self.world_size = world_size
         self.group = group
         self.head_dim = 128
         self.wqkv = None
         self.wo = None
+        self.ag_ctx = None
+        self.rs_ctx = None
+        self.ctx = None
 
     def _init_parameters(self, self_attn: nn.Module, verbose=False):
         self.q_size = self_attn.q_proj.weight.shape[0] // self.world_size
@@ -134,18 +138,30 @@ class TP_Attn:
             BLOCK_K=BLOCK_K,
             stages=stages,
         )
-        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
         torch.cuda.synchronize()
 
     def _init_AR_ctx(self, max_M, method, dtype=torch.bfloat16, signal_stages=1):
         self.ar_method = method
         input_tensor = torch.empty([max_M, self.K], dtype=dtype, device="meta")
         self.ctx = create_allreduce_ctx(
-            input=input_tensor,
+            numel=max_M * self.K,
+            dtype=dtype,
+            rank=self.rank,
+            world_size=self.world_size,
+            local_world_size=self.world_size,  # TODO(houqi.1993) does not support multiple nodes now.
             method=method,
             signal_stages=signal_stages,
         )
         self.ar_output = torch.empty_like(input_tensor, device="cuda", dtype=dtype).contiguous()
+
+    def finalize(self):
+        if self.ag_ctx:
+            self.ag_ctx.finailize()
+        if self.rs_ctx:
+            self.rs_ctx.finalize()
+        if self.ctx:
+            self.ctx.finalize()
 
     @torch.inference_mode()
     def apply_rotary_pos_emb(self, q: torch.Tensor, k: torch.Tensor, position_ids: torch.Tensor,

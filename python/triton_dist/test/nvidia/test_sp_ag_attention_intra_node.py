@@ -24,8 +24,6 @@
 ################################################################################
 import torch
 
-from triton_dist import pynvshmem
-
 import argparse
 import os
 import numpy as np
@@ -34,8 +32,9 @@ import random
 
 from itertools import accumulate
 from functools import partial
+import nvshmem.core
 
-from triton_dist.utils import get_torch_prof_ctx, perf_func, dist_print
+from triton_dist.utils import get_torch_prof_ctx, group_profile, perf_func, dist_print, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream
 from triton_dist.kernels.nvidia import fused_sp_ag_attn_intra_node, create_sp_ag_attention_context_intra_node
 
 ##################################################
@@ -91,6 +90,7 @@ class FusedSequenceParallelAttn(torch.nn.Module):
             self.input_dtype,
             self.output_dtype,
             self.rank,
+            self.world_size,
             self.device,
         )
 
@@ -377,7 +377,7 @@ if __name__ == "__main__":
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
+    init_nvshmem_by_torch_process_group(TP_GROUP)
 
     rank = TP_GROUP.rank()
     world_size = TP_GROUP.size()
@@ -463,25 +463,19 @@ if __name__ == "__main__":
         ).normal_(mean=0.0, std=0.5)
 
         prof_ctx = get_torch_prof_ctx(args.profile)
-        with prof_ctx:
+        with group_profile("sp-ag-attn-{os.environ['TORCHELASTIC_RUN_ID']}", args.profile, group=TP_GROUP):
             torch_output, torch_perf = perf_func(
                 partial(torch_module.forward, q_shard, k_shard, v_shard, cu_seqlens_q, cu_seqlens_k), iters=iters,
                 warmup_iters=warmup_iters)
 
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
             torch.cuda.synchronize()
 
             output, perf = perf_func(partial(module.forward, q_shard, k_shard, v_shard, cu_seqlens_q, cu_seqlens_k),
                                      iters=iters, warmup_iters=warmup_iters)
 
-        pynvshmem.nvshmem_barrier_all()
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
         torch.cuda.synchronize()
-
-    if args.profile:
-        run_id = os.environ["TORCHELASTIC_RUN_ID"]
-        prof_dir = f"prof/{run_id}"
-        os.makedirs(prof_dir, exist_ok=True)
-        prof_ctx.export_chrome_trace(f"{prof_dir}/trace_rank{TP_GROUP.rank()}.json.gz")
 
     if check:
         atol = 1e-2
@@ -492,4 +486,6 @@ if __name__ == "__main__":
     dist_print(f"dist-triton #{RANK}", perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
     dist_print(f"torch #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
+    module.ctx.finalize()
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group()

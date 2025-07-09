@@ -288,17 +288,20 @@ def _multimem_st_v2_impl(ptr, val0, val1, suffix: core.constexpr, _semantic=None
 @core.extern
 def multimem_st_v2(ptr, val0, val1, _semantic=None):
     """ no multimem.st.b32.v2. store b32x2 as b64 """
-    if ptr.dtype.element_ty == tl.float32:
-        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f32"), _semantic=_semantic)
-    elif ptr.dtype.element_ty == tl.bfloat16:
-        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("bf16x2"), _semantic=_semantic)
-    elif ptr.dtype.element_ty == tl.float16:
-        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f16x2"), _semantic=_semantic)
-    elif ptr.dtype.element_ty == tl.float64:
-        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f64"), _semantic=_semantic)
-    else:
-        return _multimem_st_impl(ptr, pack_b32_v2(val0, val1, _semantic=_semantic), core.constexpr("b64"),
-                                 _semantic=_semantic)
+    if False:  # it seems that multimem.st does not support v2, when doc say so: https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-multimem
+        if ptr.dtype.element_ty == tl.float32:
+            return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f32"), _semantic=_semantic)
+        elif ptr.dtype.element_ty == tl.bfloat16:
+            return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("bf16x2"), _semantic=_semantic)
+        elif ptr.dtype.element_ty == tl.float16:
+            return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f16x2"), _semantic=_semantic)
+    tl.static_assert(
+        ptr.dtype.element_ty == tl.float32 or ptr.dtype.element_ty == tl.float16 or ptr.dtype.element_ty == tl.bfloat16,
+        "multimem.st.v2 only support f32 and f64", _semantic=_semantic)
+    tl.static_assert(val0.dtype.primitive_bitwidth == 32, _semantic=_semantic)
+    tl.static_assert(val1.dtype.primitive_bitwidth == 32, _semantic=_semantic)
+    return _multimem_st_impl(ptr, pack_b32_v2(val0, val1, _semantic=_semantic), core.constexpr("b64"),
+                             _semantic=_semantic)
 
 
 @core.extern
@@ -402,7 +405,7 @@ def _multimem_ld_reduce_128bit(ptr, suffix: core.constexpr, _semantic=None):
     c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
     val_type: core.constexpr = _ptx_suffix_to_tl_type(suffix, _semantic=_semantic)
     return tl.inline_asm_elementwise(
-        asm=f"multimem.ld_reduce.acquire.sys.global.add.v4.{suffix.value} {{$0,$1,$2,$3}}, [$4];",
+        asm=f"multimem.ld_reduce.global.add.v4.{suffix.value} {{$0,$1,$2,$3}}, [$4];",
         constraints=(f"={c.value},={c.value},={c.value},={c.value},l"),
         args=[ptr],
         dtype=[val_type, val_type, val_type, val_type],

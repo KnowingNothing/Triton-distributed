@@ -29,6 +29,7 @@ import triton.language as tl
 import triton_dist.language as dl
 from triton_dist.language.extra import libshmem_device
 from triton.language.extra.cuda.language_extra import tid, atomic_add, ld_acquire, __syncthreads, ld_b32, st_b32, atomic_add_per_warp
+from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE
 
 
 ########## triton kernels ##########
@@ -365,7 +366,7 @@ def get_ag_splits_and_recv_offset_for_dispatch(local_splits, full_splits_buf, sp
     grid = (num_sm, )
     num_grid_sync = 8
     counter_workspace = torch.zeros((num_grid_sync, ), dtype=torch.int32, device=torch.cuda.current_device())
-    assert splits_signal_buf.dtype == torch.uint64
+    assert splits_signal_buf.dtype == NVSHMEM_SIGNAL_DTYPE
     num_tot_experts = world_size * experts_per_rank
     BLOCK_SIZE = 1 << num_tot_experts.bit_length()
     assert BLOCK_SIZE >= num_tot_experts

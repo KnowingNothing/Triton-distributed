@@ -27,7 +27,7 @@ import torch
 import os
 from argparse import ArgumentParser, Namespace
 
-from triton_dist import pynvshmem
+from triton_dist.utils import init_nvshmem_by_torch_process_group
 from triton_dist.models import ModelConfig
 from triton_dist.models.engine import Engine
 from triton_dist.models.utils import seed_everything
@@ -81,7 +81,7 @@ if __name__ == "__main__":
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
+    init_nvshmem_by_torch_process_group(TP_GROUP)
     DTYPE = DTYPE_MAP[args.dtype]
 
     model_config = ModelConfig(model_name=args.model, max_length=args.max_length, dtype=DTYPE, rank=RANK,

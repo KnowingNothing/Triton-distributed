@@ -81,7 +81,6 @@ def asin_kernel(
 
 torch.manual_seed(0)
 size = 98432
-#x = torch.randint(low=0, high=2, size=(size, ), dtype=torch.uint64, device=DEVICE)
 x = torch.randint(low=0, high=2, size=(size, ), dtype=torch.int32, device=DEVICE)
 output_triton = torch.zeros(size, device=DEVICE, dtype=torch.int32)
 output_torch = torch.asin(x).to(dtype=torch.uint64)

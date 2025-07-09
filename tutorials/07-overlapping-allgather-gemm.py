@@ -41,12 +41,12 @@ In doing so, you will learn about:
 
 import os
 import torch
-from triton_dist import pynvshmem
 from typing import Optional
-from triton_dist.utils import (initialize_distributed, TP_GROUP)
+from triton_dist.utils import (initialize_distributed, TP_GROUP, nvshmem_barrier_all_on_stream)
 from triton_dist.kernels.nvidia.common_ops import wait_eq, set_signal
 from cuda import cudart
 
+import nvshmem.core
 import triton
 from triton_dist.kernels.nvidia.allgather_gemm import create_ag_gemm_context
 import triton.language as tl
@@ -438,18 +438,20 @@ if __name__ == "__main__":
     C = torch.empty([M, N_per_rank], dtype=dtype, device="cuda")
     ctx = create_ag_gemm_context(A, B, rank, WORLD_SIZE, max_M=M, BLOCK_M=config["BM"], BLOCK_N=config["BN"],
                                  BLOCK_K=config["BK"], stages=config["stage"])
-    ctx.barrier_tensor.fill_(0)
-    pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+    ctx.symm_barrier.fill_(0)
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
     # copy local data to the ctx
-    ctx.workspace_tensor[rank * M_per_rank:(rank + 1) * M_per_rank, :].copy_(A)
-    set_signal(ctx.barrier_tensor[rank].data_ptr(), 1, torch.cuda.current_stream(), True)
+    ctx.symm_workspace[rank * M_per_rank:(rank + 1) * M_per_rank, :].copy_(A)
+    set_signal(ctx.symm_barrier[rank].data_ptr(), 1, torch.cuda.current_stream(), True)
 
     # launch the ag_gemm kernel
-    ag_gemm_persistent_op(A, B, C, ctx.rank, ctx.num_ranks, ctx.workspace_tensors, ctx.barrier_tensors, ctx.comm_buf,
+    ag_gemm_persistent_op(A, B, C, ctx.rank, ctx.num_ranks, ctx.symm_workspaces, ctx.symm_barriers, ctx.symm_comm_buf,
                           ag_stream=ctx.ag_intranode_stream, internode_ag_stream=ctx.ag_internode_stream,
                           gemm_stream=ctx.gemm_stream, local_world_size=LOCAL_WORLD_SIZE, signal_target=1)
 
     assert torch.allclose(golden, C, atol=1e-3, rtol=1e-3)
     print("Pass!")
 
+    ctx.finailize()
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group()

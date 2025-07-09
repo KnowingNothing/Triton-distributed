@@ -27,9 +27,9 @@ import torch
 from torch import nn
 import torch.distributed
 
-from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.allgather_gemm import AllGatherGEMMTensorParallelContext, get_auto_all_gather_method, ag_gemm
 from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs
+from triton_dist.utils import nvshmem_barrier_all_on_stream
 from triton_dist.kernels.nvidia.allreduce import (create_allreduce_ctx, all_reduce)
 
 
@@ -62,6 +62,9 @@ class TP_MLP:
         self.act_fn = None
         self.gate_up_proj = None
         self.down_proj = None
+        self.ag_ctx = None
+        self.rs_ctx = None
+        self.ctx = None
 
     def _init_parameters(self, mlp: nn.Module, verbose=False):
         """
@@ -110,8 +113,16 @@ class TP_MLP:
             BLOCK_K=BLOCK_K,
             stages=stages,
         )
-        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
         torch.cuda.synchronize()
+
+    def finalize(self):
+        if self.ag_ctx:
+            self.ag_ctx.finailize()
+        if self.rs_ctx:
+            self.rs_ctx.finalize()
+        if self.ctx:
+            self.ctx.finalize()
 
     @torch.inference_mode()
     def torch_fwd(self, x):
@@ -157,13 +168,16 @@ class TP_MLP:
     def _init_AR_ctx(self, M, method, dtype=torch.bfloat16, signal_stages=1):
         self.ar_method = method
         N = self.down_proj.shape[0]
-        input_tensor = torch.empty([M, N], dtype=dtype, device="meta")
         self.ctx = create_allreduce_ctx(
-            input=input_tensor,
+            numel=M * N,
+            dtype=dtype,
+            rank=self.rank,
+            world_size=self.world_size,
+            local_world_size=self.world_size,  # TODO(houqi.1993) does not support multiple nodes now.
             method=method,
             signal_stages=signal_stages,
         )
-        self.ar_output = torch.empty_like(input_tensor, device="cuda", dtype=dtype).contiguous()
+        self.ar_output = torch.empty((M, N), device="cuda", dtype=dtype).contiguous()
 
     @torch.inference_mode()
     def dist_triton_AR_fwd(self, x):

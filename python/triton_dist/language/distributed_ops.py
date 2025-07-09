@@ -102,7 +102,7 @@ def symm_at(ptr, rank, _semantic=None):
 @builtin
 def notify(ptr, rank, signal=1, sig_op="set", comm_scope="inter_node", _semantic=None):
     assert not ptr.type.is_block() and ptr.type.is_ptr(), "only support scalar pointer"
-    assert ptr.dtype.element_ty == tlc.uint64, "the dtype of signal ptr should be uint64"
+    assert ptr.dtype.element_ty == tlc.uint64 or ptr.dtype.element_ty == tlc.int64, "the dtype of signal ptr should be uint64"
 
     rank = _semantic._convert_elem_to_ir_value(rank, require_i64=False)
     signal = _semantic._convert_elem_to_ir_value(signal, require_i64=True)

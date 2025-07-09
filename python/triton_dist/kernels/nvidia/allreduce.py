@@ -22,27 +22,28 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-from enum import IntEnum
-import math
-import os
-import warnings
-import torch
-import torch.distributed
-import triton
-from torch import Tensor
-import triton.language as tl
-from typing import List, Union
-from triton_dist import pynvshmem
-from triton_dist.language.extra import libshmem_device
-from triton.language.extra.cuda.language_extra import tid, __syncthreads, atomic_cas, ntid, multimem_st_b64, load_v2_b64, multimem_ld_reduce_p_v4, multimem_st_v4_p_b32
-from triton_dist.kernels.nvidia.common_ops import (barrier_all_on_stream, load_128, add_v8_bf16, barrier_on_this_grid,
-                                                   get_flat_tid)
-from triton_dist.kernels.nvidia.reduce_scatter import kernel_ring_reduce_tma
-import functools
 import dataclasses
+import functools
+import math
+import warnings
+from enum import IntEnum
+from typing import List, Union
+
+import torch
+from torch import Tensor
+
+import triton
+import triton.language as tl
+from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_cas, load_v2_b64, multimem_st_b64, ntid,
+                                                       st_v4_b32, tid, multimem_ld_reduce_v4, multimem_st_v2)
+from triton.language.extra.cuda.utils import num_warps
+from triton_dist.kernels.nvidia.common_ops import (add_v8_bf16, barrier_on_this_grid, get_flat_tid, load_b64_v2)
+from triton_dist.kernels.nvidia.reduce_scatter import kernel_ring_reduce_tma
+from triton_dist.language.extra import libshmem_device
+from triton_dist.utils import (NVSHMEM_SIGNAL_DTYPE, is_nvshmem_multimem_supported, nvshmem_barrier_all_on_stream,
+                               nvshmem_create_tensor, nvshmem_create_tensors, nvshmem_free_tensor_sync, requires)
 
 SIGNAL_TARGET = 1
-SIGNAL_DTYPE = torch.uint64
 MAX_DOUBLE_TREE_BLOCKS = 1024  # for double tree op
 
 
@@ -73,26 +74,25 @@ def str_to_method(method_str: str) -> AllReduceMethod:
 
 @dataclasses.dataclass
 class AllReduceContext:
-    M: int
-    N: int
+    numel: int
     rank: int
     world_size: int
     local_world_size: int
     dtype: torch.dtype
 
     # comm buffer
-    scatter_bufs: Tensor
-    buf_M: int
+    scatter_bufs: List[Tensor]
+    scatter_buf: Tensor
     recv_buffer: Tensor
 
     # barrier bufs
-    signal_bufs: Tensor
+    signal_bufs: List[Tensor]
+    signal_buf: Tensor
     signal_stages: int
     signal_len: int
 
     # use this to sync all grids
-    grid_barrier: torch.Tensor = dataclasses.field(
-        default_factory=lambda: torch.zeros(1, dtype=torch.int32, device="cuda"))
+    grid_barrier: torch.Tensor = dataclasses.field(init=False)
 
     local_rank: int = dataclasses.field(init=False)
     node_id: int = dataclasses.field(init=False)
@@ -105,13 +105,20 @@ class AllReduceContext:
         assert self.world_size % self.local_world_size == 0
         self.nnodes = self.world_size // self.local_world_size
         self.current_stage = 0
+        self.grid_barrier = torch.zeros(1, dtype=torch.int32, device="cuda")
+
+    def finalize(self):
+        nvshmem_free_tensor_sync(self.scatter_buf)
+        if self.recv_buffer is not None:
+            nvshmem_free_tensor_sync(self.recv_buffer)
+        nvshmem_free_tensor_sync(self.signal_buf)
 
     def reset_barriers(self):
-        self.signal_bufs.fill_(0)
+        self.signal_buf.fill_(0)
 
     def split_signals_by_length(self, len_list: List[int], signal_tensor=None) -> List[Tensor]:
         res = []
-        signal_pad = signal_tensor if signal_tensor is not None else self.signal_bufs
+        signal_pad = signal_tensor if signal_tensor is not None else self.signal_buf
         assert signal_pad.numel() >= sum(len_list), "No enough signals"
         start = 0
         for l in len_list:
@@ -121,7 +128,7 @@ class AllReduceContext:
 
     def get_stage_signals(self) -> Tensor:
         assert self.signal_stages > 1
-        signal_pad = self.signal_bufs[self.current_stage]
+        signal_pad = self.signal_buf[self.current_stage]
         self.current_stage = (self.current_stage + 1) % self.signal_stages
         return signal_pad
 
@@ -134,35 +141,29 @@ class AllReduceContext:
         return ret
 
     def get_symm_list(self):
-        rank_offset = self.rank - self.local_rank
-        bufs = [pynvshmem.symm_tensor(self.scatter_bufs, i + rank_offset) for i in range(self.local_world_size)]
-        signals = [pynvshmem.symm_tensor(self.signal_bufs, i + rank_offset) for i in range(self.local_world_size)]
-        return bufs, signals
+        return self.scatter_bufs, self.signal_bufs
 
 
 def create_allreduce_ctx(
-    input: Tensor,
+    numel,
+    dtype: torch.dtype,
+    rank,
+    world_size,
+    local_world_size,
     method: Union[str, AllReduceMethod],
     signal_stages: int = 1,
 ) -> AllReduceContext:
     if isinstance(method, str):  # valid method check
         method = str_to_method(method)
-    input = input.view(-1, input.shape[-1])
-    M, N = input.shape[0], input.shape[1]
-    dtype = input.dtype
-
-    rank = int(os.environ.get("RANK", 0))
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
 
     if method in [AllReduceMethod.TwoShot, AllReduceMethod.OneShot_Ld_Reduce]:
         signal_len = 1  # dummy
         recv_shape = None
     elif method in [AllReduceMethod.OneShot_TMA, AllReduceMethod.OneShot]:
         signal_len = world_size
-        recv_shape = (M * world_size, N)
+        recv_shape = (numel * world_size, )
     elif method == AllReduceMethod.TwoShot_Multicast:
-        recv_shape = (M, N)
+        recv_shape = (numel, )
         signal_len = world_size
     elif method == AllReduceMethod.DoubleTree:
         signal_len = MAX_DOUBLE_TREE_BLOCKS * world_size
@@ -177,17 +178,19 @@ def create_allreduce_ctx(
         signal_len,
     ]
 
-    scatter_bufs = pynvshmem.nvshmem_create_tensor([M, N], dtype)
-    recv_buffer = pynvshmem.nvshmem_create_tensor(
-        recv_shape,
-        dtype,
-    ) if recv_shape is not None else None
-    signal_bufs = pynvshmem.nvshmem_create_tensor(signal_shape, SIGNAL_DTYPE)
-    signal_bufs.fill_(0)
-    barrier_all_on_stream(None, torch.cuda.current_stream())
+    local_rank = rank % local_world_size
+    scatter_bufs = nvshmem_create_tensors((numel, ), dtype, rank, local_world_size)
 
-    ctx = AllReduceContext(M=M, N=N, rank=rank, world_size=world_size, local_world_size=local_world_size, dtype=dtype,
-                           scatter_bufs=scatter_bufs, signal_len=signal_len, buf_M=M, signal_bufs=signal_bufs,
+    recv_buffer = nvshmem_create_tensor(recv_shape, dtype) if recv_shape is not None else None
+    signal_bufs = nvshmem_create_tensors(signal_shape, NVSHMEM_SIGNAL_DTYPE, rank, local_world_size)
+    signal_buf = signal_bufs[local_rank]
+    signal_buf.fill_(0)
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
+    torch.cuda.synchronize()
+
+    ctx = AllReduceContext(numel=numel, rank=rank, world_size=world_size, local_world_size=local_world_size,
+                           dtype=dtype, scatter_bufs=scatter_bufs, scatter_buf=scatter_bufs[local_rank],
+                           signal_len=signal_len, signal_bufs=signal_bufs, signal_buf=signal_buf,
                            recv_buffer=recv_buffer, signal_stages=signal_stages)
     return ctx
 
@@ -349,7 +352,7 @@ def double_tree_all_reduce_kernel(
         acc_lo = tl.zeros((BLOCK_SIZE, ), tl.int64)
         if tree_child0 != -1:
             buffer_ptr = tl.load(buffer_ptrs + tree_child0).to(tl.pointer_type(tl.int64))
-            (hi, lo) = load_128(buffer_ptr + offsets, mask=mask)
+            (hi, lo) = load_b64_v2(buffer_ptr + offsets, mask=mask)
             (acc_hi, acc_lo) = add_v8_bf16(acc_hi, acc_lo, hi, lo)
         # All the computation in else Region will be eliminated by DSE pass, but it's necessary in triton's frontend parser now
         else:
@@ -360,7 +363,7 @@ def double_tree_all_reduce_kernel(
 
         if tree_child1 != -1:
             buffer_ptr = tl.load(buffer_ptrs + tree_child1).to(tl.pointer_type(tl.int64))
-            (hi, lo) = load_128(buffer_ptr + offsets, mask=mask)
+            (hi, lo) = load_b64_v2(buffer_ptr + offsets, mask=mask)
             (acc_hi, acc_lo) = add_v8_bf16(acc_hi, acc_lo, hi, lo)
         else:
             buffer_ptr = tl.load(buffer_ptrs + rank).to(tl.pointer_type(tl.int64))
@@ -369,7 +372,7 @@ def double_tree_all_reduce_kernel(
             (acc_hi, acc_lo) = (acc_hi, acc_lo)
 
         buffer_ptr = tl.load(buffer_ptrs + rank).to(tl.pointer_type(tl.int64))
-        (hi, lo) = load_128(buffer_ptr + offsets, mask=mask)
+        (hi, lo) = load_b64_v2(buffer_ptr + offsets, mask=mask)
         (acc_hi, acc_lo) = add_v8_bf16(acc_hi, acc_lo, hi, lo)
         tl.store(buffer_ptr + offsets + 0, acc_hi, mask=mask)
         tl.store(buffer_ptr + offsets + 1, acc_lo, mask=mask)
@@ -401,7 +404,7 @@ def double_tree_all_reduce_kernel(
 
         if tree_parent != -1:
             buffer_ptr = tl.load(buffer_ptrs + tree_parent).to(tl.pointer_type(tl.int64))
-            (hi, lo) = load_128(buffer_ptr + offsets, mask=mask)
+            (hi, lo) = load_b64_v2(buffer_ptr + offsets, mask=mask)
             buffer_ptr = tl.load(buffer_ptrs + rank).to(tl.pointer_type(tl.int64))
             tl.store(buffer_ptr + offsets + 0, hi, mask=mask)
             tl.store(buffer_ptr + offsets + 1, lo, mask=mask)
@@ -409,7 +412,7 @@ def double_tree_all_reduce_kernel(
             tl.store(output_ptr + offsets + 1, lo, mask=mask)
         else:
             buffer_ptr = tl.load(buffer_ptrs + rank).to(tl.pointer_type(tl.int64))
-            (hi, lo) = load_128(buffer_ptr + offsets, mask=mask)
+            (hi, lo) = load_b64_v2(buffer_ptr + offsets, mask=mask)
             tl.store(output_ptr + offsets + 0, hi, mask=mask)
             tl.store(output_ptr + offsets + 1, lo, mask=mask)
         block_start += tl.num_programs(axis=0) * BLOCK_SIZE
@@ -615,45 +618,63 @@ def two_shot_push_multicast_1d_kernel(
 
 
 @triton.jit
-def intra_node_one_shot_ld_reduce_kernel(data_ptr, out_ptr, elems, BLOCK_SIZE: tl.constexpr):
+def intra_node_one_shot_ld_reduce_kernel(data_ptr, out_ptr, elems, grid_barrier_ptr, BLOCK_SIZE: tl.constexpr):
     tl.static_assert(data_ptr.dtype.element_ty == out_ptr.dtype.element_ty)
     pid = tl.program_id(0)
     num_pid = tl.num_programs(axis=0)
-    num_blocks = tl.cdiv(elems, BLOCK_SIZE)
 
     data_mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, data_ptr)
     VEC_SIZE = 128 // tl.constexpr(data_ptr.dtype.element_ty.primitive_bitwidth)
-    for block_id in range(pid, num_blocks, num_pid):
-        offs = block_id * BLOCK_SIZE + tl.arange(
-            0,
-            BLOCK_SIZE * tl.constexpr(data_ptr.dtype.element_ty.primitive_bitwidth) // 128) * VEC_SIZE
-        mask = offs < elems
-        packed_v4_b32 = multimem_ld_reduce_p_v4(data_mc_ptr + offs, mask)
-        st_p_v4_b32(out_ptr + offs, packed_v4_b32, mask)
+
+    thread_idx = tid(axis=0)
+    block_dim = num_warps() * 32
+    for idx in range(thread_idx + block_dim * pid, elems // VEC_SIZE, num_pid * block_dim):
+        val0, val1, val2, val3 = multimem_ld_reduce_v4(data_mc_ptr + idx * VEC_SIZE)
+        st_v4_b32(out_ptr + idx * VEC_SIZE, val0, val1, val2, val3)
+
+    barrier_on_this_grid(grid_barrier_ptr)
+    if pid == 0:
+        libshmem_device.barrier_all_block()
 
 
 @triton.jit
-def intra_node_two_shot_multimem_kernel(symm_ptr, grid_barrier_ptr, elems, BLOCK_SIZE: tl.constexpr):
+def _intra_node_two_shot_multimem_kernel(symm_ptr, grid_barrier_ptr, elems):
     pid = tl.program_id(0)
     num_pid = tl.num_programs(axis=0)
-    num_blocks = tl.cdiv(elems, BLOCK_SIZE)
     data_mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, symm_ptr)
     VEC_SIZE = 128 // tl.constexpr(symm_ptr.dtype.element_ty.primitive_bitwidth)
     if pid == 0:
         libshmem_device.barrier_all_block()
     barrier_on_this_grid(grid_barrier_ptr)
 
-    for block_id in range(pid, num_blocks, num_pid):
-        # NOTE: use BLOCK_SIZE // VEC_SIZE as tl.arange won't compile. sad
-        offs = block_id * BLOCK_SIZE + tl.arange(
-            0,
-            BLOCK_SIZE * tl.constexpr(symm_ptr.dtype.element_ty.primitive_bitwidth) // 128) * VEC_SIZE
-        packed_v4_b32 = multimem_ld_reduce_p_v4(data_mc_ptr + offs, offs < elems)
-        # TODO(houqi.1993) ptxas BUG that multimem.st does not support %p syntax
-        multimem_st_v4_p_b32(data_mc_ptr + offs, packed_v4_b32, offs < elems)
+    thread_idx = tid(0)
+    block_dim = num_warps() * 32
+    for idx in range(thread_idx + block_dim * pid, elems // VEC_SIZE, num_pid * block_dim):
+        val0, val1, val2, val3 = multimem_ld_reduce_v4(data_mc_ptr + idx * VEC_SIZE)
+        multimem_st_v2(data_mc_ptr + idx * VEC_SIZE, val0, val1)
+        multimem_st_v2(data_mc_ptr + idx * VEC_SIZE + VEC_SIZE // 2, val2, val3)
+
+    barrier_on_this_grid(grid_barrier_ptr)
     if pid == 0:
         libshmem_device.barrier_all_block()
-    barrier_on_this_grid(grid_barrier_ptr)
+
+
+@triton.jit(do_not_specialize=["rank"])
+def intra_node_two_shot_multimem_kernel(symm_ptr, grid_barrier_ptr, elems, output_ptr, rank, world_size,
+                                        BLOCK_SIZE: tl.constexpr):
+    elems_per_rank = elems // world_size
+    # each rank do all-reduce for elems_per_rank
+    _intra_node_two_shot_multimem_kernel(symm_ptr + rank * elems_per_rank, grid_barrier_ptr, elems_per_rank)
+    if output_ptr:
+        barrier_on_this_grid(grid_barrier_ptr)
+        # copy to output
+        nblocks = tl.cdiv(elems, BLOCK_SIZE)
+        pid = tl.program_id(axis=0)
+        npid = tl.num_programs(axis=0)
+        for i in range(pid, nblocks, npid):
+            offs = tl.arange(0, BLOCK_SIZE) + BLOCK_SIZE * i
+            x = tl.load(symm_ptr + offs, offs < elems)
+            tl.store(output_ptr + offs, x, mask=offs < elems)
 
 
 def intra_node_one_shot_push_1d_op(
@@ -678,7 +699,7 @@ def intra_node_one_shot_push_1d_op(
     if ctx.signal_stages == 1:
         ctx.reset_barriers()
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
+    nvshmem_barrier_all_on_stream(current_stream)
 
     _run_straggler(ctx, straggler_option)
     grid = (min(num_tiles, max_sm), ) if max_sm > 0 else (num_tiles, )
@@ -705,15 +726,18 @@ def intra_node_one_shot_nvshmem_push_tma_op(ctx: AllReduceContext, local_input: 
     Args:
         straggler_option (_type_, optional): Simulates the straggler. Defaults to None.
     """
-    M, N = local_input.shape
     num_elem = local_input.numel()
 
     # use as many resource as we can in a CTA
 
-    # heuristic choose M, N, and block_size_m, block_size_n with a reshape (M_per_rank, N) => (M_per_rank * N // 64, N) with N % 64 == 0
-    if N % 64 == 0:
-        M = M * N // 64
-        N = 64
+    # heuristic choose M, N, and block_size_m, block_size_n with a reshape (numel, ) => (M_per_rank * N // 64, N) with N % 64 == 0
+    assert num_elem * local_input.itemsize % 32 == 0, "TMA requires 32-byte alignment."
+    for alignment in [256, 128, 64, 32]:
+        if num_elem * local_input.itemsize % alignment == 0:
+            N = alignment // local_input.itemsize
+            M = num_elem // N
+            break
+
     block_size_n = 64
     block_size_m = 128
 
@@ -723,7 +747,7 @@ def intra_node_one_shot_nvshmem_push_tma_op(ctx: AllReduceContext, local_input: 
     if ctx.signal_stages == 1:
         ctx.reset_barriers()
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
+    nvshmem_barrier_all_on_stream(current_stream)
     _run_straggler(ctx, straggler_option)
 
     num_sms = 32 if max_sm < 0 else max_sm
@@ -746,10 +770,11 @@ def intra_node_one_shot_nvshmem_push_tma_op(ctx: AllReduceContext, local_input: 
     return output
 
 
+@requires(is_nvshmem_multimem_supported)
 def intra_node_one_shot_multicast_all_reduce_op(
     ctx: AllReduceContext,
-    local_input,
-    output,
+    local_input: torch.Tensor,
+    output: torch.Tensor,
     straggler_option=None,
     num_warps=32,
     max_sm=-1,
@@ -759,10 +784,10 @@ def intra_node_one_shot_multicast_all_reduce_op(
     Raises:
         NotImplementedError: Currently supports bf16 and float32.
     """
-    assert os.getenv("NVSHMEM_DISABLE_CUDA_VMM", "1") == "0", "Set NVSHMEM_DISABLE_CUDA_VMM=0 for multicast."
-    ctx.scatter_bufs.copy_(local_input)
+    assert local_input.is_cuda and local_input.is_contiguous()
+    ctx.scatter_buf[:local_input.numel()].copy_(local_input.flatten())
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
+    nvshmem_barrier_all_on_stream(current_stream)
     _run_straggler(ctx, straggler_option)
 
     assert local_input.dtype in [torch.float, torch.bfloat16, torch.float16]
@@ -770,9 +795,10 @@ def intra_node_one_shot_multicast_all_reduce_op(
     block_size = num_warps * 32 * 16 // local_input.itemsize
     num_blocks = 4 if max_sm < 0 else max_sm
     intra_node_one_shot_ld_reduce_kernel[(num_blocks, )](
-        ctx.scatter_bufs,
+        ctx.scatter_buf,
         output,
         local_input.numel(),
+        ctx.grid_barrier,
         block_size,
         num_warps=num_warps,
     )
@@ -802,6 +828,7 @@ def intra_node_double_tree_all_reduce_op(
     NUMEL_PER_THREAD = 8
 
     assert local_input.dtype == torch.bfloat16, "Only bfloat16 is supported for now."
+    assert local_input.is_cuda and local_input.is_contiguous()
     assert (local_input.numel() % NUMEL_PER_THREAD == 0), "The number of elements must be 128-bit aligned."
 
     if max_sm > 0:
@@ -831,13 +858,13 @@ def intra_node_double_tree_all_reduce_op(
     buf_ptrs = list2tensor_ptr(bufs)  # construct a C-style pointer array
     sig_ptrs = list2tensor_ptr(signals)
 
-    bufs[rank].copy_(local_input)
+    bufs[rank][:local_input.numel()].copy_(local_input.flatten())
     if ctx.signal_stages == 1:
         ctx.reset_barriers()
 
     _run_straggler(ctx, straggler_option)
 
-    pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
     double_tree_all_reduce_kernel[(num_blocks, 1, 1)](
         buf_ptrs,
         sig_ptrs,
@@ -855,10 +882,12 @@ def intra_node_double_tree_all_reduce_op(
         NUMEL_PER_THREAD=NUMEL_PER_THREAD,
         num_warps=num_warps,
     )
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
     return output
 
 
 # TODO(houqi.1993) support very small shape. now only support 16 Byte aligned
+@requires(is_nvshmem_multimem_supported)
 def intra_node_two_shot_multicast_all_reduce_op(
     ctx: AllReduceContext,
     local_input: torch.Tensor,
@@ -875,12 +904,12 @@ def intra_node_two_shot_multicast_all_reduce_op(
             only to ensure consistency of the interface with other operators.
             The result is not copied into `output`; instead, it returns the symmetric buffer directly.
     """
-    assert os.getenv("NVSHMEM_DISABLE_CUDA_VMM", "1") == "0", "Set NVSHMEM_DISABLE_CUDA_VMM=0 for multicast."
     elems = local_input.numel()
-    elems_per_rank = triton.cdiv(elems, ctx.world_size)
+    elems_per_rank = elems // ctx.world_size
+    assert elems % ctx.world_size == 0
     assert elems_per_rank * local_input.itemsize % 16 == 0, "use vectorize of 128bit mulitmem.ld_reduce/st"
 
-    ctx.scatter_bufs.copy_(local_input)
+    ctx.scatter_buf[:local_input.numel()].copy_(local_input.flatten())
     _run_straggler(ctx, straggler_option)
 
     assert local_input.dtype in [torch.float, torch.bfloat16, torch.float16]
@@ -890,15 +919,19 @@ def intra_node_two_shot_multicast_all_reduce_op(
     ngrids = min(triton.cdiv(elems_per_rank, block_size), ngrids)
 
     intra_node_two_shot_multimem_kernel[(ngrids, )](
-        ctx.scatter_bufs.flatten()[ctx.rank * elems_per_rank:],
+        ctx.scatter_buf,
         ctx.grid_barrier,
-        min(elems_per_rank, elems - elems_per_rank * ctx.rank),
+        elems,
+        output,
+        ctx.rank,
+        ctx.world_size,
         block_size,
         num_warps=num_warps,
     )
-    return ctx.scatter_bufs
+    return output
 
 
+@requires(is_nvshmem_multimem_supported)
 def intra_node_two_shot_push_multicast_1d_op(
     ctx: AllReduceContext,
     local_input: Tensor,
@@ -910,7 +943,7 @@ def intra_node_two_shot_push_multicast_1d_op(
     """ This function is DEPRECATED. Please use `intra_node_two_shot_multicast_all_reduce_op` instead.
 
     Notes:
-        - Out-of-place op, results are stored in symm buffer (see `return ctx.scatter_bufs`)
+        - Out-of-place op, results are stored in symm buffer (see `return ctx.scatter_buf`)
         - Uses multimem asm instrution
         - NVLink communication cannot be fused with reduce, leading to lower bandwidth utilization
         - Relies on nvshmem for per-block data transfer, which limits scalability when using multiple ranks per peer.
@@ -923,7 +956,6 @@ def intra_node_two_shot_push_multicast_1d_op(
         "This function is deprecated and will be removed in a future version. "
         "Use 'intra_node_two_shot_multicast_all_reduce_op' instead for better performance.", DeprecationWarning,
         stacklevel=2)
-    assert os.getenv("NVSHMEM_DISABLE_CUDA_VMM", "1") == "0", "Set NVSHMEM_DISABLE_CUDA_VMM=0 for multicast."
     rank, world_size = ctx.rank, ctx.world_size
     num_elem = local_input.numel()
     num_tiles = triton.cdiv(num_elem, block_size)
@@ -934,7 +966,7 @@ def intra_node_two_shot_push_multicast_1d_op(
     if ctx.signal_stages == 1:
         ctx.reset_barriers()
     current_stream = torch.cuda.current_stream()
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
+    nvshmem_barrier_all_on_stream(current_stream)
     _run_straggler(ctx, straggler_option)
 
     if max_sm > 0:
@@ -942,22 +974,18 @@ def intra_node_two_shot_push_multicast_1d_op(
     else:
         grid_size = max(tiles_per_rank, world_size)
 
-    two_shot_push_multicast_1d_kernel[(grid_size, )](local_input, ctx.scatter_bufs, local_counter_pad, ctx.recv_buffer,
+    two_shot_push_multicast_1d_kernel[(grid_size, )](local_input, ctx.scatter_buf, local_counter_pad, ctx.recv_buffer,
                                                      rank, world_size, num_elem, SIGNAL_TARGET, num_warps=num_warps,
                                                      BLOCK_SIZE=block_size)
-    return ctx.scatter_bufs
+    return ctx.scatter_buf[:local_input.numel()]
 
 
-def all_reduce(input: Tensor, output: Tensor, method: Union[str, AllReduceMethod] = None, ctx: AllReduceContext = None,
+def all_reduce(input: Tensor, output: Tensor, method: Union[str, AllReduceMethod], ctx: AllReduceContext,
                return_ctx: bool = False, max_sm: int = -1, straggler_option=None,  # for straggler simulation
                ):
     if isinstance(method, str):
         method = str_to_method(method)
-    if ctx is None:
-        ctx = create_allreduce_ctx(
-            input,
-            method,
-        )
+
     if method is None:  # methods using multimem reduce are recommended
         if input.element_size() * input.numel() <= 64 * 1024:  #64KB
             method = AllReduceMethod.OneShot_Ld_Reduce

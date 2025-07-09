@@ -27,7 +27,6 @@ import triton
 import triton.language as tl
 import triton_dist.language as dl
 from triton.language.extra.cuda.language_extra import tid, st
-from triton_dist import pynvshmem
 
 from typing import Optional, List
 from dataclasses import dataclass, field
@@ -35,6 +34,7 @@ from dataclasses import dataclass, field
 from triton_dist.kernels.nvidia.common_ops import set_signal, barrier_all_intra_node_non_atomic
 from triton_dist.kernels.nvidia.allgather import AllGatherMethod, cp_engine_producer_all_gather_intra_node, get_auto_all_gather_method, cp_engine_producer_all_gather_inter_node
 from triton_dist.kernels.nvidia.ag_gemm_threadblock_swizzle import threadblock_swizzle_allgather_gemm_kernel
+from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors, nvshmem_free_tensor_sync
 
 
 @triton.jit(do_not_specialize=["rank"])
@@ -108,13 +108,13 @@ def local_copy_and_barrier_all(local_rank, rank, num_ranks, local_data, global_d
                                                      global_data.stride(1), phase, 128, 256)
 
     else:
-        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        nvshmem_barrier_all_on_stream()
         barrier_ptr.fill_(0)
         grid = lambda META: (triton.cdiv(M_per_rank, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
         copy_kernel[grid](rank, local_data, global_data, M_per_rank, N, local_data.stride(0), local_data.stride(1),
                           global_data.stride(0), global_data.stride(1), 128, 256)
         set_signal(barrier_ptr[rank].data_ptr(), 1, torch.cuda.current_stream(), is_internode)
-        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        nvshmem_barrier_all_on_stream()
 
 
 @triton.jit
@@ -418,15 +418,12 @@ class AllGatherGEMMTensorParallelContext:
     n_nodes: int = field(init=False)
     node_rank: int = field(init=False)
     local_rank: int = field(init=False)
-    workspace_tensors: List[torch.Tensor] = field(init=False)  # ag buffer
-    barrier_tensors: List[torch.Tensor] = field(init=False)
-    local_barrier_buff: List[torch.Tensor] = field(init=False)  # only used in customized intranode barrier
-    workspace_tensor: torch.Tensor = field(init=False)
-    barrier_tensor: torch.Tensor = field(init=False)
+    symm_workspaces: List[torch.Tensor] = field(init=False)  # ag buffer
+    symm_barriers: List[torch.Tensor] = field(init=False)
+    symm_workspace: torch.Tensor = field(init=False)
+    symm_barrier: torch.Tensor = field(init=False)
     fake_barrier: torch.Tensor = field(init=False)  # for gemm only function
-    comm_buf: torch.Tensor = field(init=False)
-    intranode_barrier_dtype = torch.int32
-    internode_barrier_dtype = torch.uint64  # required by NVSHMEM
+    symm_comm_buf: torch.Tensor = field(init=False)
     barrier_target = 1
     # async streams
     gemm_stream: Optional[torch.cuda.streams.Stream] = None
@@ -447,32 +444,29 @@ class AllGatherGEMMTensorParallelContext:
     for_correctness: bool = False
 
     def __post_init__(self):
+        assert self.num_ranks % self.num_local_ranks == 0
         self.is_multinode = self.num_ranks > self.num_local_ranks
         self.n_nodes = self.num_ranks // self.num_local_ranks
         self.node_rank = self.rank // self.num_local_ranks
         self.local_rank = self.rank % self.num_local_ranks
-        self.workspace_tensors = pynvshmem.nvshmem_create_tensor_list_intra_node([self.max_M, self.K],
-                                                                                 self.tensor_dtype)
-        self.local_barrier_buff = pynvshmem.nvshmem_create_tensor([self.max_blocks * self.num_ranks],
-                                                                  self.intranode_barrier_dtype)
-        self.comm_buf = pynvshmem.nvshmem_create_tensor([3 * self.num_ranks], self.intranode_barrier_dtype)
-        if not self.is_multinode:
-            self.barrier_tensors = pynvshmem.nvshmem_create_tensor_list_intra_node([self.num_ranks],
-                                                                                   self.intranode_barrier_dtype)
-        else:
-            self.barrier_tensors = pynvshmem.nvshmem_create_tensor_list_intra_node([self.num_ranks],
-                                                                                   self.internode_barrier_dtype)
-        self.workspace_tensor = self.workspace_tensors[self.local_rank]
-        self.barrier_tensor = self.barrier_tensors[self.local_rank]
-        self.comm_buf.fill_(0)
-        self.barrier_tensor.fill_(0)
 
-        if not self.is_multinode:
-            self.fake_barrier = torch.ones([self.num_ranks], dtype=self.intranode_barrier_dtype, device="cuda")
-        else:
-            self.fake_barrier = torch.ones([self.num_ranks], dtype=self.internode_barrier_dtype, device="cuda")
+        self.symm_workspaces = nvshmem_create_tensors((self.max_M, self.K), self.tensor_dtype, self.rank,
+                                                      self.num_local_ranks)
+        self.symm_workspace = self.symm_workspaces[self.local_rank]
 
+        self.symm_comm_buf = nvshmem_create_tensor((3 * self.num_ranks, ), torch.int32)
+        self.symm_comm_buf.fill_(0)
+
+        barrier_dtype = NVSHMEM_SIGNAL_DTYPE if self.is_multinode else torch.int32
+        self.symm_barriers = nvshmem_create_tensors((self.num_ranks, ), barrier_dtype, self.rank, self.num_local_ranks)
+        self.symm_barrier = self.symm_barriers[self.local_rank]
+        self.symm_barrier.fill_(0)
+
+        self.fake_barrier = torch.ones([self.num_ranks], dtype=barrier_dtype, device="cuda")
         self.max_gemm_sm = torch.cuda.get_device_properties("cuda").multi_processor_count
+
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
+        torch.cuda.synchronize()
 
     def update(self, rank, num_ranks, num_local_ranks=8, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
                for_correctness=False, ag_stream=None, internode_ag_stream=None, gemm_stream=None):
@@ -487,6 +481,11 @@ class AllGatherGEMMTensorParallelContext:
         self.ag_stream = ag_stream
         self.internode_ag_stream = internode_ag_stream
         self.gemm_stream = gemm_stream
+
+    def finailize(self):
+        nvshmem_free_tensor_sync(self.symm_workspace)
+        nvshmem_free_tensor_sync(self.symm_barrier)
+        nvshmem_free_tensor_sync(self.symm_comm_buf)
 
 
 def create_ag_gemm_context(tensor_A, tensor_B, rank, num_ranks, max_M, num_local_ranks=8, BLOCK_M=128, BLOCK_N=256,
@@ -531,7 +530,7 @@ def create_ag_gemm_context(tensor_A, tensor_B, rank, num_ranks, max_M, num_local
         ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages,
         all_gather_method=get_auto_all_gather_method(num_ranks, num_local_ranks), for_correctness=for_correctness)
 
-    pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+    nvshmem_barrier_all_on_stream()
     torch.cuda.synchronize()
     return ctx
 
@@ -575,8 +574,8 @@ def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext = None, rank=None, num
 
     C = torch.empty([ctx.num_ranks * M_per_rank, N_per_rank], dtype=a.dtype, device=a.device)
 
-    local_copy_and_barrier_all(ctx.local_rank, ctx.rank, ctx.num_ranks, a, ctx.workspace_tensor, ctx.comm_buf,
-                               ctx.barrier_tensor, M_per_rank, K, ctx.phase, is_internode=ctx.is_multinode)
+    local_copy_and_barrier_all(ctx.local_rank, ctx.rank, ctx.num_ranks, a, ctx.symm_workspace, ctx.symm_comm_buf,
+                               ctx.symm_barrier, M_per_rank, K, ctx.phase, is_internode=ctx.is_multinode)
     ctx.phase += 2
 
     rowise_ag_gemm_dispatcher(a, b, C, ctx, persistent=persistent, autotune=autotune, straggler_option=straggler_option)
@@ -597,14 +596,14 @@ def rowise_ag_gemm_dispatcher(a, b, c, ctx: AllGatherGEMMTensorParallelContext, 
             ctx.rank,
             ctx.num_ranks,
             a,
-            ctx.workspace_tensors,
-            ctx.barrier_tensors,
+            ctx.symm_workspaces,
+            ctx.symm_barriers,
             ctx.ag_intranode_stream,
             for_correctness=ctx.for_correctness,
             all_gather_method=ctx.all_gather_method,
         )
     else:
-        cp_engine_producer_all_gather_inter_node(a, ctx.workspace_tensors, ctx.barrier_tensors, ctx.barrier_target,
+        cp_engine_producer_all_gather_inter_node(a, ctx.symm_workspaces, ctx.symm_barriers, ctx.barrier_target,
                                                  ctx.rank, ctx.num_local_ranks, ctx.num_ranks, ctx.ag_intranode_stream,
                                                  ctx.ag_internode_stream, for_correctness=ctx.for_correctness,
                                                  all_gather_method=ctx.all_gather_method)
@@ -620,17 +619,17 @@ def rowise_ag_gemm_dispatcher(a, b, c, ctx: AllGatherGEMMTensorParallelContext, 
                                                                                     ), )
             if not autotune:
                 compiled = kernel_consumer_gemm_non_persistent[grid](
-                    ctx.workspace_tensor[:M], b, c,  #
+                    ctx.symm_workspace[:M], b, c,  #
                     M, ctx.N_per_rank, ctx.K,  #
-                    ctx.workspace_tensor.stride(0), ctx.workspace_tensor.stride(1), b.stride(1), b.stride(0),
-                    c.stride(0), c.stride(1), ctx.rank, ctx.num_ranks, ctx.barrier_tensor, ctx.BLOCK_M, ctx.BLOCK_N,
-                    ctx.BLOCK_K, ctx.GROUP_SIZE_M, num_stages=ctx.stages, num_warps=ctx.warps)
+                    ctx.symm_workspace.stride(0), ctx.symm_workspace.stride(1), b.stride(1), b.stride(0), c.stride(0),
+                    c.stride(1), ctx.rank, ctx.num_ranks, ctx.symm_barrier, ctx.BLOCK_M, ctx.BLOCK_N, ctx.BLOCK_K,
+                    ctx.GROUP_SIZE_M, num_stages=ctx.stages, num_warps=ctx.warps)
             else:
                 compiled = kernel_consumer_gemm_non_persistent_autotune[grid](
-                    ctx.workspace_tensor[:M], b, c,  #
+                    ctx.symm_workspace[:M], b, c,  #
                     M, ctx.N_per_rank, ctx.K,  #
-                    ctx.workspace_tensor.stride(0), ctx.workspace_tensor.stride(1), b.stride(1), b.stride(0),
-                    c.stride(0), c.stride(1), ctx.rank, ctx.num_ranks, ctx.barrier_tensor)
+                    ctx.symm_workspace.stride(0), ctx.symm_workspace.stride(1), b.stride(1), b.stride(0), c.stride(0),
+                    c.stride(1), ctx.rank, ctx.num_ranks, ctx.symm_barrier)
         else:
             # TMA descriptors require a global memory allocation
             def alloc_fn(size: int, alignment: int, stream: Optional[int]):
@@ -646,15 +645,16 @@ def rowise_ag_gemm_dispatcher(a, b, c, ctx: AllGatherGEMMTensorParallelContext, 
             ), )
 
             if not autotune:
-                compiled = kernel_consumer_gemm_persistent[grid](
-                    ctx.workspace_tensor[:M], b, c, M, ctx.N_per_rank, ctx.K, ctx.rank, ctx.num_ranks,
-                    ctx.barrier_tensor, ctx.BLOCK_M, ctx.BLOCK_N, ctx.BLOCK_K, ctx.GROUP_SIZE_M, False, gemm_sm,
-                    ready_value=ctx.barrier_target, LOCAL_WORLD_SIZE=ctx.num_local_ranks, num_stages=ctx.stages,
-                    num_warps=ctx.warps)
+                compiled = kernel_consumer_gemm_persistent[grid](ctx.symm_workspace[:M], b, c, M, ctx.N_per_rank, ctx.K,
+                                                                 ctx.rank, ctx.num_ranks, ctx.symm_barrier, ctx.BLOCK_M,
+                                                                 ctx.BLOCK_N, ctx.BLOCK_K, ctx.GROUP_SIZE_M, False,
+                                                                 gemm_sm, ready_value=ctx.barrier_target,
+                                                                 LOCAL_WORLD_SIZE=ctx.num_local_ranks,
+                                                                 num_stages=ctx.stages, num_warps=ctx.warps)
             else:
-                compiled = kernel_consumer_gemm_persistent_autotune[grid](ctx.workspace_tensor[:M], b, c, M,
+                compiled = kernel_consumer_gemm_persistent_autotune[grid](ctx.symm_workspace[:M], b, c, M,
                                                                           ctx.N_per_rank, ctx.K, ctx.rank,
-                                                                          ctx.num_ranks, ctx.barrier_tensor,
+                                                                          ctx.num_ranks, ctx.symm_barrier,
                                                                           LOCAL_WORLD_SIZE=ctx.num_local_ranks,
                                                                           EPILOGUE_SUBTILE=False, NUM_SMS=gemm_sm)
 
@@ -747,7 +747,7 @@ def gemm_non_persistent(a, b, ctx: AllGatherGEMMTensorParallelContext):
         kernel_consumer_gemm_persistent_autotune[grid](
             a, b, C,  #
             M, N, K,  #
-            ctx.rank, ctx.num_ranks, ctx.fake_barrier, ctx.comm_buf, EPILOGUE_SUBTILE=False, NUM_SMS=0  #
+            ctx.rank, ctx.num_ranks, ctx.fake_barrier, ctx.symm_comm_buf, EPILOGUE_SUBTILE=False, NUM_SMS=0  #
         )
 
     return C

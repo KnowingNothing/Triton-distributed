@@ -31,13 +31,13 @@ import triton
 import triton.language as tl
 import triton_dist.language as dl
 from triton.language.extra.cuda.language_extra import __syncthreads
-from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.allgather import (AllGatherMethod, cp_engine_producer_all_gather_inter_node,
                                                   cp_engine_producer_all_gather_intra_node, get_auto_all_gather_method)
-from triton_dist.kernels.nvidia.common_ops import barrier_on_this_grid, next_power_of_2, set_signal
+from triton_dist.kernels.nvidia.common_ops import (barrier_on_this_grid, next_power_of_2, set_signal)
 from triton_dist.kernels.nvidia.threadblock_swizzle_ag_moe_triton import \
     threadblock_swizzle_ag_moe_kernel
 from triton_dist.language.extra import libshmem_device
+from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_create_tensors, nvshmem_free_tensor_sync
 
 
 @triton.jit(do_not_specialize=["rank"])
@@ -215,10 +215,10 @@ class MoEAllGatherGroupGEMMTensorParallelContext:
     node_rank: int = field(init=False)
     local_rank: int = field(init=False)
     # distributed mem
-    workspace_tensors: List[torch.Tensor] = field(init=False)  # ag buffer
-    barrier_tensors: List[torch.Tensor] = field(init=False)
-    workspace_tensor: torch.Tensor = field(init=False)
-    barrier_tensor: torch.Tensor = field(init=False)
+    symm_workspaces: List[torch.Tensor] = field(init=False)  # ag buffer
+    symm_barriers: List[torch.Tensor] = field(init=False)
+    symm_workspace: torch.Tensor = field(init=False)
+    symm_barrier: torch.Tensor = field(init=False)
     barrier_target = 1
     grid_barrier: torch.Tensor = field(init=False)  # used for triton grid barrier
     # async streams
@@ -240,11 +240,19 @@ class MoEAllGatherGroupGEMMTensorParallelContext:
         self.node_rank = self.rank // self.num_local_ranks
         self.local_rank = self.rank % self.num_local_ranks
         self.grid_barrier = torch.zeros((1, ), dtype=torch.int32, device="cuda")
-        self.workspace_tensors = pynvshmem.nvshmem_create_tensor_list_intra_node([self.max_ntokens, self.K], self.dtype)
-        self.barrier_tensors = pynvshmem.nvshmem_create_tensor_list_intra_node([self.num_ranks], torch.uint64)
-        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
-        self.workspace_tensor = self.workspace_tensors[self.local_rank]
-        self.barrier_tensor = self.barrier_tensors[self.local_rank]
+
+        self.symm_workspaces = nvshmem_create_tensors((self.max_ntokens, self.K), self.dtype, self.rank,
+                                                      self.num_local_ranks)
+        self.symm_workspace = self.symm_workspaces[self.local_rank]
+
+        self.symm_barriers = nvshmem_create_tensors((self.num_ranks, ), NVSHMEM_SIGNAL_DTYPE, self.rank,
+                                                    self.num_local_ranks)
+        self.symm_barrier = self.symm_barriers[self.local_rank]
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
+
+    def finalize(self):
+        nvshmem_free_tensor_sync(self.symm_barrier)
+        nvshmem_free_tensor_sync(self.symm_workspace)
 
     @staticmethod
     def sort_topk_ids_align_block_size(
@@ -299,23 +307,23 @@ class MoEAllGatherGroupGEMMTensorParallelContext:
 
     def copy_and_reset_and_barrier_all(self, local_data):
         M_per_rank = local_data.shape[0]
-        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
-        self.barrier_tensor.zero_()
-        dst = self.workspace_tensor[self.rank * M_per_rank:(self.rank + 1) * M_per_rank, :]
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
+        self.symm_barrier.zero_()
+        dst = self.symm_workspace[self.rank * M_per_rank:(self.rank + 1) * M_per_rank, :]
         dst.copy_(local_data)
-        set_signal(self.barrier_tensor[self.rank].data_ptr(), 1, torch.cuda.current_stream(), self.is_multinode)
-        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream().cuda_stream)
+        set_signal(self.symm_barrier[self.rank].data_ptr(), 1, torch.cuda.current_stream(), self.is_multinode)
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
     def copy_and_reset_and_barrier_all_triton(self, local_data):
         elems_per_rank = local_data.numel()
         assert local_data.is_contiguous() and local_data.is_cuda, "local_data must be contiguous"
         _copy_and_reset_and_barrier_all_kernel[(16, )](
             local_data,
-            self.workspace_tensor.flatten()[elems_per_rank * self.rank:elems_per_rank * (self.rank + 1)],
+            self.symm_workspace.flatten()[elems_per_rank * self.rank:elems_per_rank * (self.rank + 1)],
             elems_per_rank,
-            self.barrier_tensor,
+            self.symm_barrier,
             self.rank,
-            self.barrier_tensor.numel(),
+            self.symm_barrier.numel(),
             self.grid_barrier,
             BLOCK_SIZE=1024 * 16 // local_data.itemsize,
             num_warps=32,
@@ -415,13 +423,13 @@ def rowise_ag_scatter_group_gemm_dispatcher(a,  # local tensor
             ctx.rank,
             ctx.num_ranks,
             a,
-            ctx.workspace_tensors,
-            ctx.barrier_tensors,
+            ctx.symm_workspaces,
+            ctx.symm_barriers,
             ctx.ag_intranode_stream,
             all_gather_method=ctx.all_gather_method,
         )
     else:
-        cp_engine_producer_all_gather_inter_node(a, ctx.workspace_tensors, ctx.barrier_tensors, ctx.barrier_target,
+        cp_engine_producer_all_gather_inter_node(a, ctx.symm_workspaces, ctx.symm_barriers, ctx.barrier_target,
                                                  ctx.rank, ctx.num_local_ranks, ctx.num_ranks, ctx.ag_intranode_stream,
                                                  ctx.ag_internode_stream, all_gather_method=ctx.all_gather_method)
 
@@ -436,7 +444,7 @@ def rowise_ag_scatter_group_gemm_dispatcher(a,  # local tensor
 
     ntokens_per_rank, K = a.shape
     M = ntokens_per_rank * ctx.num_ranks * ctx.topk
-    local_ag_buffer = ctx.workspace_tensor[:M]
+    local_ag_buffer = ctx.symm_workspace[:M]
 
     grid = lambda META: ((triton.cdiv(M, META["BLOCK_SIZE_M"]) + ctx.num_experts - 1) * triton.cdiv(
         ctx.N_per_rank, META["BLOCK_SIZE_N"]), )
@@ -444,7 +452,7 @@ def rowise_ag_scatter_group_gemm_dispatcher(a,  # local tensor
         local_ag_buffer,
         b,
         c,
-        ctx.barrier_tensor,
+        ctx.symm_barrier,
         sorted_gather_index,
         expert_idx,
         tiled_m,

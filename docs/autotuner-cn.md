@@ -38,8 +38,10 @@ import triton
 import triton.language as tl
 import triton_dist.language as dl
 from triton_dist.kernels.nvidia.common_ops import barrier_all
+from triton_dist.utils import init_nvshmem_by_torch_process_group
 
-from triton_dist import pynvshmem
+import nvshmem.bindings
+import nvshmem.core
 
 
 def CUDA_CHECK(err):
@@ -381,17 +383,19 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     N_per_rank = N // num_ranks
 
     A = torch.randn([M_per_rank, K], dtype=dtype, device=device)
-    workspaces = pynvshmem.nvshmem_create_tensor_list_intra_node([M, K], dtype)
+    workspace = nvshmem_create_tensors([M, K], dtype=dtype, rank, num_ranks)
+    workspace = workspaces[rank]
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
 
-    barriers = pynvshmem.nvshmem_create_tensor_list_intra_node([num_ranks], torch.int32)
+    barriers = nvshmem_create_tensor([num_ranks], dtype=torch.int32, rank, num_ranks)
+    barrier = barriers[rank]
+    barrier.fill_(0)
 
     # at most 65536 blocks, each block world_size barriers
     max_blocks = 65536
-    comm_buf = pynvshmem.nvshmem_create_tensor([max_blocks * num_ranks], torch.int32)
+    comm_buf = nvshmem_create_tensor([max_blocks * num_ranks], dtype=torch.int32)
     comm_buf.fill_(0)
-    barriers[rank].fill_(0)
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
+    nvshmem.core.barrier(nvshmem.core.Teams.TEAM_WORLD, stream=current_stream)
     torch.cuda.synchronize()
 
     ag_stream = torch.cuda.Stream()
@@ -404,9 +408,9 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
             rank,
             num_ranks,
             A,
-            workspaces[rank],
+            workspace,
             comm_buf,
-            barriers[rank],
+            barrier,
             M_per_rank,
             K,
         )
@@ -428,8 +432,8 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
 
     A.copy_(torch.randn([M_per_rank, K], dtype=dtype, device=device))
     B.copy_(torch.randn([N_per_rank, K], dtype=dtype, device=device))
-    workspaces[rank].copy_(torch.randn([M, K], dtype=dtype, device=device))
-    pynvshmem.nvshmemx_barrier_all_on_stream(current_stream)
+    workspace.copy_(torch.randn([M, K], dtype=dtype, device=device))
+    nvshmem.core.barrier(nvshmem.core.Teams.TEAM_WORLD, stream=current_stream)
     torch.cuda.synchronize()
     C = run_ag_gemm_persistent()
 
@@ -474,10 +478,11 @@ def main():
     torch.distributed.barrier(TP_GROUP)
 
     torch.cuda.synchronize()
-    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
+    init_nvshmem_by_torch_process_group(TP_GROUP)
 
     test_ag_gemm_tma_intra_node(RANK, WORLD_SIZE, TP_GROUP)
 
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group()
 
 
@@ -488,7 +493,7 @@ if __name__ == "__main__":
 可以用下面的命令来测试上述代码：
 
 ```bash
-bash ./third_party/distributed/launch.sh <file_name>
+bash ./scripts/launch.sh <file_name>
 ```
 
 下面我们给 `kernel_consumer_gemm_persistent` 添加 `triton.autotune`，对 `kernel_consumer_gemm_persistent` 进行修改：
@@ -604,12 +609,12 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
 
 其中，rank-i 的 tuning 过程的 log 输出会打印在 `./.autotune_logs/rank-i.log` 中。
 
-更多的例子可以参考部分测试文件：[test_ag_gemm_intra_node.py](../../third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py)、[test_moe_reduce_rs.py](../../third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py)、[test_ag_moe.py](../../third_party/distributed/distributed/test/nvidia/test_ag_moe.py)，可以用如下命令进行测试：
+更多的例子可以参考部分测试文件：[test_ag_gemm.py](../../python/triton_dist/test/nvidia/test_ag_gemm.py)、[test_moe_reduce_rs.py](../../python/triton_dist/test/nvidia/test_moe_reduce_rs.py)、[test_ag_moe.py](../../python/triton_dist/test/nvidia/test_ag_moe.py)，可以用如下命令进行测试：
 
 ```bash
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_gemm_intra_node.py --case correctness_tma_autotune
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check --autotune
-bash ./third_party/distributed/launch.sh ./third_party/distributed/distributed/test/nvidia/test_ag_moe.py --M 2048 --autotune
+bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness_tma_autotune
+bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --check --autotune
+bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --autotune
 ```
 
 ### Implementaiton

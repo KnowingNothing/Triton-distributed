@@ -31,16 +31,15 @@ import torch
 import triton
 import triton.language as tl
 from cuda import cudart
-from triton_dist import pynvshmem
+import nvshmem.core
+import nvshmem.bindings
 from triton_dist.language.extra import libshmem_device
 
 import triton_dist.language as dl
-from triton_dist.kernels.nvidia.common_ops import (barrier_all_on_stream, set_signal, wait_eq, barrier_on_this_grid,
-                                                   BarrierAllContext)
-from triton_dist.utils import (CUDA_CHECK, get_has_fullmesh_nvlink)
+from triton_dist.kernels.nvidia.common_ops import (set_signal, wait_eq, barrier_on_this_grid, BarrierAllContext)
+from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, get_has_fullmesh_nvlink, nvshmem_barrier_all_on_stream,
+                               nvshmem_create_tensors, nvshmem_free_tensor_sync)
 from triton.language.extra.cuda.language_extra import tid, __syncthreads, ld, st
-
-SIGNAL_DTYPE = torch.uint64
 
 
 @dataclasses.dataclass
@@ -103,8 +102,6 @@ class ReduceScatter2DContext:
                                                           self.local_world_size])
 
     def reset_barriers(self):
-        # self.scatter_signal_bufs[self.local_rank].fill_(0)
-        # self.rs_per_node_signal_bufs[self.local_rank].fill_(0)
         self.signal_bufs[self.local_rank].fill_(0)
 
     def get_scatter_bufs_and_signal_for_each_node(self, input, node_id):
@@ -140,6 +137,12 @@ class ReduceScatter2DContext:
     def scatter_signal_buf(self) -> torch.Tensor:
         return self.scatter_signal_bufs[self.local_rank]
 
+    def finalize(self):
+        nvshmem_free_tensor_sync(self.scatter_bufs[self.local_rank])
+        nvshmem_free_tensor_sync(self.rs_per_node_bufs[self.local_rank])
+        nvshmem_free_tensor_sync(self.p2p_bufs[self.local_rank])
+        nvshmem_free_tensor_sync(self.signal_bufs[self.local_rank])
+
 
 def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dtype, overlap_with_gemm=True,
                                 num_reduction_sms=15) -> ReduceScatter2DContext:
@@ -152,19 +155,15 @@ def create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, dt
     assert world_size % local_world_size == 0
     assert max_M % world_size == 0
 
-    scatter_bufs = pynvshmem.nvshmem_create_tensor_list_intra_node([max_M, N], dtype)
-
-    rs_per_node_bufs = pynvshmem.nvshmem_create_tensor_list_intra_node([max_M // local_world_size, N], dtype)
-
-    p2p_bufs = pynvshmem.nvshmem_create_tensor_list_intra_node([max_M // local_world_size, N], dtype)
+    scatter_bufs = nvshmem_create_tensors((max_M, N), dtype, rank, local_world_size)
+    rs_per_node_bufs = nvshmem_create_tensors((max_M // local_world_size, N), dtype, rank, local_world_size)
+    p2p_bufs = nvshmem_create_tensors((max_M // local_world_size, N), dtype, rank, local_world_size)
 
     # signal_buf: scatter_signal | rs_per_node_signal
     num_signal_bufs = 2
-    signal_bufs = pynvshmem.nvshmem_create_tensor_list_intra_node([
-        world_size * num_signal_bufs,
-    ], SIGNAL_DTYPE)
+    signal_bufs = nvshmem_create_tensors((world_size * num_signal_bufs, ), NVSHMEM_SIGNAL_DTYPE, rank, local_world_size)
 
-    barrier_all_on_stream(None, torch.cuda.current_stream())
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
     reduction_stream: torch.cuda.Stream = torch.cuda.Stream(priority=-1)
 
@@ -319,7 +318,7 @@ def reduce_scatter_ring_push_1d_intra_node_ce(
             cur_out = output if output is not None and stage == num_ranks - 1 else buffer
             add_continuous(src, buffer, cur_out)  # directly reduce to output
         if stage == num_ranks - 1:
-            return output
+            break
         if stage == 0:
             dst.copy_(src)
         else:
@@ -329,6 +328,7 @@ def reduce_scatter_ring_push_1d_intra_node_ce(
             1,
             require_i64=if_64bit_flag,
         )
+    return output
 
 
 @triton.jit(do_not_specialize=["rank", "num_ranks"])
@@ -580,13 +580,13 @@ def reducer_scatter_for_each_node_ring(input: torch.Tensor, ctx: ReduceScatter2D
                 M_start = M_per_rank * node_id
                 M_end = M_start + M_per_rank
 
-                pynvshmem.nvshmemx_putmem_on_stream(
-                    p2p_buf[M_start:M_end],
-                    scatter_buf,
+                nvshmem.bindings.nvshmem.putmem_on_stream(
+                    p2p_buf[M_start:M_end].data_ptr(),
+                    scatter_buf.data_ptr(),
                     nbytes_per_rank,
                     peer_rank,
                 )
-                barrier_all_on_stream(None)
+                nvshmem_barrier_all_on_stream()
 
     if nnodes == 1:
         return scatter_buf
@@ -654,7 +654,7 @@ def reducer_scatter_for_each_node(input: torch.Tensor, ctx: ReduceScatter2DConte
 
         # ring reduce intra node
         rs_buf_cur_node = rs_per_node_buf[M_per_rank * cur_node_id:(cur_node_id + 1) * M_per_rank]
-        barrier_all_on_stream(None, stream)
+        nvshmem_barrier_all_on_stream(stream)
         reduction_stream.wait_stream(stream)
         with torch.cuda.stream(reduction_stream):
             reduce_out_buf = output if nnodes == 1 else rs_buf_cur_node
@@ -862,7 +862,7 @@ def reduce_scatter_multi_node(input: torch.Tensor, ctx: ReduceScatter2DContext, 
     if ctx.nnodes == 1:
         return rs_result_per_node
 
-    barrier_all_on_stream(None, current_stream)
+    nvshmem_barrier_all_on_stream(current_stream)
     if output is None:
         output = torch.empty((M_per_rank, N), dtype=input.dtype, device=input.device)
     ring_reduce(rs_result_per_node, output, ctx.node_id, ctx.nnodes)
@@ -875,7 +875,7 @@ def reduce_scatter_2d_op(input: torch.Tensor, ctx: ReduceScatter2DContext, outpu
     assert ctx.max_M >= M and ctx.N == N
     assert M % ctx.world_size == 0
 
-    barrier_all_on_stream(None, torch.cuda.current_stream())
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
     output = reduce_scatter_multi_node(input, ctx, output)
     ctx.reset_barriers()
     return output

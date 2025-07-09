@@ -31,11 +31,10 @@ import triton
 import triton.language as tl
 import triton_dist.language as dl
 from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add, tid)
-from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.reduce_scatter import (ReduceScatter2DContext, create_reduce_scater_2d_ctx,
                                                        reduce_scatter_2d_op, ring_reduce)
 from triton_dist.kernels.nvidia.gemm_rs_threadblock_swizzle import threadblock_swizzle_gemm_reduce_scatter_kernel
-from triton_dist.kernels.nvidia.common_ops import barrier_all_on_stream
+from triton_dist.utils import nvshmem_barrier_all_on_stream, nvshmem_create_tensors, nvshmem_free_tensor_sync
 
 
 ################### context ###################
@@ -58,7 +57,11 @@ class GEMMReduceScatterTensorParallelContext:
     GROUP_M: int = 8
     stages: int = 3
 
-    def update(self, rs_stream, output_dtype=None, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, GROUP_M=8, stages=3):
+    def finalize(self):
+        self.rs_ctx.finalize()
+        nvshmem_free_tensor_sync(self.gemm_out_bufs[self.rs_ctx.local_rank])
+
+    def update(self, rs_stream, output_dtype, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, GROUP_M=8, stages=3):
         self.rs_stream = rs_stream
         self.output_dtype = output_dtype
         self.BLOCK_M = BLOCK_M
@@ -79,10 +82,11 @@ def create_gemm_rs_context(max_M, N, rank, world_size, local_world_size, output_
                                          overlap_with_gemm=True)
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
     num_gemm_sms = NUM_SMS - rs_ctx.num_rs_sms
-    gemm_out_bufs = pynvshmem.nvshmem_create_tensor_list_intra_node([max_M, N], output_dtype)
+    gemm_out_bufs = nvshmem_create_tensors((max_M, N), output_dtype, rank, local_world_size)
     ctx = GEMMReduceScatterTensorParallelContext(rs_ctx=rs_ctx, output_dtype=output_dtype, gemm_out_bufs=gemm_out_bufs,
                                                  rs_stream=rs_stream, num_gemm_sms=num_gemm_sms, BLOCK_M=BLOCK_M,
                                                  BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, GROUP_M=GROUP_M, stages=stages)
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
     return ctx
 
 
@@ -576,9 +580,9 @@ def gemm_rs_op(input, weight, ctx: GEMMReduceScatterTensorParallelContext, persi
             reduce_scatter_2d_op(gemm_out, ctx.rs_ctx, output)
         current_stream.wait_stream(rs_stream)
     else:
-        barrier_all_on_stream(None, current_stream)
+        nvshmem_barrier_all_on_stream(current_stream)
         ring_reduce(gemm_out, output, ctx.rs_ctx.local_rank, local_world_size)
-        barrier_all_on_stream(None, current_stream)
+        nvshmem_barrier_all_on_stream(current_stream)
     return output
 
 

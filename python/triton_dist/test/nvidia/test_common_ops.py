@@ -31,13 +31,12 @@ import torch.distributed
 import triton
 import triton.language as tl
 
-from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.common_ops import (barrier_all_intra_node_non_atomic,
                                                    barrier_all_intra_node_non_atomic_block, barrier_on_this_grid,
                                                    barrier_all_intra_node_atomic_cas_block, bisect_left_kernel,
                                                    bisect_left_kernel_aligned, bisect_right_kernel,
                                                    bisect_right_kernel_aligned)
-from triton_dist.utils import check_p2p_native_atomic_supported
+from triton_dist.utils import check_p2p_native_atomic_supported, nvshmem_barrier_all_on_stream, init_nvshmem_by_torch_process_group, nvshmem_free_tensor_sync, nvshmem_create_tensor
 
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
 LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
@@ -62,24 +61,25 @@ def test_barrier_on_this_grid():
 
 def test_barrier_all_intra_node_non_atomic():
     print(">> barrier_all_intra_node_non_atomic start...")
-    symm_flags = pynvshmem.nvshmem_create_tensor_list_intra_node((LOCAL_WORLD_SIZE * 3, ), torch.int32)
-    symm_flags[LOCAL_RANK].fill_(0)
-    pynvshmem.nvshmem_barrier_all()
+    symm_flag = nvshmem_create_tensor((LOCAL_WORLD_SIZE * 3, ), torch.int32)
+    symm_flag.fill_(0)
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
     for n in range(1000):
         _random_sleep()
         # print(f"iter {n}", flush=True)
-        barrier_all_intra_node_non_atomic_block[(1, )](LOCAL_RANK, LOCAL_WORLD_SIZE, symm_flags[LOCAL_RANK], n + 1)
+        barrier_all_intra_node_non_atomic_block[(1, )](LOCAL_RANK, LOCAL_WORLD_SIZE, symm_flag, n + 1)
 
     print("✅ barrier_all_intra_node_non_atomic_block passed")
 
     for n in range(1000):
         _random_sleep()
         # print(f"iter {n}", flush=True)
-        barrier_all_intra_node_non_atomic[(random.randint(1, 1024), )](LOCAL_RANK, RANK, LOCAL_WORLD_SIZE,
-                                                                       symm_flags[LOCAL_RANK], n + 1)
+        barrier_all_intra_node_non_atomic[(random.randint(1, 1024), )](LOCAL_RANK, RANK, LOCAL_WORLD_SIZE, symm_flag,
+                                                                       n + 1)
 
     print("✅ barrier_all_intra_node_non_atomic passed")
+    nvshmem_free_tensor_sync(symm_flag)
 
 
 def test_barrier_all_intra_node():
@@ -88,15 +88,16 @@ def test_barrier_all_intra_node():
         return
 
     print(">> barrier_all_intra_node_atomic_cas_block start...")
-    symm_flag = pynvshmem.nvshmem_create_tensor((LOCAL_WORLD_SIZE, ), torch.int32)
+    symm_flag = nvshmem_create_tensor((LOCAL_WORLD_SIZE, ), torch.int32)
     symm_flag.fill_(0)
-    pynvshmem.nvshmem_barrier_all()
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
     for n in range(1000):
         _random_sleep()
         barrier_all_intra_node_atomic_cas_block[(1, )](LOCAL_RANK, RANK, LOCAL_WORLD_SIZE, symm_flag)
 
     print("✅ barrier_all_intra_node_atomic_cas_block passed")
+    nvshmem_free_tensor_sync(symm_flag)
 
 
 def bisect_triton(sorted_tensor, values_tensor, side="left", aligned=False):
@@ -192,7 +193,7 @@ if __name__ == "__main__":
     TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
 
     torch.cuda.synchronize()
-    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
+    init_nvshmem_by_torch_process_group(TP_GROUP)
 
     test_barrier_on_this_grid()
     test_barrier_all_intra_node_non_atomic()

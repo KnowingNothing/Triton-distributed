@@ -27,6 +27,7 @@ import os
 
 import torch
 import torch.distributed
+import nvshmem.core
 
 from triton_dist.kernels.nvidia import (ag_group_gemm, create_ag_group_gemm_context)
 from triton_dist.kernels.nvidia.comm_perf_model import (estimate_all_gather_time_ms, get_nic_gbps_per_gpu)
@@ -190,6 +191,8 @@ def perf_test(name, input_len, dtype: torch.dtype, config, debug=False):
         need_sync=True,
         allowed_ranks=list(range(WORLD_SIZE)),
     )
+    # TODO(houqi.1993) do not release nvshmem tensor: due to a BUG from nvshmem4py
+    # ctx.finalize()
 
 
 layer_configs = {
@@ -249,4 +252,5 @@ if __name__ == "__main__":
     for name, config in layer_configs.items():
         perf_test(name, args.M, dtype, config, args.debug)
 
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group()

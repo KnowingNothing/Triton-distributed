@@ -32,12 +32,12 @@ import triton.language as tl
 import triton_dist.language as dl
 from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add, tid, ntid, multimem_ld_reduce_v4,
                                                        st_v4_b32)
-from triton_dist import pynvshmem
 from triton_dist.kernels.nvidia.common_ops import (BarrierAllContext, barrier_all_on_stream, barrier_on_this_grid,
                                                    set_signal, wait_eq)
 from triton_dist.kernels.nvidia.reduce_scatter import ring_reduce
 from triton_dist.language.extra import libshmem_device
 from triton_dist.kernels.nvidia.moe_utils import calc_gather_scatter_index_triton, reduce_topk_kernel
+from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors, nvshmem_free_tensor_sync
 
 ################### helper functions ###################
 
@@ -243,12 +243,18 @@ class DataflowConfig:
 
 @dataclass
 class MoEReduceRSContext:
+    rank: int
+    world_size: int
+    local_rank: int = field(init=False)
+    local_world_size: int
+    nnodes: int = field(init=False)
+
     precompute_ctx: MoEAgScatterGroupGemmPrecomputeContext
 
-    rs_buffers: List[torch.Tensor]
-    rs_buffer_ptrs: torch.Tensor
-    rs_per_node_buffer: torch.Tensor
-    p2p_buffer: torch.Tensor
+    symm_rs_buffers: List[torch.Tensor]
+    symm_rs_buffer_ptrs: torch.Tensor
+    symm_rs_per_node_buffer: torch.Tensor
+    symm_p2p_buffer: torch.Tensor
     final_output_buffer: torch.Tensor
     barrier: BarrierAllContext
 
@@ -258,18 +264,32 @@ class MoEReduceRSContext:
 
     dataflow_config: DataflowConfig
 
-    barriers_gemm_scatter_counter: List[torch.Tensor]
-    barriers_gemm_scatter_counter_ptrs: torch.Tensor
-    barriers_gemm_scatter_ready: List[torch.Tensor]
-    barriers_gemm_scatter_ready_ptrs: torch.Tensor
-    barrier_gemm_scatter_counter: torch.Tensor
-    barrier_gemm_scatter_ready: torch.Tensor
-    rs_per_node_signal_buffer: torch.Tensor
+    symm_barrier_gemm_scatter_counter_ptrs: torch.Tensor
+    symm_barrier_gemm_scatter_counter: torch.Tensor
+    symm_barrier_gemm_scatter_ready_ptrs: torch.Tensor
+    symm_barrier_gemm_scatter_ready: torch.Tensor
+    symm_rs_per_node_signal: torch.Tensor
+
+    def __post_init__(self):
+        assert self.world_size % self.local_world_size == 0
+        self.local_rank = self.rank % self.local_world_size
+        self.nnodes = self.world_size // self.local_world_size
+
+    def finalize(self):
+        nvshmem_free_tensor_sync(self.symm_rs_buffers[self.local_rank])
+        nvshmem_free_tensor_sync(self.symm_rs_per_node_buffer)
+        nvshmem_free_tensor_sync(self.symm_p2p_buffer)
+        nvshmem_free_tensor_sync(self.symm_barrier_gemm_scatter_counter)
+        nvshmem_free_tensor_sync(self.symm_barrier_gemm_scatter_ready)
+        nvshmem_free_tensor_sync(self.symm_rs_per_node_signal)
 
 
-def create_moe_rs_context(pg, local_rank, world_size, local_world_size, max_token_num, hidden_dim, num_experts, topk,
-                          input_dtype, output_dtype, device, moe_block_size, router_logits):
+def create_moe_rs_context(pg: torch.distributed.ProcessGroup, local_world_size, max_token_num, hidden_dim, num_experts,
+                          topk, input_dtype, output_dtype, device, moe_block_size, router_logits):
     num_tokens_per_rank = router_logits.shape[0]
+    world_size = pg.size()
+    rank = pg.rank()
+    local_rank = rank % local_world_size
     precompute_ctx = precompute_context_helper(
         pg,
         world_size,
@@ -282,16 +302,15 @@ def create_moe_rs_context(pg, local_rank, world_size, local_world_size, max_toke
         BLOCK_M=moe_block_size,
     )
 
-    rs_buffers: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node([max_token_num, hidden_dim],
-                                                                                     input_dtype)
-    rs_buffer_ptrs: torch.Tensor = torch.tensor([t.data_ptr() for t in rs_buffers], device=device)
+    symm_rs_buffers = nvshmem_create_tensors((max_token_num, hidden_dim), input_dtype, rank, local_world_size)
+    symm_rs_buffer_ptrs: torch.Tensor = torch.tensor([t.data_ptr() for t in symm_rs_buffers], device=device)
 
-    rs_per_node_buffer = pynvshmem.nvshmem_create_tensor(
-        [max_token_num // local_world_size, hidden_dim],
+    symm_rs_per_node_buffer = nvshmem_create_tensor(
+        (max_token_num // local_world_size, hidden_dim),
         input_dtype,
     )
-    p2p_buffer = pynvshmem.nvshmem_create_tensor(
-        [max_token_num // local_world_size, hidden_dim],
+    symm_p2p_buffer = nvshmem_create_tensor(
+        (max_token_num // local_world_size, hidden_dim),
         input_dtype,
     )
     final_output_buffer = torch.zeros(
@@ -315,38 +334,45 @@ def create_moe_rs_context(pg, local_rank, world_size, local_world_size, max_toke
     GEMM_BLOCK_K = 32
     dataflow_config = DataflowConfig(GEMM_BLOCK_M, GEMM_BLOCK_N, GEMM_BLOCK_K, 8, 4, 4, RS_BLOCK_M, RS_BLOCK_N)
 
-    # initialize barriers
-    with torch.device(torch.cuda.current_device()):
+    # gemm_scatter
+    symm_barrier_gemm_scatter_counters = nvshmem_create_tensors((world_size, 1), torch.int32, rank, local_world_size)
+    symm_barrier_gemm_scatter_counter = symm_barrier_gemm_scatter_counters[local_rank]
+    symm_barrier_gemm_scatter_counter.zero_()
+    symm_barrier_gemm_scatter_counter_ptrs = torch.tensor([t.data_ptr()
+                                                           for t in symm_barrier_gemm_scatter_counters]).cuda()
 
-        # gemm_scatter
+    symm_barrier_gemm_scatter_readys = nvshmem_create_tensors((world_size, 1), NVSHMEM_SIGNAL_DTYPE, rank,
+                                                              local_world_size)
+    symm_barrier_gemm_scatter_ready = symm_barrier_gemm_scatter_readys[local_rank]
+    symm_barrier_gemm_scatter_ready.zero_()
+    symm_barrier_gemm_scatter_ready_ptrs = torch.tensor([t.data_ptr() for t in symm_barrier_gemm_scatter_readys]).cuda()
 
-        barriers_gemm_scatter_counter: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-            [world_size, 1], torch.int32)
+    # intra_node - p2p
+    symm_rs_per_node_signal = nvshmem_create_tensor((world_size, ), NVSHMEM_SIGNAL_DTYPE)
+    symm_rs_per_node_signal.zero_()
+    nvshmem_barrier_all_on_stream()
 
-        barriers_gemm_scatter_counter_ptrs = torch.tensor([ptr.data_ptr()
-                                                           for ptr in barriers_gemm_scatter_counter]).cuda()
-
-        barriers_gemm_scatter_ready: List[torch.Tensor] = pynvshmem.nvshmem_create_tensor_list_intra_node(
-            [world_size, 1], torch.uint64)
-
-        barriers_gemm_scatter_ready_ptrs = torch.tensor([ptr.data_ptr() for ptr in barriers_gemm_scatter_ready]).cuda()
-
-        barrier_gemm_scatter_counter = barriers_gemm_scatter_counter[local_rank]
-        barrier_gemm_scatter_ready = barriers_gemm_scatter_ready[local_rank]
-
-        barrier_gemm_scatter_counter.zero_()
-        barrier_gemm_scatter_ready.zero_()
-
-        # intra_node - p2p
-
-        rs_per_node_signal_buffer = pynvshmem.nvshmem_create_tensor([world_size], torch.uint64)
-        rs_per_node_signal_buffer.zero_()
-
-    return MoEReduceRSContext(precompute_ctx, rs_buffers, rs_buffer_ptrs, rs_per_node_buffer, p2p_buffer,
-                              final_output_buffer, barrier, rs_stream, reduction_stream, p2p_stream, dataflow_config,
-                              barriers_gemm_scatter_counter, barriers_gemm_scatter_counter_ptrs,
-                              barrier_gemm_scatter_ready, barriers_gemm_scatter_ready_ptrs,
-                              barrier_gemm_scatter_counter, barrier_gemm_scatter_ready, rs_per_node_signal_buffer)
+    return MoEReduceRSContext(
+        rank=rank,
+        world_size=world_size,
+        local_world_size=local_world_size,
+        precompute_ctx=precompute_ctx,
+        symm_rs_buffers=symm_rs_buffers,
+        symm_rs_buffer_ptrs=symm_rs_buffer_ptrs,
+        symm_rs_per_node_buffer=symm_rs_per_node_buffer,
+        symm_p2p_buffer=symm_p2p_buffer,
+        final_output_buffer=final_output_buffer,
+        barrier=barrier,
+        rs_stream=rs_stream,
+        reduction_stream=reduction_stream,
+        p2p_stream=p2p_stream,
+        dataflow_config=dataflow_config,
+        symm_barrier_gemm_scatter_counter_ptrs=symm_barrier_gemm_scatter_counter_ptrs,
+        symm_barrier_gemm_scatter_counter=symm_barrier_gemm_scatter_counter,
+        symm_barrier_gemm_scatter_ready_ptrs=symm_barrier_gemm_scatter_ready_ptrs,
+        symm_barrier_gemm_scatter_ready=symm_barrier_gemm_scatter_ready,
+        symm_rs_per_node_signal=symm_rs_per_node_signal,
+    )
 
 
 ################### triton kernel ###################
@@ -716,12 +742,7 @@ def p2p_inter_node(
             rs_per_node_signal_buf,
             num_warps=16,
         )
-        wait_eq(
-            rs_per_node_signal_buf[node_id].data_ptr(),
-            1,
-            stream,
-            require_i64=True,
-        )
+        wait_eq(rs_per_node_signal_buf[node_id].data_ptr(), 1, stream, require_i64=True)
         output[M_per_rank * node_id:M_per_rank * (node_id + 1)].copy_(input[M_per_rank * node_id:M_per_rank *
                                                                             (node_id + 1)])
     return output[:M_per_rank * nnodes]
@@ -740,7 +761,7 @@ def consumer_reduce_scatter_reduce_2d(
     rs_per_node_buffer: torch.Tensor,
     p2p_buffer: torch.Tensor,
     barrier_gemm_scatter_ready: torch.Tensor,
-    rs_per_node_signal_buffer: torch.Tensor,
+    symm_rs_per_node_signal_buffer: torch.Tensor,
     barrier: BarrierAllContext,
     rs_stream: torch.cuda.Stream,
     reduction_stream: torch.cuda.Stream,
@@ -751,7 +772,7 @@ def consumer_reduce_scatter_reduce_2d(
     nnodes = world_size // local_world_size
 
     reduction_stream.wait_stream(rs_stream)
-    barrier_all_on_stream(None, rs_stream)
+    nvshmem_barrier_all_on_stream(rs_stream)
     p2p_stream.wait_stream(rs_stream)
     rs_result_intra_node = topk_reduce_scatter_reduce_for_each_node(
         rank,
@@ -765,7 +786,7 @@ def consumer_reduce_scatter_reduce_2d(
         rs_buffer_ptrs,
         rs_per_node_buffer,
         barrier_gemm_scatter_ready,
-        rs_per_node_signal_buffer,
+        symm_rs_per_node_signal_buffer,
         barrier,
         rs_stream,
         reduction_stream,
@@ -776,11 +797,11 @@ def consumer_reduce_scatter_reduce_2d(
         local_world_size,
         rs_result_intra_node,
         p2p_buffer,
-        rs_per_node_signal_buffer,
+        symm_rs_per_node_signal_buffer,
         p2p_stream,
     )
     rs_stream.wait_stream(p2p_stream)
-    barrier_all_on_stream(None, rs_stream)
+    nvshmem_barrier_all_on_stream(rs_stream)
     output = torch.empty((M_per_rank, N), dtype=local_tensor.dtype, device=local_tensor.device)
     with torch.cuda.stream(rs_stream):
         ring_reduce(
@@ -818,12 +839,12 @@ def moe_reduce_rs_rowise(
     num_stages = ctx.dataflow_config.num_stages
     num_warps = ctx.dataflow_config.num_warps
 
-    ctx.barrier_gemm_scatter_counter.zero_()
-    ctx.barrier_gemm_scatter_ready.zero_()
+    ctx.symm_barrier_gemm_scatter_counter.zero_()
+    ctx.symm_barrier_gemm_scatter_ready.zero_()
     ctx.rs_stream.wait_stream(torch.cuda.current_stream())
     ctx.reduction_stream.wait_stream(torch.cuda.current_stream())
     ctx.p2p_stream.wait_stream(torch.cuda.current_stream())
-    barrier_all_on_stream(None, torch.cuda.current_stream())
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
     full_sorted_token_ids = ctx.precompute_ctx.full_sorted_token_ids
     full_token_expert_ids = ctx.precompute_ctx.full_token_expert_ids
@@ -852,8 +873,8 @@ def moe_reduce_rs_rowise(
         full_num_tokens_post_padded_list,
         block_wait_barriers,
         rank_block_num,
-        ctx.barrier_gemm_scatter_counter,
-        ctx.barriers_gemm_scatter_ready_ptrs,
+        ctx.symm_barrier_gemm_scatter_counter,
+        ctx.symm_barrier_gemm_scatter_ready_ptrs,
         full_numel,
         EM,
         N,
@@ -885,12 +906,12 @@ def moe_reduce_rs_rowise(
             N,
             topk,
             ctx.final_output_buffer,
-            ctx.rs_buffers,
-            ctx.rs_buffer_ptrs,
-            ctx.rs_per_node_buffer,
-            ctx.p2p_buffer,
-            ctx.barrier_gemm_scatter_ready,
-            ctx.rs_per_node_signal_buffer,
+            ctx.symm_rs_buffers,
+            ctx.symm_rs_buffer_ptrs,
+            ctx.symm_rs_per_node_buffer,
+            ctx.symm_p2p_buffer,
+            ctx.symm_barrier_gemm_scatter_ready,
+            ctx.symm_rs_per_node_signal,
             ctx.barrier,
             ctx.rs_stream,
             ctx.reduction_stream,
@@ -900,7 +921,7 @@ def moe_reduce_rs_rowise(
     torch.cuda.current_stream().wait_stream(ctx.rs_stream)
     torch.cuda.current_stream().wait_stream(ctx.reduction_stream)
     torch.cuda.current_stream().wait_stream(ctx.p2p_stream)
-    barrier_all_on_stream(None, torch.cuda.current_stream())
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
     return output
 
@@ -939,24 +960,24 @@ class MoEReduceRSColwiseContext:
         # Create a barrier for grid synchronization
         self.grid_barrier = torch.zeros(
             (1, ),
-            dtype=torch.uint64,
+            dtype=torch.int32,
             device=torch.cuda.current_device(),
         )
         self.ntiles_counter = torch.zeros((self.n_split_max, ), dtype=torch.int32, device=torch.cuda.current_device())
-        self.symm_barriers = pynvshmem.nvshmem_create_tensor_list_intra_node(
-            [self.num_ranks],
-            torch.int32,
-        )
+        self.symm_barriers = nvshmem_create_tensors((self.num_ranks, ), torch.int32, self.rank, self.num_local_ranks)
         self.symm_barrier = self.symm_barriers[self.local_rank]
         self.symm_barrier.zero_()
         ntokens = self.max_M // self.topk
-        self.symm_reduce_scatter_buffers = pynvshmem.nvshmem_create_tensor_list_intra_node(
-            [ntokens, self.N],
-            self.dtype,
-        )
+        self.symm_reduce_scatter_buffers = nvshmem_create_tensors((ntokens, self.N), self.dtype, self.rank,
+                                                                  self.num_local_ranks)
         self.symm_reduce_scatter_buffer = self.symm_reduce_scatter_buffers[self.local_rank]
-        pynvshmem.nvshmemx_barrier_all_on_stream(torch.cuda.current_stream())
+
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
         torch.cuda.synchronize()
+
+    def finalize(self):
+        nvshmem_free_tensor_sync(self.symm_barrier)
+        nvshmem_free_tensor_sync(self.symm_reduce_scatter_buffer)
 
 
 def create_moe_rs_context_colwise(rank, world_size, local_world_size, max_token_num, hidden_dim, num_experts, topk,

@@ -31,9 +31,9 @@ from functools import partial
 from transformers import AutoModelForCausalLM
 
 import triton
-from triton_dist import pynvshmem
+import nvshmem.core
 from triton_dist.layers.nvidia.tp_mlp import TP_MLP
-from triton_dist.utils import perf_func, dist_print, group_profile
+from triton_dist.utils import perf_func, dist_print, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream
 
 from triton_dist.kernels.nvidia.allreduce import str_to_method
 
@@ -135,7 +135,7 @@ if __name__ == "__main__":
 
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
-    pynvshmem.init_nvshmem_by_uniqueid(TP_GROUP)
+    init_nvshmem_by_torch_process_group(TP_GROUP)
     DTYPE = DTYPE_MAP[args.dtype]
     ATOL = THRESHOLD_MAP[DTYPE]
     RTOL = THRESHOLD_MAP[DTYPE]
@@ -203,12 +203,12 @@ if __name__ == "__main__":
         with group_profile("tp_mlp", profile, group=TP_GROUP):
             torch.cuda.synchronize()
             _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream()
             torch.cuda.synchronize()
 
             torch.cuda.synchronize()
             _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream()
             torch.cuda.synchronize()
 
         dist_print(f"torch tp mlp e2e #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
@@ -232,12 +232,12 @@ if __name__ == "__main__":
         with group_profile(f"tp_mlp_ag_gemm_{M}x{N}x{K}", profile, group=TP_GROUP):
             torch.cuda.synchronize()
             _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream()
             torch.cuda.synchronize()
 
             torch.cuda.synchronize()
             _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream()
             torch.cuda.synchronize()
 
         dist_print(f"torch tp mlp ag_gemm_{M}x{N}x{K} #{RANK}", torch_perf, need_sync=True,
@@ -259,12 +259,12 @@ if __name__ == "__main__":
         with group_profile(f"tp_mlp_gemm_rs_{M}x{N}x{K}", profile, group=TP_GROUP):
             torch.cuda.synchronize()
             _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream()
             torch.cuda.synchronize()
 
             torch.cuda.synchronize()
             _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream()
             torch.cuda.synchronize()
 
         dist_print(f"torch tp mlp gemm_rs_{M}x{N}x{K} #{RANK}", torch_perf, need_sync=True,
@@ -290,12 +290,12 @@ if __name__ == "__main__":
         with group_profile("tp_mlp", profile, group=TP_GROUP):
             torch.cuda.synchronize()
             _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream()
             torch.cuda.synchronize()
 
             torch.cuda.synchronize()
             _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            pynvshmem.nvshmem_barrier_all()
+            nvshmem_barrier_all_on_stream()
             torch.cuda.synchronize()
 
         dist_print(f"torch tp mlp e2e #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
@@ -305,4 +305,6 @@ if __name__ == "__main__":
         # we need to del cuda graphs to avoid dist hang
         del torch_graph, triton_dist_graph, mempool
 
+    mlp.finalize()
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group(TP_GROUP)

@@ -25,20 +25,14 @@
 import argparse
 import random
 
+import nvshmem.core
 import torch
 import torch.distributed
 
-from triton_dist.kernels.nvidia import (
-    create_ag_gemm_context,
-    ag_gemm,
-)
-from triton_dist.utils import (
-    initialize_distributed,
-    dist_print,
-)
+from triton_dist.kernels.nvidia import ag_gemm, create_ag_gemm_context
+from triton_dist.utils import initialize_distributed
 
 TP_GROUP = initialize_distributed()
-dist_print("finish nvshmem", need_sync=True, allowed_ranks=list(range(TP_GROUP.size())))
 
 
 def torch_ag_gemm(
@@ -139,4 +133,5 @@ if __name__ == "__main__":
     if TP_GROUP.rank() == 0:
         print("Pass the stree test!")
 
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group()

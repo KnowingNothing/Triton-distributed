@@ -27,7 +27,7 @@ import os
 from functools import partial
 
 import torch
-
+import nvshmem.core
 from triton_dist.kernels.nvidia import (create_moe_rs_context, create_moe_rs_context_colwise, moe_reduce_rs_rowise,
                                         select_experts)
 from triton_dist.kernels.nvidia.comm_perf_model import estimate_reduce_scatter_time_ms, get_nic_gbps_per_gpu
@@ -196,8 +196,6 @@ class MoEReduceRSTensorParallel(torch.nn.Module):
 
         self.ctx = create_moe_rs_context(
             self.pg,
-            self.local_rank,
-            self.world_size,
             self.local_world_size,
             self.max_token_num,
             self.hidden_dim,
@@ -412,4 +410,7 @@ if __name__ == "__main__":
                allowed_ranks=list(range(WORLD_SIZE)))
     dist_print(f"torch #{RANK} {duration_ms_torch:0.2f} ms/iter", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
+    module.ctx.finalize()
+    module.ctx_colwise.finalize()
+    nvshmem.core.finalize()
     torch.distributed.destroy_process_group()

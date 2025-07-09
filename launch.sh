@@ -86,13 +86,37 @@ function check_nvshmem_bootstrap_uid_sock() {
   fi
 }
 
+function set_nvshmem_home() {
+  # 1. Check if NVSHMEM_HOME environment variable is set
+  if [ -n "$NVSHMEM_HOME" ]; then
+    echo "Found NVSHMEM_HOME from environment variable: $NVSHMEM_HOME"
+  else
+    # 2. Try to find from Python command
+    export NVSHMEM_HOME=$(python -c "import nvidia.nvshmem, pathlib; print(pathlib.Path(nvidia.nvshmem.__path__[0]))" 2>/dev/null)
+
+    if [ -n "$NVSHMEM_HOME" ]; then
+      echo "Found NVSHMEM_HOME from Python nvidia-nvshmem-cu12: $NVSHMEM_HOME"
+    else
+      # 3. Fallback to ldconfig
+      export NVSHMEM_HOME=$(ldconfig -p | grep 'libnvshmem_host' | awk '{print $NF}' | xargs dirname | head -n 1)
+
+      if [ -n "$NVSHMEM_HOME" ]; then
+        echo "Found NVSHMEM_HOME from ldconfig: $NVSHMEM_HOME"
+      else
+        echo "warning: NVSHMEM_HOME could not be determined."
+      fi
+    fi
+  fi
+}
+
+set_nvshmem_home
 export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-1}
 export CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}
 export TORCH_CPP_LOG_LEVEL=1
 export NCCL_DEBUG=ERROR
 
 export NVSHMEM_SYMMETRIC_SIZE=${NVSHMEM_SYMMETRIC_SIZE:-1000000000}
-
+NVSHMEM_DIR=${NVSHMEM_DIR:-$NVSHMEM_HOME}
 export LD_LIBRARY_PATH=${NVSHMEM_DIR}/lib:${LD_LIBRARY_PATH}
 export NVSHMEM_DISABLE_CUDA_VMM=${NVSHMEM_DISABLE_CUDA_VMM:-1} # moving from cpp to shell
 export NVSHMEM_BOOTSTRAP=UID

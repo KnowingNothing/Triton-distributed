@@ -388,28 +388,6 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
         shutil.copy(src_path, dst_path)
 
 
-def download_nvshmem():
-    version = "3.2.5-1"
-    url = f"https://developer.nvidia.com/downloads/assets/secure/nvshmem/nvshmem_src_{version}.txz"
-    base_dir = os.path.dirname(__file__)
-    triton_cache_path = get_triton_cache_path()
-    tmp_path = os.path.join(triton_cache_path, "nvshmem")  # path to cache the download
-    src_path = "nvshmem_src"
-    src_path = os.path.join(tmp_path, src_path)
-    dst_path = os.path.join(base_dir, os.pardir, "3rdparty", "triton", "third_party", "nvshmem")
-    download = not os.path.exists(src_path)
-    if download:
-        print(f'downloading and extracting {url} ...')
-        file = tarfile.open(fileobj=open_url(url), mode="r|*")
-        file.extractall(path=tmp_path)
-    os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
-    print(f'copy {src_path} to {dst_path} ...')
-    if os.path.isdir(src_path):
-        shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
-    else:
-        shutil.copy(src_path, dst_path)
-
-
 # ---- cmake extension ----
 
 
@@ -435,22 +413,6 @@ class CMakeExtension(Extension):
         self.path = path
 
 
-def build_nvshmem(cap):
-    nvshmem_bind_dir = os.path.join(get_base_dir(), "shmem", "nvshmem_bind")
-    nvshmem_dir = os.path.join(get_base_dir(), "3rdparty", "nvshmem")
-    nvshmem_dir = os.getenv("NVSHMEM_SRC", nvshmem_dir)
-    if not os.path.exists(nvshmem_dir) or len(os.listdir(nvshmem_dir)) == 0:
-        # for github version: download_nvshmem()
-        # subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
-        raise RuntimeError("NVSHMEM is empty. Please refer to README for NVSHMEM install")
-    if not os.path.exists(nvshmem_bind_dir):
-        raise RuntimeError("NVSHMEM bind source directory not found")
-
-    CUDA_ARCH = "".join([str(x) for x in cap])
-    extra_args = ["--arch", CUDA_ARCH] if CUDA_ARCH != "" else []
-    subprocess.check_call(["bash", f"{nvshmem_bind_dir}/build.sh"] + extra_args)
-
-
 def build_rocshmem(cap):
     rocshmem_bind_dir = os.path.join(get_base_dir(), "shmem", "rocshmem_bind")
     rocshmem_dir = os.path.join(get_base_dir(), "3rdparty", "rocshmem")
@@ -470,9 +432,7 @@ def build_shmem():
         import torch
 
         if torch.cuda.is_available():
-            if torch.version.hip is None:
-                build_nvshmem(torch.cuda.get_device_capability())
-            else:
+            if torch.version.hip is not None:
                 build_rocshmem(torch.cuda.get_device_capability())  # (9, 4)
     except Exception as e:
         print("Cannot import torch.")
@@ -640,19 +600,6 @@ class CMakeBuild(TorchBuildExtension):
             cmake_args += shlex.split(cmake_args_append)
 
         env = os.environ.copy()
-        if check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    if torch.version.hip is None:
-                        cmake_args += ["-DTRITON_BUILD_PYNVSHMEM=ON"]
-                        nvshmem_dir = os.path.join(get_base_dir(), "3rdparty", "nvshmem")
-                        nvshmem_dir = os.getenv("NVSHMEM_SRC", nvshmem_dir)
-                        env["NVSHMEM_DIR"] = os.path.join(nvshmem_dir, "build", "install")
-            except Exception:
-                print("Cannot import torch.")
-                pass
-
         cmake_dir = get_cmake_dir()
         subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
@@ -831,35 +778,12 @@ def add_link_to_distributed():
     update_symlink(triton_install_dir, triton_dir)
 
 
-def add_link_to_pynvshmem():
-    triton_dist_root = Path(os.path.abspath(__file__)).parent.parent.absolute()
-    update_symlink(triton_dist_root / "python" / "triton_dist" / "pynvshmem",
-                   triton_dist_root / "shmem" / "nvshmem_bind" / "pynvshmem" / "python" / "pynvshmem")
-    # update pyi
-    update_symlink(triton_dist_root / "python" / "triton" / "_C" / "_pynvshmem",
-                   triton_dist_root / "shmem" / "nvshmem_bind" / "pynvshmem" / "python" / "_pynvshmem")
-    # link nvshmem lib
-    update_symlink(triton_dist_root / "python" / "triton_dist" / "_C" / "nvshmem",
-                   triton_dist_root / "3rdparty" / "nvshmem" / "build" / "install")
-
-
 def add_links(external_only, materialization=False):
     add_link_to_backends(external_only=external_only, materialization=materialization)
     if not external_only and check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         add_link_to_proton()
     if not external_only and check_env_flag("TRITON_BUILD_DISTRIBUTED", "ON"):  # Default ON
         add_link_to_distributed()
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                if torch.version.hip is None:
-                    add_link_to_pynvshmem()
-                else:
-                    pass
-        except Exception:
-            print("Cannot import torch.")
-            pass
 
 
 class plugin_bdist_wheel(bdist_wheel):
@@ -983,17 +907,6 @@ def get_packages():
             "triton_dist/tools/compile",
             "triton_dist/tools/runtime",
         ]
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                if torch.version.hip is None:
-                    _packages += ["triton_dist/pynvshmem"]
-                else:
-                    pass
-        except Exception:
-            print("Cannot import torch.")
-            pass
 
     packages = []
     for pkg in _packages:
@@ -1102,6 +1015,7 @@ setup(
             "llnl-hatchet",
             "pytest",
             "nvidia-ml-py",
+            "transformers",
         ],
         "tutorials": [
             "matplotlib",

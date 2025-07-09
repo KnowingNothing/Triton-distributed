@@ -26,12 +26,6 @@ if [[ -n $ARCH ]]; then
   build_args=" --arch ${ARCH}"
 fi
 
-function build_pynvshmem() {
-  pushd ${PROJECT_ROOT}/pynvshmem
-  NVSHMEM_HOME=${NVSHMEM_DIR} pip3 install .
-  popd
-}
-
 function set_arch() {
   if [[ -z $ARCH ]]; then
     export ARCH=$(python3 -c 'import torch; print("".join([str(x) for x in torch.cuda.get_device_capability()]))')
