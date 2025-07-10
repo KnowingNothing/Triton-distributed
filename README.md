@@ -50,6 +50,7 @@ Feel free to contact us if you want to use Triton-distributed on your own hardwa
 See [build from source](docs/build.md).
 
 #### Method 2. Using pip
+
 Prepare PyTorch container
 
 ```sh
@@ -57,25 +58,24 @@ docker run --name triton-dist --ipc=host --network=host --privileged --cap-add=S
 docker exec -it triton-dist /bin/bash
 ```
 
-Then, please download and fix NVSHMEM manually (as we cannot do this for you due to NVSHMEM license requirements). See [prepare NVSHMEM](docs/prepare_nvshmem.md).
+Install NVSHMEM
 
-After that, install clang-19
 ```sh
-apt update
-apt install clang-19 llvm-19 libclang-19-dev
+pip3 install pynvml>=11.5.3
+
+pip3 install nvidia-nvshmem-cu12==3.3.9 cuda.core==0.2.0 "Cython>=0.29.24"
+
+CPPFLAGS="-I/usr/local/cuda/include" pip3 install https://developer.download.nvidia.com/compute/nvshmem/redist/nvshmem_python/source/nvshmem_python-source-0.1.0.36132199_cuda12-archive.tar.xz
 ```
 
 Then, pip install triton-dist.
 ```sh
-export NVSHMEM_SRC=/workspace/nvshmem_src
-# Not recommend to use g++
-export CC=clang-19
-export CXX=clang++-19
 # Remove triton installed with torch
 pip uninstall triton
+pip uninstall triton_dist # remove previous triton-dist
 rm -rf /usr/local/lib/python3.12/dist-packages/triton
 # Install Triton-distributed
-pip install "git+https://github.com/ByteDance-Seed/Triton-distributed.git#subdirectory=python" --no-build-isolation --verbose --force-reinstall
+pip install "git+https://github.com/ByteDance-Seed/Triton-distributed.git#subdirectory=python" --no-build-isolation --use-pep517 --verbose --force-reinstall
 ```
 
 ### How to use Triton-distributed

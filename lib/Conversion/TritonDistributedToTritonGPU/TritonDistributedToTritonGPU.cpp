@@ -718,55 +718,150 @@ struct SIMTExecRegionPattern
 // SIMT patterns
 void populateSIMTPatterns(TritonGPUTypeConverter &typeConverter,
                           RewritePatternSet &patterns) {
-   MLIRContext *context = patterns.getContext();
-   patterns.add<GenericOpPattern<scf::YieldOp>, SCFForPattern, SCFIfPattern,
-                SCFWhilePattern, SCFConditionPattern>(typeConverter, context);
- }
+  MLIRContext *context = patterns.getContext();
+  patterns.add<SIMTExecRegionPattern, GenericOpPattern<simt::BlockYieldOp>>(
+      typeConverter, context);
+}
 
- // CF
+void populateTensorPatterns(TritonGPUTypeConverter &typeConverter,
+                            RewritePatternSet &patterns) {
+  MLIRContext *context = patterns.getContext();
+  patterns.add<GenericOpPattern<tensor::ExtractOp>,
+               GenericOpPattern<tensor::InsertOp>>(typeConverter, context);
+}
 
- class CFBranchPattern : public OpConversionPattern<cf::BranchOp> {
- public:
-   using OpConversionPattern::OpConversionPattern;
+//
+// SCF patterns
+//
+// This is borrowed from ConvertForOpTypes in
+//    SCF/Transforms/StructuralTypeConversions.cpp
+struct SCFForPattern : public OpConversionPattern<scf::ForOp> {
+  using OpConversionPattern::OpConversionPattern;
+  // Ref: ConvertForOpTypes
+  LogicalResult
+  matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp =
+        cast<scf::ForOp>(rewriter.cloneWithoutRegions(*op.getOperation()));
+    rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(),
+                                newOp.getRegion().end());
 
-   LogicalResult
-   matchAndRewrite(cf::BranchOp op, cf::BranchOp::Adaptor adaptor,
-                   ConversionPatternRewriter &rewriter) const override {
-     auto converter = getTypeConverter();
-     auto newOp = rewriter.replaceOpWithNewOp<cf::BranchOp>(
-         op, op.getSuccessor(), adaptor.getOperands());
-     if (failed(rewriter.convertRegionTypes(newOp.getSuccessor()->getParent(),
-                                            *converter)))
-       return failure();
-     return success();
-   }
- };
+    // Now, update all the types.
 
- class CFCondBranchPattern : public OpConversionPattern<cf::CondBranchOp> {
- public:
-   using OpConversionPattern::OpConversionPattern;
+    // Convert the types of block arguments within the given region. This
+    // replaces each block with a new block containing the updated signature.
+    // The entry block may have a special conversion if `entryConversion` is
+    // provided. On success, the new entry block to the region is returned for
+    // convenience. Otherwise, failure is returned.
+    if (failed(rewriter.convertRegionTypes(&newOp.getRegion(),
+                                           *getTypeConverter()))) {
+      return rewriter.notifyMatchFailure(op, "could not convert body types");
+    }
+    // Change the clone to use the updated operands. We could have cloned with
+    // a IRMapping, but this seems a bit more direct.
+    newOp->setOperands(adaptor.getOperands());
+    // Update the result types to the new converted types.
+    SmallVector<Type> newResultTypes;
+    for (Type type : op.getResultTypes()) {
+      Type newType = typeConverter->convertType(type);
+      if (!newType)
+        return rewriter.notifyMatchFailure(op, "not a 1:1 type conversion");
+      newResultTypes.push_back(newType);
+    }
+    for (auto t : llvm::zip(newOp.getResults(), newResultTypes))
+      std::get<0>(t).setType(std::get<1>(t));
 
-   LogicalResult
-   matchAndRewrite(cf::CondBranchOp op, cf::CondBranchOp::Adaptor adaptor,
-                   ConversionPatternRewriter &rewriter) const override {
-     auto converter = getTypeConverter();
-     auto newOp = rewriter.replaceOpWithNewOp<cf::CondBranchOp>(
-         op, adaptor.getCondition(), op.getTrueDest(),
-         adaptor.getTrueDestOperands(), op.getFalseDest(),
-         adaptor.getFalseDestOperands());
-     addNamedAttrs(newOp, adaptor.getAttributes());
+    rewriter.replaceOp(op, newOp.getResults());
 
-     if (failed(rewriter.convertRegionTypes(newOp.getTrueDest()->getParent(),
-                                            *converter)))
-       return failure();
-     if (failed(rewriter.convertRegionTypes(newOp.getFalseDest()->getParent(),
-                                            *converter)))
-       return failure();
-     return success();
-   }
- };
+    return success();
+  }
+};
 
- void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
+// This is borrowed from ConvertFIfOpTypes in
+//    SCF/Transforms/StructuralTypeConversions.cpp
+class SCFIfPattern : public OpConversionPattern<scf::IfOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(scf::IfOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // TODO: Generalize this to any type conversion, not just 1:1.
+    //
+    // We need to implement something more sophisticated here that tracks which
+    // types convert to which other types and does the appropriate
+    // materialization logic.
+    // For example, it's possible that one result type converts to 0 types and
+    // another to 2 types, so newResultTypes would at least be the right size to
+    // not crash in the llvm::zip call below, but then we would set the the
+    // wrong type on the SSA values! These edge cases are also why we cannot
+    // safely use the TypeConverter::convertTypes helper here.
+    SmallVector<Type> newResultTypes;
+    for (auto type : op.getResultTypes()) {
+      Type newType = typeConverter->convertType(type);
+      if (!newType)
+        return rewriter.notifyMatchFailure(op, "not a 1:1 type conversion");
+      newResultTypes.push_back(newType);
+    }
+
+    // See comments in the ForOp pattern for why we clone without regions and
+    // then inline.
+    scf::IfOp newOp =
+        cast<scf::IfOp>(rewriter.cloneWithoutRegions(*op.getOperation()));
+    rewriter.inlineRegionBefore(op.getThenRegion(), newOp.getThenRegion(),
+                                newOp.getThenRegion().end());
+    rewriter.inlineRegionBefore(op.getElseRegion(), newOp.getElseRegion(),
+                                newOp.getElseRegion().end());
+
+    // Update the operands and types.
+    newOp->setOperands(adaptor.getOperands());
+    for (auto t : llvm::zip(newOp.getResults(), newResultTypes))
+      std::get<0>(t).setType(std::get<1>(t));
+    rewriter.replaceOp(op, newOp.getResults());
+    return success();
+  }
+};
+
+// This is borrowed from ConvertFIfOpTypes in
+//    SCF/Transforms/StructuralTypeConversions.cpp
+class SCFWhilePattern : public OpConversionPattern<scf::WhileOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::WhileOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto *converter = getTypeConverter();
+    assert(converter);
+    SmallVector<Type> newResultTypes;
+    if (failed(converter->convertTypes(op.getResultTypes(), newResultTypes)))
+      return failure();
+
+    auto newOp = rewriter.create<scf::WhileOp>(op.getLoc(), newResultTypes,
+                                               adaptor.getOperands());
+    for (auto i : {0u, 1u}) {
+      auto &dstRegion = newOp.getRegion(i);
+      rewriter.inlineRegionBefore(op.getRegion(i), dstRegion, dstRegion.end());
+      if (failed(rewriter.convertRegionTypes(&dstRegion, *converter)))
+        return rewriter.notifyMatchFailure(op, "could not convert body types");
+    }
+    rewriter.replaceOp(op, newOp.getResults());
+    return success();
+  }
+};
+
+class SCFConditionPattern : public OpConversionPattern<scf::ConditionOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(scf::ConditionOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(op,
+                             [&]() { op->setOperands(adaptor.getOperands()); });
+    return success();
+  }
+};
+
+void populateSCFPatterns(TritonGPUTypeConverter &typeConverter,
                          RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns.add<GenericOpPattern<scf::YieldOp>, SCFForPattern, SCFIfPattern,
