@@ -27,6 +27,7 @@ import torch
 from torch import nn
 import torch.distributed
 
+from triton_dist.kernels.allreduce import AllReduceMethod
 from triton_dist.kernels.nvidia.allgather_gemm import AllGatherGEMMTensorParallelContext, get_auto_all_gather_method, ag_gemm
 from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs
 from triton_dist.utils import nvshmem_barrier_all_on_stream
@@ -64,7 +65,7 @@ class TP_MLP:
         self.down_proj = None
         self.ag_ctx = None
         self.rs_ctx = None
-        self.ctx = None
+        self.ar_ctx = None
 
     def _init_parameters(self, mlp: nn.Module, verbose=False):
         """
@@ -91,14 +92,13 @@ class TP_MLP:
                 f"[RANK {self.rank}] MLP initialized with parameters: gate_up_proj shape: {self.gate_up_proj.shape}, down_proj shape: {self.down_proj.shape}"
             )
 
-    def _init_ctx(self, max_M, gemm_stream, ag_intranode_stream, ag_internode_stream, BLOCK_M, BLOCK_N, BLOCK_K,
-                  stages):
+    def _init_ctx(self, max_M, ag_intranode_stream, ag_internode_stream, BLOCK_M, BLOCK_N, BLOCK_K, stages):
+        # TODO(houqi.1993) BLOCK_SIZE should not be part of arguments, but be determined on forward.
         """Initializes contexts for triton_dist AllGather-GEMM and GEMM-ReduceScatter operations."""
         self.ag_ctx = AllGatherGEMMTensorParallelContext(
             N_per_rank=self.ag_N_per_rank, K=self.K, tensor_dtype=self.dtype, rank=self.rank, num_ranks=self.world_size,
-            num_local_ranks=self.world_size, max_M=max_M, gemm_stream=gemm_stream,
-            ag_intranode_stream=ag_intranode_stream, ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M,
-            BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages,
+            num_local_ranks=self.world_size, max_M=max_M, ag_intranode_stream=ag_intranode_stream,
+            ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages,
             all_gather_method=get_auto_all_gather_method(self.world_size, self.world_size))
         self.rs_ctx = create_gemm_rs_context(
             max_M=max_M,
@@ -121,8 +121,8 @@ class TP_MLP:
             self.ag_ctx.finailize()
         if self.rs_ctx:
             self.rs_ctx.finalize()
-        if self.ctx:
-            self.ctx.finalize()
+        if self.ar_ctx:
+            self.ar_ctx.finalize()
 
     @torch.inference_mode()
     def torch_fwd(self, x):
@@ -140,7 +140,7 @@ class TP_MLP:
         return out
 
     @torch.inference_mode()
-    def dist_triton_fwd(self, x, ag_gemm_persistent=False, gemm_rs_persistent=False, autotune=True):
+    def dist_triton_fwd(self, x: torch.Tensor, ag_gemm_persistent=False, gemm_rs_persistent=False, autotune=True):
         """
         triton_dist forward pass for TP.
         This version uses ag_gemm and gemm_rs.
@@ -165,22 +165,16 @@ class TP_MLP:
             out = out.view(bsz, seq, -1)
         return out
 
-    def _init_AR_ctx(self, M, method, dtype=torch.bfloat16, signal_stages=1):
+    def _init_AR_ctx(self, max_M, method: AllReduceMethod, dtype=torch.bfloat16):
         self.ar_method = method
         N = self.down_proj.shape[0]
-        self.ctx = create_allreduce_ctx(
-            numel=M * N,
-            dtype=dtype,
-            rank=self.rank,
-            world_size=self.world_size,
+        self.ar_ctx = create_allreduce_ctx(
+            workspace_nbytes=max_M * N * dtype.itemsize, rank=self.rank, world_size=self.world_size,
             local_world_size=self.world_size,  # TODO(houqi.1993) does not support multiple nodes now.
-            method=method,
-            signal_stages=signal_stages,
         )
-        self.ar_output = torch.empty((M, N), device="cuda", dtype=dtype).contiguous()
 
     @torch.inference_mode()
-    def dist_triton_AR_fwd(self, x):
+    def dist_triton_AR_fwd(self, x: torch.Tensor):
         """
         triton_dist AR forward pass for TP.
         This version uses gemm + gemm + AllReduce
@@ -189,9 +183,11 @@ class TP_MLP:
         out_fused = torch.nn.functional.linear(x, self.gate_up_proj)
         wg, w1 = torch.chunk(out_fused, 2, dim=-1)
         out = self.act_fn(wg) * w1
-        out = torch.nn.functional.linear(out, self.down_proj).view_as(self.ar_output)
+        out = torch.nn.functional.linear(out, self.down_proj).view_as(x)
         if self.world_size > 1:
-            out = all_reduce(out.contiguous(), self.ar_output, method=self.ar_method, ctx=self.ctx)
+            out_ar = torch.empty_like(out)
+            assert self.ar_ctx is not None, "AllReduce context is not initialized."
+            out = all_reduce(out.contiguous(), out_ar, method=self.ar_method, ctx=self.ar_ctx)
         return out.view_as(x)
 
     @torch.inference_mode()
@@ -203,20 +199,13 @@ class TP_MLP:
         """
         Reference PyTorch forward pass using AllGather-GEMM.
         """
-
         M_per_rank, K = x.shape
         M = M_per_rank * self.world_size
-
-        if not hasattr(self, 'ag_buffer'):
-            self.ag_buffer = torch.empty([M, K], dtype=x.dtype, device="cuda")
-
+        ag_buffer = torch.empty([M, K], dtype=x.dtype, device="cuda")
         # ag
-        torch.distributed.all_gather_into_tensor(self.ag_buffer, x, group=self.group)
-
+        torch.distributed.all_gather_into_tensor(ag_buffer, x, group=self.group)
         # gemm
-        golden = torch.matmul(self.ag_buffer, self.gate_up_proj.T)
-
-        return golden
+        return torch.matmul(ag_buffer, self.gate_up_proj.T)
 
     @torch.inference_mode()
     def dist_triton_ag_gemm(self, x: torch.Tensor, persistent=True, autotune=False):
@@ -225,8 +214,8 @@ class TP_MLP:
         This version uses ag_gemm.
         x: input tensor, shape [batch_size * seq_len, hidden_size]
         """
-        out = ag_gemm(x, self.gate_up_proj, ctx=self.ag_ctx, persistent=persistent, autotune=autotune)
-        return out
+        assert self.ag_ctx is not None
+        return ag_gemm(x, self.gate_up_proj, ctx=self.ag_ctx, persistent=persistent, autotune=autotune)
 
     @torch.inference_mode()
     def torch_gemm_rs(self, x: torch.Tensor):
@@ -235,16 +224,11 @@ class TP_MLP:
         """
         # x: [M, K]
         M, K = x.shape
-        if not hasattr(self, 'rs_buffer'):
-            self.rs_buffer = torch.empty([M // self.world_size, self.down_proj.shape[0]], dtype=x.dtype, device="cuda")
-
+        rs_buffer = torch.empty([M // self.world_size, self.down_proj.shape[0]], dtype=x.dtype, device="cuda")
         # gemm
         gemm_out = torch.matmul(x, self.down_proj.T)
-
-        # rs
-        torch.distributed.reduce_scatter_tensor(self.rs_buffer, gemm_out, group=self.group)
-
-        return self.rs_buffer
+        torch.distributed.reduce_scatter_tensor(rs_buffer, gemm_out, group=self.group)
+        return rs_buffer
 
     @torch.inference_mode()
     def dist_triton_gemm_rs(self, x: torch.Tensor, persistent=False):
@@ -253,5 +237,5 @@ class TP_MLP:
         This version uses gemm_rs.
         x: input tensor, shape [batch_size * seq_len, hidden_size]
         """
-        out = gemm_rs(x, self.down_proj, self.rs_ctx, persistent=persistent, fuse_scatter=True)
-        return out
+        assert self.rs_ctx is not None
+        return gemm_rs(x, self.down_proj, self.rs_ctx, persistent=persistent, fuse_scatter=True)

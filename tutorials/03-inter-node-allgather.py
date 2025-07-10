@@ -44,7 +44,7 @@ import triton
 import triton.language as tl
 from triton.language.extra.cuda.language_extra import __syncthreads, tid
 from triton_dist.language.extra import libshmem_device
-from triton_dist.utils import init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream, perf_func, NVSHMEM_SIGNAL_DTYPE, nvshmem_free_tensor_sync, nvshmem_create_tensor
+from triton_dist.utils import init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream, perf_func, NVSHMEM_SIGNAL_DTYPE, nvshmem_free_tensor_sync, nvshmem_create_tensor, sleep_async
 
 
 @dataclass
@@ -211,7 +211,7 @@ def perf_ag(func, ag_buffers: torch.Tensor, nbytes: int, ctx: AllGatherContext):
     print(f"✅ RANK[{RANK}] check passed")
 
     # perf all-gather by NCCL
-    torch.cuda._sleep(1000000000)  # in case CPU bound
+    sleep_async(1000)  # in case CPU bound
     _, duration_per_iter_ms = perf_func(
         _run_all_gather_nccl,
         warmup_iters=5,
@@ -224,7 +224,7 @@ def perf_ag(func, ag_buffers: torch.Tensor, nbytes: int, ctx: AllGatherContext):
 
     # perf all-gather by triton-distributed
     nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
-    torch.cuda._sleep(1000000000)  # in case CPU bound
+    sleep_async(1000)  # in case CPU bound
     _, duration_per_iter_ms = perf_func(
         _run_all_gather_triton,
         warmup_iters=5,

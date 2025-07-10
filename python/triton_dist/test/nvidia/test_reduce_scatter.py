@@ -34,7 +34,7 @@ from triton_dist.kernels.nvidia.reduce_scatter import (create_reduce_scater_2d_c
                                                        reduce_scatter_ring_push_1d_intra_node_ce,
                                                        reduce_scatter_ring_push_1d_intra_node_sm,
                                                        reduce_scatter_ring_push_1d_intra_node_sm_rma)
-from triton_dist.utils import assert_allclose, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream, nvshmem_create_tensors, nvshmem_create_tensor, perf_func
+from triton_dist.utils import assert_allclose, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream, nvshmem_create_tensors, nvshmem_create_tensor, perf_func, sleep_async
 
 
 def fill_random(tensor: torch.Tensor):
@@ -128,7 +128,7 @@ def test_reduce_scatter_ring_push_1d_intra_node(M_per_rank, N, dtype: torch.dtyp
         print(f"✅ RANK[{RANK}] check passed")
 
     nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
-    torch.cuda._sleep(1000000000)
+    sleep_async(1000)
     _run_id = os.environ.get("TORCHELASTIC_RUN_ID")
     with group_profile(f"reduce_scatter_1d_{method}_{M}x{N}_{_run_id}", group=TP_GROUP, do_prof=profile):
         _, duration_ms = perf_func(_reduce_scatter_fn, iters, warmup_iters)
@@ -169,7 +169,7 @@ def test_reduce_scatter_2d_op(M_per_rank, N, dtype, profile, warmup_iters=30, it
 
     _run_id = os.environ.get("TORCHELASTIC_RUN_ID")
     with group_profile(f"reduce_scatter_2d_{M}x{N}_{_run_id}", group=TP_GROUP, do_prof=profile):
-        torch.cuda._sleep(1000000000)  # in case CPU bound
+        sleep_async(1000)  # in case CPU bound
         _, duration_ms = perf_func(_reduce_scatter_fn, iters, warmup_iters)
 
     gbps = (lambda ms: input_tensor.nbytes * 1e-9 / (ms * 1e-3) * (WORLD_SIZE - 1) / WORLD_SIZE)

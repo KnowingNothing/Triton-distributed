@@ -169,10 +169,9 @@ if __name__ == "__main__":
 
     x_triton_dist = x.split(M_per_rank, dim=0)[RANK].contiguous()
     ag_intranode_stream = [torch.cuda.Stream(priority=-1) for i in range(WORLD_SIZE)]
-    gemm_stream = torch.cuda.Stream()
 
-    mlp._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream, BLOCK_M=BLOCK_M,
-                  BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages, serial=False)
+    mlp._init_ctx(max_M=M, ag_intranode_stream=ag_intranode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
+                  stages=stages, serial=False)
     out_triton = mlp.dist_triton_fwd(x_triton_dist)
 
     out = golden.split(M_per_rank, dim=0)[RANK].contiguous()

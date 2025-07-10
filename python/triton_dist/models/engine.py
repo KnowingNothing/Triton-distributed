@@ -28,6 +28,7 @@ import torch.distributed
 from tqdm import tqdm
 from datetime import datetime
 
+from triton_dist.kernels.allreduce import AllReduceMethod
 from triton_dist.models.kv_cache import KV_Cache
 from triton_dist.models import AutoLLM, AutoTokenizer, ModelConfig
 from triton_dist.models.utils import logger, sample_token
@@ -128,7 +129,7 @@ class Engine:
             self.model.init_triton_dist_ctx(max_M=bsz)
         elif self.backend == 'triton_dist_AR':
             self.model.set_fwd(mode='triton_dist_AR')
-            self.model.init_triton_dist_AR_ctx(max_M=bsz, ar_method='two_shot_ld_reduce')
+            self.model.init_triton_dist_AR_ctx(max_M=bsz, ar_method=AllReduceMethod.TwoShot_Multimem)
 
         if self.no_graph:
 
@@ -184,4 +185,3 @@ class Engine:
             print(self.tokenizer.batch_decode(output_ids, skip_special_tokens=True))
 
         del self.model_launch
-        torch.distributed.destroy_process_group()

@@ -298,7 +298,6 @@ def ag_gemm_persistent(
     barrier_tensors,
     comm_buf,
     ag_stream=None,
-    gemm_stream=None,
     BLOCK_M=128,
     BLOCK_N=256,
     BLOCK_K=64,
@@ -313,10 +312,8 @@ def ag_gemm_persistent(
     N_per_rank, K = b.shape
 
     ag_stream = torch.cuda.Stream() if ag_stream is None else ag_stream
-    gemm_stream = torch.cuda.current_stream() if gemm_stream is None else gemm_stream
     current_stream = torch.cuda.current_stream()
     ag_stream.wait_stream(current_stream)
-    gemm_stream.wait_stream(current_stream)
 
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
@@ -334,37 +331,35 @@ def ag_gemm_persistent(
         ag_stream,
         barrier_tensors,
     )
-    with torch.cuda.stream(gemm_stream):
-        grid = lambda META: (
-            min(
-                NUM_SMS,
-                triton.cdiv(M, META["BLOCK_SIZE_M"])
-                * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
-            ),
-        )
-        kernel_consumer_gemm_persistent[grid](
-            workspace_tensors[rank],
-            b,
-            c,
-            M,
-            N_per_rank,
-            K,
-            rank,
-            num_ranks,
-            barrier_tensors[rank],
-            comm_buf,
-            BLOCK_M,
-            BLOCK_N,
-            BLOCK_K,
-            8,
-            False,
-            NUM_SMS=NUM_SMS,
-            num_stages=stages,
-            num_warps=8,
-        )
+    grid = lambda META: (
+        min(
+            NUM_SMS,
+            triton.cdiv(M, META["BLOCK_SIZE_M"])
+            * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
+        ),
+    )
+    kernel_consumer_gemm_persistent[grid](
+        workspace_tensors[rank],
+        b,
+        c,
+        M,
+        N_per_rank,
+        K,
+        rank,
+        num_ranks,
+        barrier_tensors[rank],
+        comm_buf,
+        BLOCK_M,
+        BLOCK_N,
+        BLOCK_K,
+        8,
+        False,
+        NUM_SMS=NUM_SMS,
+        num_stages=stages,
+        num_warps=8,
+    )
 
     current_stream.wait_stream(ag_stream)
-    current_stream.wait_stream(gemm_stream)
 
 
 def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
@@ -396,7 +391,6 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
     torch.cuda.synchronize()
 
     ag_stream = torch.cuda.Stream()
-    gemm_stream = torch.cuda.Stream()
 
     def run_ag_gemm_persistent():
         C = torch.empty([M, N_per_rank], dtype=dtype, device=device)
@@ -421,7 +415,6 @@ def test_ag_gemm_tma_intra_node(rank, num_ranks, default_group):
             barriers,
             comm_buf,
             ag_stream=ag_stream,
-            gemm_stream=gemm_stream,
         )
         return C
 
@@ -547,44 +540,41 @@ def ag_gemm_persistent(
     barrier_tensors,
     comm_buf,
     ag_stream=None,
-    gemm_stream=None,
     BLOCK_M=128,
     BLOCK_N=256,
     BLOCK_K=64,
     stages=3,
 ):
     ...
-    with torch.cuda.stream(gemm_stream):
-        grid = lambda META: (
-            min(
-                NUM_SMS,
-                triton.cdiv(M, META["BLOCK_SIZE_M"])
-                * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
-            ),
-        )
-        kernel_consumer_gemm_persistent[grid](
-            workspace_tensors[rank],
-            b,
-            c,
-            M,
-            N_per_rank,
-            K,
-            rank,
-            num_ranks,
-            barrier_tensors[rank],
-            comm_buf,
-            # BLOCK_M,
-            # BLOCK_N,
-            # BLOCK_K,
-            # 8,
-            EPILOGUE_SUBTILE=False,
-            NUM_SMS=NUM_SMS,
-            # num_stages=stages,
-            # num_warps=8,
-        )
+    grid = lambda META: (
+        min(
+            NUM_SMS,
+            triton.cdiv(M, META["BLOCK_SIZE_M"])
+            * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
+        ),
+    )
+    kernel_consumer_gemm_persistent[grid](
+        workspace_tensors[rank],
+        b,
+        c,
+        M,
+        N_per_rank,
+        K,
+        rank,
+        num_ranks,
+        barrier_tensors[rank],
+        comm_buf,
+        # BLOCK_M,
+        # BLOCK_N,
+        # BLOCK_K,
+        # 8,
+        EPILOGUE_SUBTILE=False,
+        NUM_SMS=NUM_SMS,
+        # num_stages=stages,
+        # num_warps=8,
+    )
 
     current_stream.wait_stream(ag_stream)
-    current_stream.wait_stream(gemm_stream)
 ```
 
 Given that `kernel_consumer_gemm_persistent` is a subprocess of `run_ag_gemm_persistent`, and `run_ag_gemm_persistent` needs to be executed as a whole, we only need to decorate the `run_ag_gemm_persistent` function with `triton_dist.autotuner.contextual_autotune` (and set `is_dist=True`):

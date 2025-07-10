@@ -322,8 +322,8 @@ def cp_engine_producer_all_gather_put(local_tensor, ag_buffer, signal_buffer, M_
 
 
 def ag_gemm_persistent_op(a, b, c, rank, num_ranks, workspace_tensors, barrier_tensors, comm_buf, ag_stream=None,
-                          internode_ag_stream=None, gemm_stream=None, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
-                          local_world_size=8, signal_target=1):
+                          internode_ag_stream=None, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3, local_world_size=8,
+                          signal_target=1):
     assert a.shape[1] == b.shape[1], "Incompatible dimensions"
     assert a.dtype == b.dtype, "Incompatible dtypes"
 
@@ -337,51 +337,46 @@ def ag_gemm_persistent_op(a, b, c, rank, num_ranks, workspace_tensors, barrier_t
     num_gemm_sms = torch.cuda.get_device_properties("cuda").multi_processor_count - num_ag_sms
 
     ag_stream = torch.cuda.Stream() if ag_stream is None else ag_stream
-    gemm_stream = torch.cuda.current_stream() if gemm_stream is None else gemm_stream
     current_stream = torch.cuda.current_stream()
     ag_stream.wait_stream(current_stream)
-    gemm_stream.wait_stream(current_stream)
 
     inter_node_allgather(a, workspace_tensors, barrier_tensors, signal_target, rank, local_world_size, num_ranks,
                          ag_stream, internode_ag_stream)
 
     compiled = None
-    with torch.cuda.stream(gemm_stream):
 
-        def alloc_fn(size: int, alignment: int, stream: Optional[int]):
-            return torch.empty(size, device="cuda", dtype=torch.int8)
+    def alloc_fn(size: int, alignment: int, stream: Optional[int]):
+        return torch.empty(size, device="cuda", dtype=torch.int8)
 
-        triton.set_allocator(alloc_fn)
-        grid = lambda META: (min(
-            num_gemm_sms,
-            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
-        ), )
-        compiled = kernel_consumer_gemm_persistent[grid](
-            workspace_tensors[local_rank][:M],
-            b,
-            c,  #
-            M,
-            N_per_rank,
-            K,  #
-            rank,
-            num_ranks,
-            barrier_tensors[local_rank],
-            comm_buf,
-            BLOCK_M,
-            BLOCK_N,
-            BLOCK_K,
-            8,
-            False,
-            NUM_SMS=num_gemm_sms,
-            ready_value=signal_target,
-            num_stages=stages,
-            num_warps=8,
-        )
+    triton.set_allocator(alloc_fn)
+    grid = lambda META: (min(
+        num_gemm_sms,
+        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
+    ), )
+    compiled = kernel_consumer_gemm_persistent[grid](
+        workspace_tensors[local_rank][:M],
+        b,
+        c,  #
+        M,
+        N_per_rank,
+        K,  #
+        rank,
+        num_ranks,
+        barrier_tensors[local_rank],
+        comm_buf,
+        BLOCK_M,
+        BLOCK_N,
+        BLOCK_K,
+        8,
+        False,
+        NUM_SMS=num_gemm_sms,
+        ready_value=signal_target,
+        num_stages=stages,
+        num_warps=8,
+    )
 
     current_stream.wait_stream(internode_ag_stream)
     current_stream.wait_stream(ag_stream)
-    current_stream.wait_stream(gemm_stream)
-
     return compiled
 
 
@@ -447,7 +442,7 @@ if __name__ == "__main__":
     # launch the ag_gemm kernel
     ag_gemm_persistent_op(A, B, C, ctx.rank, ctx.num_ranks, ctx.symm_workspaces, ctx.symm_barriers, ctx.symm_comm_buf,
                           ag_stream=ctx.ag_intranode_stream, internode_ag_stream=ctx.ag_internode_stream,
-                          gemm_stream=ctx.gemm_stream, local_world_size=LOCAL_WORLD_SIZE, signal_target=1)
+                          local_world_size=LOCAL_WORLD_SIZE, signal_target=1)
 
     assert torch.allclose(golden, C, atol=1e-3, rtol=1e-3)
     print("Pass!")

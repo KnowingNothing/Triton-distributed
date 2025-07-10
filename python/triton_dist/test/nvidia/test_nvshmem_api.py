@@ -26,15 +26,19 @@ import datetime
 import functools
 import os
 
+import pytest
 import nvshmem.bindings
 import nvshmem.core
 import torch
 import torch.distributed
 
 import triton
+import triton.backends
+import triton.backends.nvidia
+import triton.backends.nvidia.compiler
 import triton.language as tl
 from triton.language.extra.cuda.language_extra import (__syncthreads, load_v4_u32, multimem_st_b32, multimem_st_v2,
-                                                       multimem_st_v4, ntid, st, tid)
+                                                       multimem_st_v4, ntid, st, tid, multimem_st_p_b32)
 from triton_dist.language.extra import libshmem_device
 from triton_dist.utils import (NVSHMEM_SIGNAL_DTYPE, has_nvshmemi_bc_built, init_nvshmem_by_torch_process_group,
                                nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, nvshmem_create_tensor,
@@ -676,30 +680,43 @@ def test_nvshmem_multimem_st(N):
             multimem_st_b32(mc_ptr + n * 16 + 8, val2)
             multimem_st_b32(mc_ptr + n * 16 + 12, val3)
 
-    for dtype in [torch.int32]:  # torch.float32, torch.bfloat16, torch.float16,
-        t: torch.Tensor = nvshmem_create_tensor((N, ), dtype)
-        t.fill_(1 + RANK)
-        if dtype == torch.int32:
-            t_expected = torch.arange(0, N, dtype=dtype, device="cuda")
-        else:
-            t_expected = torch.ones_like(t)
-        if RANK == 0 and dtype == torch.int32:
-            # if N is large enough, it's enough to cover BF16/FP16 all values, even NaN and Inf
-            t.copy_(t_expected)
-        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
+    @triton.jit
+    def _nvshmem_multimem_st_p_b32(symm_ptr, val):
+        thread_idx = tid(axis=0)
+        pid = tl.program_id(0)
+        symm_ptr = tl.cast(symm_ptr, tl.pointer_type(tl.int8))
+        mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, symm_ptr)
+        if thread_idx == 0 and pid == 0:
+            # should write not data with mask=0
+            multimem_st_p_b32(mc_ptr, tl.cast(val, tl.uint32), 0)
 
-        if RANK == 0:
-            _nvshmem_multimem_st_v2[(4, )](t, t.nbytes, num_warps=4)
-        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
-        try:
+    dtype = torch.float16
+    t: torch.Tensor = nvshmem_create_tensor((N, ), dtype)
+    t.fill_(1 + RANK)
+    t_expected = torch.ones_like(t)
+    # test multimem.st without .v2/v4
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
+    if RANK == 0:
+        _nvshmem_multimem_st_b32[(4, )](t, t.nbytes, num_warps=4)
+    nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
+    torch.testing.assert_close(t, t_expected)
+
+    # TODO(houqi.1993) multimem.st should support v4/v2, but it is not. when ptxas fix it, we will support it.
+    with pytest.raises(triton.runtime.errors.PTXASError, match=r"PTXAS error: Internal Triton PTX codegen error"):
+        _nvshmem_multimem_st_v2.warmup(t, t.nbytes, grid=(4, ))
+    print(f"✅ _nvshmem_multimem_st with {dtype} v2 compiled failed as expected")
+    with pytest.raises(triton.runtime.errors.PTXASError, match=r"PTXAS error: Internal Triton PTX codegen error"):
+        _nvshmem_multimem_st_v4.warmup(t, t.nbytes, grid=(4, ))
+    print(f"✅ _nvshmem_multimem_st with {dtype} v4 compiled failed as expected")
+
+    _nvshmem_multimem_st_p_b32[(1, )](t, 0xffffffff)
+    if RANK == 0:  # RANK 0 fails may cause RANK 1 got an Exception. only check with 1 rank
+        with pytest.raises(AssertionError, match=r"Tensor-likes are not close!"):
+            # t is not changed as expected. but ptxas has a BUG here.
             torch.testing.assert_close(t, t_expected)
-        except Exception as e:
-            print(f"t: {t}")
-            raise e
-        else:
-            print(f"✅ _nvshmem_multimem_st with {dtype} done")
 
-        nvshmem_free_tensor_sync(t)
+    nvshmem_free_tensor_sync(t)
+    print(f"✅ _nvshmem_multimem_st with {dtype} done")
 
 
 @conditional_execution(has_nvshmemi_bc_built)
@@ -951,6 +968,7 @@ if __name__ == "__main__":
     test_nvshmem_signal()
     test_nvshmem_barrier_sync_quiet_fence()
     test_nvshmem_broadcast(32 * WORLD_SIZE, torch.int8)
+
     # some ranks hangs. don't know why
     # test_nvshmem_fcollect(1024, torch.int8)
     test_nvshmem_multimem_st(1024)

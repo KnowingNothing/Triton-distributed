@@ -33,7 +33,7 @@ from triton_dist.kernels.nvidia import (ag_group_gemm, create_ag_group_gemm_cont
 from triton_dist.kernels.nvidia.comm_perf_model import (estimate_all_gather_time_ms, get_nic_gbps_per_gpu)
 from triton_dist.kernels.nvidia.gemm_perf_model import (get_dram_gbps, get_tensorcore_tflops)
 from triton_dist.utils import (TP_GROUP, assert_allclose, dist_print, get_device_max_shared_memory_size,
-                               get_intranode_max_speed, group_profile, initialize_distributed, perf_func)
+                               get_intranode_max_speed, group_profile, initialize_distributed, perf_func, sleep_async)
 
 
 def torch_moe_scatter_group_gemm(in_features, expert_weights, topk_ids):
@@ -177,13 +177,13 @@ def perf_test(name, input_len, dtype: torch.dtype, config, debug=False):
 
     name = name.lower().replace(" ", "_").replace("-", "_")
     with group_profile(f"ag_moe_{name}_{os.environ['TORCHELASTIC_RUN_ID']}", do_prof=args.profile, group=tp_group):
-        torch.cuda._sleep(100000000)
+        sleep_async(100)
         _, duration_triton_ms = perf_func(triton_func, iters=args.iters, warmup_iters=args.warmup_iters)
 
     sort_func = lambda: ctx.sort_topk_ids_align_block_size(full_topk_ids, E, RANK, WORLD_SIZE, LOCAL_WORLD_SIZE, BM)
-    torch.cuda._sleep(100000000)
+    sleep_async(100)
     _, duration_context_ms = perf_func(sort_func, iters=args.iters, warmup_iters=args.warmup_iters)
-    torch.cuda._sleep(100000000)
+    sleep_async(100)
     _, duration_torch_ms = perf_func(torch_func, iters=args.iters, warmup_iters=args.warmup_iters)
 
     dist_print(

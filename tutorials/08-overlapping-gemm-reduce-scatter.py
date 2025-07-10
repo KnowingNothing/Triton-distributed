@@ -272,7 +272,7 @@ def kernel_gemm_rs_producer_persistent(
             accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
 
-def gemm_rs_producer_persistent(a, b, c, barrier, workspace, world_size, local_world_size, num_gemm_sms, gemm_stream,
+def gemm_rs_producer_persistent(a, b, c, barrier, workspace, world_size, local_world_size, num_gemm_sms,
                                 BLOCK_SIZE_M=128, BLOCK_SIZE_N=256, BLOCK_SIZE_K=64, GROUP_SIZE_M=8, STAGES=3):
     # Check constraints.
     assert a.shape[1] == b.shape[1], "Incompatible dimensions"  # b is transposed
@@ -284,9 +284,6 @@ def gemm_rs_producer_persistent(a, b, c, barrier, workspace, world_size, local_w
     M_per_rank = M // world_size
 
     assert M_per_rank % BLOCK_SIZE_M == 0
-
-    current_stream = torch.cuda.current_stream()
-    gemm_stream.wait_stream(current_stream)
 
     # TMA descriptors require a global memory allocation
     def alloc_fn(size: int, alignment: int, stream: Optional[int]):
@@ -301,28 +298,25 @@ def gemm_rs_producer_persistent(a, b, c, barrier, workspace, world_size, local_w
 
     # Launch the Triton GEMM kernel. Once the kernel has completed the computation of the output tiles
     # that send to a specific rank, will set the corresponding barrier to 1.
-    with torch.cuda.stream(gemm_stream):
-        compiled = kernel_gemm_rs_producer_persistent[grid](
-            a,
-            b,
-            c,
-            M,
-            N,
-            local_K,
-            barrier,
-            workspace,
-            local_world_size,
-            BLOCK_SIZE_M,
-            BLOCK_SIZE_N,
-            BLOCK_SIZE_K,
-            GROUP_SIZE_M,
-            False,
-            NUM_SMS=num_gemm_sms,  #
-            num_stages=STAGES,
-            num_warps=8,
-        )
-
-    current_stream.wait_stream(gemm_stream)
+    compiled = kernel_gemm_rs_producer_persistent[grid](
+        a,
+        b,
+        c,
+        M,
+        N,
+        local_K,
+        barrier,
+        workspace,
+        local_world_size,
+        BLOCK_SIZE_M,
+        BLOCK_SIZE_N,
+        BLOCK_SIZE_K,
+        GROUP_SIZE_M,
+        False,
+        NUM_SMS=num_gemm_sms,  #
+        num_stages=STAGES,
+        num_warps=8,
+    )
 
     return compiled
 
@@ -375,7 +369,7 @@ def gemm_rs_multi_node_persistent_op(input, weight, ctx: GEMMReduceScatterTensor
     If the computation of the corresponding tiles is completed, set the barrier to 1.
     """
     gemm_rs_producer_persistent(input, weight, gemm_out, scatter_signal, workspace, world_size, local_world_size,
-                                num_gemm_sms, current_stream, BLOCK_SIZE_M=ctx.BLOCK_M, BLOCK_SIZE_N=ctx.BLOCK_N,
+                                num_gemm_sms, BLOCK_SIZE_M=ctx.BLOCK_M, BLOCK_SIZE_N=ctx.BLOCK_N,
                                 BLOCK_SIZE_K=ctx.BLOCK_K, GROUP_SIZE_M=ctx.GROUP_M, STAGES=ctx.stages)
     """
     Perform reduce-scatter on the rs_stream, overlapping with the gemm operation.

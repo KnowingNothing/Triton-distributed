@@ -32,10 +32,11 @@ from transformers import AutoModelForCausalLM
 
 import triton
 import nvshmem.core
+from triton_dist.kernels.allreduce import to_allreduce_method
 from triton_dist.layers.nvidia.tp_mlp import TP_MLP
-from triton_dist.utils import perf_func, dist_print, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream
+from triton_dist.utils import perf_func, dist_print, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream, assert_allclose
 
-from triton_dist.kernels.nvidia.allreduce import str_to_method
+from triton_dist.kernels.allreduce import get_allreduce_methods
 
 THRESHOLD_MAP = {
     torch.float16: 1e-2,
@@ -45,20 +46,6 @@ THRESHOLD_MAP = {
     torch.int8: 0,
     torch.int32: 0,
 }
-
-
-def check_allclose(out: torch.Tensor, golden: torch.Tensor, atol=1e-3, rtol=1e-3):
-    """
-    Check if two tensors are close within a tolerance.
-    """
-    assert out.shape == golden.shape, f"Output shape mismatch: {out.shape} vs {golden.shape}"
-    if torch.allclose(out, golden, atol=atol, rtol=rtol):
-        dist_print(f"✅ [RANK {RANK}] All close.", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-    else:
-        max_diff = torch.max(torch.abs(out - golden))
-        dist_print(f"❗ [RANK {RANK}] Max difference: {max_diff.item()} (atol={atol}, rtol={rtol})")
-        dist_print(f"Output: {out}\nGolden: {golden}", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        assert False, f"❌ [RANK {RANK}] Output mismatch."
 
 
 def rand_tensor(shape: list[int], dtype: torch.dtype):
@@ -96,11 +83,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
 
     # for triton_dist_AR
-    parser.add_argument(
-        "--ar_method",
-        type=str,
-        default=None,
-    )
+    parser.add_argument("--use_allreduce", default=False, action="store_true")
+    parser.add_argument("--allreduce_method", type=str, default="", choices=get_allreduce_methods())
 
     return parser.parse_args()
 
@@ -161,7 +145,7 @@ if __name__ == "__main__":
 
     # torch fwd
     torch_out = mlp.torch_fwd(x)
-    check_allclose(torch_out, golden, atol=ATOL, rtol=RTOL)
+    assert_allclose(torch_out, golden, atol=ATOL, rtol=RTOL)
 
     # triton_dist fwd
     BLOCK_M = 128
@@ -179,17 +163,15 @@ if __name__ == "__main__":
 
     x_triton_dist = x.split(M_per_rank, dim=0)[RANK].contiguous()
     ag_intranode_stream = torch.cuda.Stream(priority=-1)
-    gemm_stream = torch.cuda.Stream()
     ag_internode_stream = torch.cuda.Stream()
 
-    if args.ar_method is None:
+    if not args.use_allreduce:
         # triton_dist fwd
-        mlp._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream,
-                      ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
-                      stages=stages)
+        mlp._init_ctx(max_M=M, ag_intranode_stream=ag_intranode_stream, ag_internode_stream=ag_internode_stream,
+                      BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages)
         out_triton = mlp.dist_triton_fwd(x_triton_dist)
         out = golden.split(M_per_rank, dim=0)[RANK].contiguous()
-        check_allclose(out_triton, out, atol=ATOL, rtol=RTOL)
+        assert_allclose(out_triton, out, atol=ATOL, rtol=RTOL)
 
         # Efficiency Test
         mempool = torch.cuda.graph_pool_handle()
@@ -219,14 +201,13 @@ if __name__ == "__main__":
         del torch_graph, triton_dist_graph, mempool
 
         # benchmark ag gemm
-
         mempool = torch.cuda.graph_pool_handle()
         torch_graph = make_cuda_graph(mempool, partial(mlp.torch_ag_gemm, x_triton_dist))
         triton_dist_graph = make_cuda_graph(
             mempool, partial(mlp.dist_triton_ag_gemm, x_triton_dist, persistent=AG_GEMM_PERSISTENT, autotune=True))
-        check_allclose(mlp.torch_ag_gemm(x_triton_dist),
-                       mlp.dist_triton_ag_gemm(x_triton_dist, persistent=AG_GEMM_PERSISTENT, autotune=True), atol=ATOL,
-                       rtol=RTOL)
+        assert_allclose(mlp.torch_ag_gemm(x_triton_dist),
+                        mlp.dist_triton_ag_gemm(x_triton_dist, persistent=AG_GEMM_PERSISTENT, autotune=True), atol=ATOL,
+                        rtol=RTOL)
 
         N, K = mlp.gate_up_proj.size()
         with group_profile(f"tp_mlp_ag_gemm_{M}x{N}x{K}", profile, group=TP_GROUP):
@@ -253,8 +234,8 @@ if __name__ == "__main__":
         mempool = torch.cuda.graph_pool_handle()
         torch_graph = make_cuda_graph(mempool, partial(mlp.torch_gemm_rs, x))
         triton_dist_graph = make_cuda_graph(mempool, partial(mlp.dist_triton_gemm_rs, x, persistent=GEMM_RS_PERSISTENT))
-        check_allclose(mlp.torch_gemm_rs(x), mlp.dist_triton_gemm_rs(x, persistent=GEMM_RS_PERSISTENT), atol=ATOL,
-                       rtol=RTOL)
+        assert_allclose(mlp.torch_gemm_rs(x), mlp.dist_triton_gemm_rs(x, persistent=GEMM_RS_PERSISTENT), atol=ATOL,
+                        rtol=RTOL)
 
         with group_profile(f"tp_mlp_gemm_rs_{M}x{N}x{K}", profile, group=TP_GROUP):
             torch.cuda.synchronize()
@@ -276,10 +257,10 @@ if __name__ == "__main__":
 
     else:
         # triton_dist AR fwd
-        ar_method = str_to_method(args.ar_method)
-        mlp._init_AR_ctx(M=M, method=ar_method, dtype=DTYPE, signal_stages=args.warmup + args.iters + 32)
+        ar_method = to_allreduce_method(args.allreduce_method)
+        mlp._init_AR_ctx(max_M=M, method=ar_method, dtype=DTYPE)
         out_triton_AR = mlp.dist_triton_AR_fwd(x)
-        check_allclose(out_triton_AR, golden, atol=ATOL, rtol=RTOL)
+        assert_allclose(out_triton_AR, golden, atol=ATOL, rtol=RTOL)
 
         # Efficiency Test
         mempool = torch.cuda.graph_pool_handle()
@@ -299,7 +280,7 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         dist_print(f"torch tp mlp e2e #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        dist_print(f"dist-triton_AR_{args.ar_method} tp mlp e2e #{RANK}", dist_triton_perf,
+        dist_print(f"dist-triton_AR_{args.allreduce_method} tp mlp e2e #{RANK}", dist_triton_perf,
                    f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
         # we need to del cuda graphs to avoid dist hang

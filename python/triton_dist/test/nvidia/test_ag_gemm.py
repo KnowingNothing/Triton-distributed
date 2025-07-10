@@ -164,11 +164,9 @@ def test_perf_ag_gemm_tma(args, autotune=False):
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
 
     ag_intranode_stream = torch.cuda.Stream(priority=-1)
-    gemm_stream = torch.cuda.Stream()
 
     ctx = create_ag_gemm_context(A, B, rank, num_ranks, max_M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
-                                 stages=stages, for_correctness=False, ag_intranode_stream=ag_intranode_stream,
-                                 gemm_stream=gemm_stream)
+                                 stages=stages, for_correctness=False, ag_intranode_stream=ag_intranode_stream)
 
     def func():
         return ag_gemm(A, B, ctx=ctx, persistent=args.persistent, autotune=autotune)

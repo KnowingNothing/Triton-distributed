@@ -76,8 +76,9 @@ class GEMMReduceScatterTensorParallelContext:
         return self.gemm_out_bufs[local_rank][:M]
 
 
-def create_gemm_rs_context(max_M, N, rank, world_size, local_world_size, output_dtype, rs_stream, BLOCK_M=128,
-                           BLOCK_N=256, BLOCK_K=64, GROUP_M=8, stages=3) -> GEMMReduceScatterTensorParallelContext:
+def create_gemm_rs_context(max_M, N, rank, world_size, local_world_size, output_dtype: torch.dtype,
+                           rs_stream: torch.cuda.Stream, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, GROUP_M=8,
+                           stages=3) -> GEMMReduceScatterTensorParallelContext:
     rs_ctx = create_reduce_scater_2d_ctx(max_M, N, rank, world_size, local_world_size, output_dtype,
                                          overlap_with_gemm=True)
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
@@ -419,33 +420,27 @@ def kernel_gemm_rs_producer_non_persistent(
 
 
 def gemm_rs_producer_persistent(a, b, c, barrier, workspace, world_size, local_world_size, fuse_scatter, num_gemm_sms,
-                                gemm_stream, triton_config: triton.Config):
+                                triton_config: triton.Config):
     # Check constraints.
     assert a.shape[1] == b.shape[1], "Incompatible dimensions"  # b is transposed
     assert a.dtype == b.dtype, "Incompatible dtypes"
 
     M, local_K = a.shape
     N, local_K = b.shape
-
-    current_stream = torch.cuda.current_stream()
-    gemm_stream.wait_stream(current_stream)
 
     grid = lambda META: (min(
         num_gemm_sms,
         triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
     ), )
 
-    with torch.cuda.stream(gemm_stream):
-        compiled = kernel_gemm_rs_producer_persistent[grid](a, b, c, M, N, local_K, barrier, workspace, fuse_scatter,
-                                                            local_world_size, world_size, **triton_config.all_kwargs())
-
-    current_stream.wait_stream(gemm_stream)
+    compiled = kernel_gemm_rs_producer_persistent[grid](a, b, c, M, N, local_K, barrier, workspace, fuse_scatter,
+                                                        local_world_size, world_size, **triton_config.all_kwargs())
 
     return compiled
 
 
 def gemm_rs_producer_non_persistent(a, b, c, barrier, workspace, world_size, local_world_size, fuse_scatter,
-                                    gemm_stream, triton_config: triton.Config):
+                                    triton_config: triton.Config):
     # Check constraints.
     assert a.shape[1] == b.shape[1], "Incompatible dimensions"  # b is transposed
     assert a.dtype == b.dtype, "Incompatible dtypes"
@@ -453,35 +448,27 @@ def gemm_rs_producer_non_persistent(a, b, c, barrier, workspace, world_size, loc
     M, local_K = a.shape
     N, local_K = b.shape
 
-    current_stream = torch.cuda.current_stream()
-    gemm_stream.wait_stream(current_stream)
-
     grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
-
-    with torch.cuda.stream(gemm_stream):
-        compiled = kernel_gemm_rs_producer_non_persistent[grid](
-            a,
-            b,
-            c,
-            M,
-            N,
-            local_K,
-            a.stride(0),
-            a.stride(1),
-            b.stride(1),
-            b.stride(0),
-            c.stride(0),
-            c.stride(1),
-            barrier,
-            workspace,
-            fuse_scatter,
-            local_world_size,
-            world_size,
-            **triton_config.all_kwargs(),
-        )
-
-    current_stream.wait_stream(gemm_stream)
-
+    compiled = kernel_gemm_rs_producer_non_persistent[grid](
+        a,
+        b,
+        c,
+        M,
+        N,
+        local_K,
+        a.stride(0),
+        a.stride(1),
+        b.stride(1),
+        b.stride(0),
+        c.stride(0),
+        c.stride(1),
+        barrier,
+        workspace,
+        fuse_scatter,
+        local_world_size,
+        world_size,
+        **triton_config.all_kwargs(),
+    )
     return compiled
 
 
@@ -563,7 +550,7 @@ def gemm_rs_op(input, weight, ctx: GEMMReduceScatterTensorParallelContext, persi
                 ctx.GROUP_M, "NUM_SMS": num_gemm_sms, "EPILOGUE_SUBTILE": False
             }, num_stages=ctx.stages, num_warps=8)
         gemm_rs_producer_persistent(input, weight, gemm_out, scatter_signal, workspace, world_size, local_world_size,
-                                    fuse_scatter, num_gemm_sms, current_stream, triton_config)
+                                    fuse_scatter, num_gemm_sms, triton_config)
     else:
         triton_config = triton.Config(
             {
@@ -572,7 +559,7 @@ def gemm_rs_op(input, weight, ctx: GEMMReduceScatterTensorParallelContext, persi
             }, num_stages=ctx.stages, num_warps=8)
         triton_config = update_triton_config(M, N, local_K, input.dtype, world_size, local_world_size, triton_config)
         gemm_rs_producer_non_persistent(input, weight, gemm_out, scatter_signal, workspace, world_size,
-                                        local_world_size, fuse_scatter, current_stream, triton_config)
+                                        local_world_size, fuse_scatter, triton_config)
 
     if not fuse_scatter:
         with torch.cuda.stream(rs_stream):

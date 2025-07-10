@@ -56,7 +56,58 @@ def _is_gpu_master():
 
 @triton.jit
 def barrier_on_this_grid(ptr):
-    """ triton implementation of cooperative_group::thid_grid().sync() """
+    """ triton implementation of cooperative_group::thid_grid().sync()
+    WARNING: use with care. better launch triton with launch_cooperative_grid=True to throw an explicit error instead of hang without notice.
+    """
+    __syncthreads()
+    pid_size_x = tl.num_programs(axis=0)
+    pid_size_y = tl.num_programs(axis=1)
+    pid_size_z = tl.num_programs(axis=2)
+    expected = pid_size_x * pid_size_y * pid_size_z
+    if _is_cta_master():
+        nb = tl.where(
+            _is_gpu_master(),
+            tl.cast(0x80000000, tl.uint32, bitcast=True) - (expected - 1),
+            1,
+        )
+        old_arrive = atomic_add(ptr.to(tl.pointer_type(tl.uint32)), nb, scope="gpu", semantic="release")
+    else:
+        old_arrive = tl.cast(0, tl.uint32)
+
+    if _is_cta_master():
+        current_arrive = ld_acquire(ptr)
+        while ((old_arrive ^ current_arrive) & 0x80000000) == 0:
+            current_arrive = ld_acquire(ptr, scope=tl.constexpr("gpu"))
+
+    __syncthreads()
+
+
+@triton.jit
+def load_envreg(val: tl.constexpr):
+    return tl.inline_asm_elementwise(
+        asm=f"mov.u32 $0, %envreg{val};",
+        constraints=("=r"),
+        args=[],
+        dtype=(tl.uint32),
+        is_pure=True,
+        pack=1,
+    )
+
+
+@triton.jit
+def load_grid_ws_abi_address():
+    envreg1 = load_envreg(tl.constexpr(1))
+    envreg2 = load_envreg(tl.constexpr(2))
+    grid_ws_abi_address = (tl.cast(envreg1, tl.uint64) << 32) | tl.cast(envreg2, tl.uint64)
+    return tl.cast(grid_ws_abi_address, tl.pointer_type(tl.uint32), bitcast=True)
+
+
+@triton.jit
+def cooperative_barrier_on_this_grid():
+    """ triton implementation of cooperative_group::thid_grid().sync()
+    WARNING: use with care. better launch triton with launch_cooperative_grid=True to throw an explicit error instead of hang without notice.
+    """
+    ptr = load_grid_ws_abi_address() + 1
     __syncthreads()
     pid_size_x = tl.num_programs(axis=0)
     pid_size_y = tl.num_programs(axis=1)
