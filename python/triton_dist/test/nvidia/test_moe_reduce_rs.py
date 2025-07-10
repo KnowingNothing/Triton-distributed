@@ -33,7 +33,7 @@ from triton_dist.kernels.nvidia import (create_moe_rs_context, create_moe_rs_con
 from triton_dist.kernels.nvidia.comm_perf_model import estimate_reduce_scatter_time_ms, get_nic_gbps_per_gpu
 from triton_dist.kernels.nvidia.gemm_perf_model import get_dram_gbps, get_tensorcore_tflops
 from triton_dist.kernels.nvidia.moe_reduce_rs import moe_reduce_rs_colwise
-from triton_dist.utils import dist_print, get_intranode_max_speed, group_profile, perf_func, initialize_distributed, TP_GROUP, assert_allclose
+from triton_dist.utils import dist_print, get_intranode_max_speed, group_profile, perf_func, initialize_distributed, TP_GROUP, assert_allclose, sleep_async
 
 
 def create_rand_tensor(rank, shape, dtype=torch.float16, device="cuda"):
@@ -389,16 +389,16 @@ if __name__ == "__main__":
         assert_allclose(output_triton_colwise, output_torch, atol=atol, rtol=rtol)
 
         # don't care torch profile
-        torch.cuda._sleep(200000000)  # in case CPU bound
+        sleep_async(200)  # in case CPU bound
         torch_output, duration_ms_torch = perf_func(partial(torch_module.forward, intermediate_states, down_weight),
                                                     iters=iters, warmup_iters=warmup_iters)
 
         with group_profile(f"moe_rs_{os.environ['TORCHELASTIC_RUN_ID']}", do_prof=args.profile, group=tp_group):
-            torch.cuda._sleep(100000000)  # in case CPU bound
+            sleep_async(100)  # in case CPU bound
             output, duration_ms_triton = perf_func(partial(module.forward, intermediate_states, down_weight),
                                                    iters=iters, warmup_iters=warmup_iters)
 
-            torch.cuda._sleep(100000000)  # in case CPU bound
+            sleep_async(100)  # in case CPU bound
             output, duration_ms_triton_colwise = perf_func(
                 partial(module.forward_colwise, intermediate_states, down_weight), iters=iters,
                 warmup_iters=warmup_iters)

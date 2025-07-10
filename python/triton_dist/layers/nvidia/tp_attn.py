@@ -28,6 +28,7 @@ from torch import nn
 import torch.distributed
 import flashinfer
 
+from triton_dist.kernels.allreduce import AllReduceMethod
 from triton_dist.kernels.nvidia.allgather_gemm import AllGatherGEMMTensorParallelContext, get_auto_all_gather_method, ag_gemm
 from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs
 from triton_dist.utils import nvshmem_barrier_all_on_stream
@@ -91,7 +92,7 @@ class TP_Attn:
         self.wo = None
         self.ag_ctx = None
         self.rs_ctx = None
-        self.ctx = None
+        self.ar_ctx = None
 
     def _init_parameters(self, self_attn: nn.Module, verbose=False):
         self.q_size = self_attn.q_proj.weight.shape[0] // self.world_size
@@ -117,13 +118,11 @@ class TP_Attn:
         if verbose:
             print(f"[RANK {self.rank}] Attn initialized with parameters: qkv ({self.wqkv.shape}, o ({self.wo.shape}))")
 
-    def _init_ctx(self, max_M, gemm_stream, ag_intranode_stream, ag_internode_stream, BLOCK_M, BLOCK_N, BLOCK_K,
-                  stages):
+    def _init_ctx(self, max_M, ag_intranode_stream, ag_internode_stream, BLOCK_M, BLOCK_N, BLOCK_K, stages):
         self.ag_ctx = AllGatherGEMMTensorParallelContext(
             N_per_rank=self.ag_N_per_rank, K=self.K, tensor_dtype=self.dtype, rank=self.rank, num_ranks=self.world_size,
-            num_local_ranks=self.world_size, max_M=max_M, gemm_stream=gemm_stream,
-            ag_intranode_stream=ag_intranode_stream, ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M,
-            BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages,
+            num_local_ranks=self.world_size, max_M=max_M, ag_intranode_stream=ag_intranode_stream,
+            ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages,
             all_gather_method=get_auto_all_gather_method(self.world_size, self.world_size))
         self.rs_ctx = create_gemm_rs_context(
             max_M=max_M,
@@ -141,27 +140,20 @@ class TP_Attn:
         nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
         torch.cuda.synchronize()
 
-    def _init_AR_ctx(self, max_M, method, dtype=torch.bfloat16, signal_stages=1):
+    def _init_AR_ctx(self, max_M, method: AllReduceMethod, dtype=torch.bfloat16):
         self.ar_method = method
-        input_tensor = torch.empty([max_M, self.K], dtype=dtype, device="meta")
-        self.ctx = create_allreduce_ctx(
-            numel=max_M * self.K,
-            dtype=dtype,
-            rank=self.rank,
-            world_size=self.world_size,
+        self.ar_ctx = create_allreduce_ctx(
+            workspace_nbytes=max_M * self.K * dtype.itemsize, rank=self.rank, world_size=self.world_size,
             local_world_size=self.world_size,  # TODO(houqi.1993) does not support multiple nodes now.
-            method=method,
-            signal_stages=signal_stages,
         )
-        self.ar_output = torch.empty_like(input_tensor, device="cuda", dtype=dtype).contiguous()
 
     def finalize(self):
         if self.ag_ctx:
             self.ag_ctx.finailize()
         if self.rs_ctx:
             self.rs_ctx.finalize()
-        if self.ctx:
-            self.ctx.finalize()
+        if self.ar_ctx:
+            self.ar_ctx.finalize()
 
     @torch.inference_mode()
     def apply_rotary_pos_emb(self, q: torch.Tensor, k: torch.Tensor, position_ids: torch.Tensor,
@@ -274,12 +266,8 @@ class TP_Attn:
 
         out = torch.nn.functional.linear(out.view(bsz, q_len, -1), self.wo).view(bsz * q_len, -1)
         if self.world_size > 1:
-            out = all_reduce(
-                input=out.contiguous(),
-                output=self.ar_output,
-                method=self.ar_method,
-                ctx=self.ctx,
-            )
+            out_allreduce = torch.empty_like(out)
+            out = all_reduce(x=out.contiguous(), output=out_allreduce, method=self.ar_method, ctx=self.ar_ctx)
         return out.view(bsz, q_len, -1)
 
     def fwd(self, x: torch.Tensor, position_ids: torch.Tensor, cos_sin_cache: torch.Tensor, kv_cache, layer_idx: int):

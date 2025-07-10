@@ -246,7 +246,7 @@ def kernel_consumer_gemm_persistent(
 
 
 def ag_gemm_intra_node_op(a, b, c, rank, num_ranks, workspace_tensors, one, barrier_tensors, comm_buf_ptr, ag_streams,
-                          gemm_stream, serial=False, M_PER_CHUNK=1024, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
+                          serial=False, M_PER_CHUNK=1024, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
                           autotune=False, use_persistent_gemm=True):
     # Check constraints.
     assert a.shape[1] == b.shape[1], "Incompatible dimensions"
@@ -257,7 +257,6 @@ def ag_gemm_intra_node_op(a, b, c, rank, num_ranks, workspace_tensors, one, barr
     N_per_rank, _ = b.shape
 
     current_stream = torch.cuda.current_stream()
-    gemm_stream.wait_stream(current_stream)
     for ag_stream in ag_streams:
         ag_stream.wait_stream(current_stream)
 
@@ -274,43 +273,40 @@ def ag_gemm_intra_node_op(a, b, c, rank, num_ranks, workspace_tensors, one, barr
     else:
         call_ag()
 
-    with torch.cuda.stream(gemm_stream):
-        if use_persistent_gemm:
-            NUM_SMS = torch.cuda.get_device_properties(0).multi_processor_count
-            NUM_XCDS = 4
+    if use_persistent_gemm:
+        NUM_SMS = torch.cuda.get_device_properties(0).multi_processor_count
+        NUM_XCDS = 4
 
-            grid = lambda META: (min(
-                NUM_SMS,
-                triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
-            ), )
+        grid = lambda META: (min(
+            NUM_SMS,
+            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N_per_rank, META["BLOCK_SIZE_N"]),
+        ), )
 
-            compiled = None
-            full_input = workspace_tensors[rank][:M]
-            compiled = kernel_consumer_gemm_persistent[grid](
-                full_input,
-                a,
-                b,
-                c,  #
-                M,
-                N_per_rank,
-                K,  #
-                full_input.stride(0),
-                full_input.stride(1),  #
-                b.stride(1),  # layout of b is ((N, K), (K, 1)), stride_bk = b.stride(1)
-                b.stride(0),  # stride_bn = b.stride(0)
-                c.stride(0),
-                c.stride(1),  #
-                rank,
-                num_ranks,
-                barrier_tensors[rank],
-                M_PER_CHUNK=M_PER_CHUNK,
-                NUM_SMS=NUM_SMS,  #
-                NUM_XCDS=NUM_XCDS,
-            )
-        else:
-            raise NotImplementedError("Non-perisitent gemm is not yet supported")
-
-    current_stream.wait_stream(gemm_stream)
+        compiled = None
+        full_input = workspace_tensors[rank][:M]
+        compiled = kernel_consumer_gemm_persistent[grid](
+            full_input,
+            a,
+            b,
+            c,  #
+            M,
+            N_per_rank,
+            K,  #
+            full_input.stride(0),
+            full_input.stride(1),  #
+            b.stride(1),  # layout of b is ((N, K), (K, 1)), stride_bk = b.stride(1)
+            b.stride(0),  # stride_bn = b.stride(0)
+            c.stride(0),
+            c.stride(1),  #
+            rank,
+            num_ranks,
+            barrier_tensors[rank],
+            M_PER_CHUNK=M_PER_CHUNK,
+            NUM_SMS=NUM_SMS,  #
+            NUM_XCDS=NUM_XCDS,
+        )
+    else:
+        raise NotImplementedError("Non-perisitent gemm is not yet supported")
 
     if os.getenv('CUDA_GRAPH') in ['1', 'true', 'True']:
         for ag_stream in ag_streams:
@@ -328,7 +324,6 @@ class AllGatherGEMMTensorParallelContext:
     one: torch.Tensor
     comm_buf_ptr: torch.Tensor
     ag_streams: Optional[List[torch.cuda.streams.Stream]] = None
-    gemm_stream: Optional[torch.cuda.streams.Stream] = None
     serial: bool = False
     M_PER_CHUNK: int = 1024
     BLOCK_M: int = 128
@@ -337,8 +332,8 @@ class AllGatherGEMMTensorParallelContext:
     stages: int = 3
     autotune: bool = False
 
-    def update(self, rank, num_ranks, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3, ag_streams=None, gemm_stream=None,
-               serial=False, autotune=False):
+    def update(self, rank, num_ranks, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3, ag_streams=None, serial=False,
+               autotune=False):
         self.rank = rank
         self.num_ranks = num_ranks
         self.BLOCK_M = BLOCK_M
@@ -346,14 +341,13 @@ class AllGatherGEMMTensorParallelContext:
         self.BLOCK_K = BLOCK_K
         self.stages = stages
         self.ag_streams = ag_streams
-        self.gemm_stream = gemm_stream
         self.serial = serial
         self.autotune = autotune
 
 
 def create_ag_gemm_intra_node_context(max_M, N, K, input_dtype, output_dtype, rank, num_ranks, tp_group,
-                                      ag_streams=None, gemm_stream=None, M_PER_CHUNK=1024, BLOCK_M=128, BLOCK_N=256,
-                                      BLOCK_K=64, stages=3, serial=False, autotune=False):
+                                      ag_streams=None, M_PER_CHUNK=1024, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
+                                      serial=False, autotune=False):
     """create context for allgather gemm intra-node
 
     Args:
@@ -369,7 +363,6 @@ def create_ag_gemm_intra_node_context(max_M, N, K, input_dtype, output_dtype, ra
         BLOCK_K (int, optional): GEMM tiling factor for K dim. Defaults to 64.
         stages (int, optional): GEMM async-copy stages. Defaults to 3.
         ag_streams (torch.cuda.streams.Stream, optional): The stream used for allgather, if not provided, create a new one. Defaults to None.
-        gemm_stream (torch.cuda.streams.Stream, optional): The stream used for gemm, if not provided, use current stream. Defaults to None.
         serial (bool, optional): Make the execution serialized, for debug. Defaults to False.
         autotune (bool, optional): whether to enable autotune. Defaults to False.
 
@@ -391,12 +384,10 @@ def create_ag_gemm_intra_node_context(max_M, N, K, input_dtype, output_dtype, ra
     comm_bufs[rank].fill_(0)
     comm_buf_ptr = torch.tensor([t.data_ptr() for t in comm_bufs], device=torch.cuda.current_device(),
                                 requires_grad=False)
-    current_stream = torch.cuda.current_stream()
 
     torch.cuda.synchronize()
     torch.distributed.barrier()
     _ag_streams = [torch.cuda.Stream(priority=-1) for i in range(num_ranks)] if ag_streams is None else ag_streams
-    _gemm_stream = current_stream if gemm_stream is None else gemm_stream
     one = torch.ones((1024, ), dtype=torch.int32, device=torch.cuda.current_device())
     ret = AllGatherGEMMTensorParallelContext(
         rank=rank,
@@ -407,7 +398,6 @@ def create_ag_gemm_intra_node_context(max_M, N, K, input_dtype, output_dtype, ra
         one=one,
         comm_buf_ptr=comm_buf_ptr,
         ag_streams=_ag_streams,
-        gemm_stream=_gemm_stream,
         serial=serial,
         M_PER_CHUNK=M_PER_CHUNK,
         BLOCK_M=BLOCK_M,
@@ -444,8 +434,8 @@ def ag_gemm_intra_node(a, b, transe_b, ctx):
     C = torch.empty([ctx.num_ranks * M_per_rank, N_per_rank], dtype=a.dtype, device=a.device)
 
     ag_gemm_intra_node_op(a, b, C, ctx.rank, ctx.num_ranks, ctx.workspace_tensors, ctx.one, ctx.barrier_tensors,
-                          ctx.comm_buf_ptr, ag_streams=ctx.ag_streams, gemm_stream=ctx.gemm_stream, serial=ctx.serial,
-                          M_PER_CHUNK=ctx.M_PER_CHUNK, autotune=ctx.autotune, use_persistent_gemm=True)
+                          ctx.comm_buf_ptr, ag_streams=ctx.ag_streams, serial=ctx.serial, M_PER_CHUNK=ctx.M_PER_CHUNK,
+                          autotune=ctx.autotune, use_persistent_gemm=True)
     # reset
     barrier_ptr = ctx.barrier_tensors[ctx.rank]
     barrier_ptr.fill_(0)

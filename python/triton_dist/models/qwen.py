@@ -30,6 +30,8 @@ import gc
 from transformers import Qwen3ForCausalLM, Qwen3Config
 from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer
 
+from triton_dist.kernels.allreduce import AllReduceMethod
+
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is not available. Please ensure you have a compatible GPU and CUDA installed.")
 try:
@@ -173,14 +175,11 @@ class Qwen3:
             self.ag_intranode_stream = [torch.cuda.Stream(priority=-1) for i in range(self.world_size)]
         else:
             raise RuntimeError(f"Unsupported platform: {PLATFORM}. Supported platforms are 'nvidia' and 'amd'.")
-        self.gemm_stream = torch.cuda.Stream()
         self.ag_internode_stream = torch.cuda.Stream()
-        self.layers[0].attn._init_ctx(max_M=max_M, gemm_stream=self.gemm_stream,
-                                      ag_intranode_stream=self.ag_intranode_stream,
+        self.layers[0].attn._init_ctx(max_M=max_M, ag_intranode_stream=self.ag_intranode_stream,
                                       ag_internode_stream=self.ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
                                       BLOCK_K=BLOCK_K, stages=stages)
-        self.layers[0].mlp._init_ctx(max_M=max_M, gemm_stream=self.gemm_stream,
-                                     ag_intranode_stream=self.ag_intranode_stream,
+        self.layers[0].mlp._init_ctx(max_M=max_M, ag_intranode_stream=self.ag_intranode_stream,
                                      ag_internode_stream=self.ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
                                      BLOCK_K=BLOCK_K, stages=stages)
         for layer in self.layers[1:]:
@@ -191,17 +190,15 @@ class Qwen3:
 
         self.use_ar = False
 
-    def init_triton_dist_AR_ctx(self, max_M: int = 128, ar_method: str = 'two_shot_ld_reduce'):
+    def init_triton_dist_AR_ctx(self, max_M: int = 128, ar_method: AllReduceMethod = AllReduceMethod.DoubleTree):
         self.layers[0].attn._init_AR_ctx(max_M=max_M, method=ar_method, dtype=self.dtype)
-        self.layers[0].mlp._init_AR_ctx(M=max_M, method=ar_method, dtype=self.dtype)
+        self.layers[0].mlp._init_AR_ctx(max_M=max_M, method=ar_method, dtype=self.dtype)
 
         for layer in self.layers[1:]:
-            layer.attn.ctx = self.layers[0].attn.ctx
+            layer.attn.ar_ctx = self.layers[0].attn.ar_ctx
             layer.attn.ar_method = self.layers[0].attn.ar_method
-            layer.attn.ar_output = self.layers[0].attn.ar_output
-            layer.mlp.ctx = self.layers[0].mlp.ctx
+            layer.mlp.ar_ctx = self.layers[0].mlp.ar_ctx
             layer.mlp.ar_method = self.layers[0].mlp.ar_method
-            layer.mlp.ar_output = self.layers[0].mlp.ar_output
         self.use_ar = True
 
     def finalize(self):

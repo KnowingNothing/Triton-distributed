@@ -327,6 +327,7 @@ class MoEAllGatherGroupGEMMTensorParallelContext:
             self.grid_barrier,
             BLOCK_SIZE=1024 * 16 // local_data.itemsize,
             num_warps=32,
+            launch_cooperative_grid=True,
         )
 
 

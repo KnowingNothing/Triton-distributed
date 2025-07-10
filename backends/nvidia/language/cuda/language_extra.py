@@ -288,20 +288,17 @@ def _multimem_st_v2_impl(ptr, val0, val1, suffix: core.constexpr, _semantic=None
 @core.extern
 def multimem_st_v2(ptr, val0, val1, _semantic=None):
     """ no multimem.st.b32.v2. store b32x2 as b64 """
-    if False:  # it seems that multimem.st does not support v2, when doc say so: https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-multimem
-        if ptr.dtype.element_ty == tl.float32:
-            return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f32"), _semantic=_semantic)
-        elif ptr.dtype.element_ty == tl.bfloat16:
-            return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("bf16x2"), _semantic=_semantic)
-        elif ptr.dtype.element_ty == tl.float16:
-            return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f16x2"), _semantic=_semantic)
-    tl.static_assert(
-        ptr.dtype.element_ty == tl.float32 or ptr.dtype.element_ty == tl.float16 or ptr.dtype.element_ty == tl.bfloat16,
-        "multimem.st.v2 only support f32 and f64", _semantic=_semantic)
+    # it seems that multimem.st does not support v2, when doc say so: https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-multimem
     tl.static_assert(val0.dtype.primitive_bitwidth == 32, _semantic=_semantic)
     tl.static_assert(val1.dtype.primitive_bitwidth == 32, _semantic=_semantic)
-    return _multimem_st_impl(ptr, pack_b32_v2(val0, val1, _semantic=_semantic), core.constexpr("b64"),
-                             _semantic=_semantic)
+    if ptr.dtype.element_ty == tl.float32:
+        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f32"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.bfloat16:
+        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("bf16x2"), _semantic=_semantic)
+    elif ptr.dtype.element_ty == tl.float16:
+        return _multimem_st_v2_impl(ptr, val0, val1, core.constexpr("f16x2"), _semantic=_semantic)
+    else:
+        tl.static_assert(False, "multimem.st.v2 only support f32 and fp16 and bf16", _semantic=_semantic)
 
 
 @core.extern
@@ -324,6 +321,10 @@ def _multimem_st_v4_impl(ptr, val0, val1, val2, val3, suffix: core.constexpr, _s
 @core.extern
 def multimem_st_v4(ptr, val0, val1, val2, val3, _semantic=None):
     tl.static_assert(ptr.dtype.is_ptr(), _semantic=_semantic)
+    tl.static_assert(val0.dtype.primitive_bitwidth == 32, _semantic=_semantic)
+    tl.static_assert(val1.dtype.primitive_bitwidth == 32, _semantic=_semantic)
+    tl.static_assert(val2.dtype.primitive_bitwidth == 32, _semantic=_semantic)
+    tl.static_assert(val3.dtype.primitive_bitwidth == 32, _semantic=_semantic)
     if ptr.dtype.element_ty == tl.float32:
         return _multimem_st_v4_impl(ptr, val0, val1, val2, val3, core.constexpr("f32"), _semantic=_semantic)
     elif ptr.dtype.element_ty == tl.bfloat16:
@@ -336,24 +337,20 @@ def multimem_st_v4(ptr, val0, val1, val2, val3, _semantic=None):
 
 # TODO(houqi.1993) multimem does not work with @%p.
 @triton.jit
-def multimem_st_v4_p_b32(ptr, packed_v4_b32, mask):
-    f1, f2, f3, f4 = packed_v4_b32
-    p1 = pack_b32_v2(f1, f2)
-    p2 = pack_b32_v2(f3, f4)
+def multimem_st_p_b32(ptr, val, mask):
+    tl.static_assert(val.dtype.primitive_bitwidth == 32)
     return tl.inline_asm_elementwise(
         asm="""
         {
             .reg .pred %p0;
-            .reg .u64 %r0;
-            setp.eq.s32 %p0, $4, 1;
-            add.u64 %r0, $1, 8;
-            @%p0 multimem.st.global.b64 [$1], $2;
-            @%p0 multimem.st.global.b64 [%r0], $3;
+            setp.eq.s32 %p0, $3, 1;
+            @%p0 multimem.st.global.b32 [$1], $2;
             mov.u32 $0, 0;
         }
         """,
-        constraints=("=r,l,l,l,r"),
-        args=[ptr.to(tl.pointer_type(tl.uint64)), p1, p2, mask.to(tl.int32)],
+        constraints=("=r,l,r,r"),
+        args=[ptr.to(tl.pointer_type(tl.uint32)), val,
+              tl.cast(mask, tl.uint32)],
         dtype=tl.uint32,
         is_pure=False,
         pack=1,

@@ -40,7 +40,7 @@ from triton.language.extra.cuda.language_extra import __syncthreads, tid
 from triton_dist.kernels.nvidia.common_ops import set_signal, wait_eq
 from triton_dist.language.extra import libshmem_device
 from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, get_has_fullmesh_nvlink, get_numa_world_size,
-                               nvshmem_barrier_all_on_stream)
+                               nvshmem_barrier_all_on_stream, sleep_async)
 
 
 class AllGatherMethod(Enum):
@@ -75,7 +75,7 @@ def _add_noise_workload_debug():
     import random
 
     if random.random() > 0.3:
-        torch.cuda._sleep(3000000000)
+        sleep_async(100)
 
 
 def cp_engine_producer_all_gather_full_mesh_push(

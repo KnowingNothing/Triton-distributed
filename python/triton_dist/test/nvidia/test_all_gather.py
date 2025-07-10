@@ -27,7 +27,7 @@ import triton
 import triton.language as tl
 import triton_dist.language as dl
 import nvshmem.core
-from triton_dist.utils import init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, perf_func, nvshmem_create_tensor
+from triton_dist.utils import init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, perf_func, nvshmem_create_tensor, sleep_async
 
 import os
 import datetime
@@ -107,7 +107,7 @@ if __name__ == "__main__":
     else:
         print(f"✅ RANK[{RANK}] check passed")
 
-    torch.cuda._sleep(100000000)
+    sleep_async(100)
     _, ag_time_ms = perf_func(lambda: triton_all_gather(ag_buffer), iters, warmup_iters)
 
     gbps = ag_buffer.nbytes * 1e-9 / (ag_time_ms * 1e-3) * (WORLD_SIZE - 1) / WORLD_SIZE

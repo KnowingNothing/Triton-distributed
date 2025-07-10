@@ -31,7 +31,7 @@ import torch
 
 from triton_dist.layers.nvidia import AllGatherLayer
 from triton_dist.utils import (init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream,
-                               nvshmem_free_tensor_sync, nvshmem_create_tensor)
+                               nvshmem_free_tensor_sync, nvshmem_create_tensor, sleep_async)
 
 
 def parse_args():
@@ -111,7 +111,7 @@ def perf_ag(ag_op: AllGatherLayer, ag_buffer: torch.Tensor, nbytes: int, do_veri
     from triton_dist.utils import group_profile, perf_func
 
     with group_profile(f"all_gather_op_{nbytes//1024}KB", do_prof=args.profile, group=TP_GROUP):
-        torch.cuda._sleep(1000000000)  # in case CPU bound
+        sleep_async(1000)  # in case CPU bound
         _, ag_time_ms = perf_func(
             _run_with_ag_op,
             warmup_iters=warmup_iters,

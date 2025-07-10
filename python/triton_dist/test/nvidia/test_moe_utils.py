@@ -32,7 +32,7 @@ from triton_dist.kernels.nvidia.moe_utils import (
     reduce_topk_non_tma,
     reduce_topk_tma,
 )
-from triton_dist.utils import perf_func, assert_allclose
+from triton_dist.utils import perf_func, assert_allclose, sleep_async
 
 
 def _generate_random_choosed_experts(ntokens, topk, nexperts, generator: torch.Generator = None):
@@ -74,7 +74,7 @@ def test_calc_gather_scatter_index(ntokens, topk, nexperts):
         assert torch.all(torch.any(choosed_experts[token_index, :] == n, 1))
 
     print("✅ test_calc_gather_scatter_index passes")
-    torch.cuda._sleep(100000000)
+    sleep_async(100)
     _, duration_ms = perf_func(
         lambda: calc_gather_scatter_index_triton(choosed_experts, nexperts),
         iters=10,
@@ -107,7 +107,7 @@ def test_reduce_topk(ntokens, topk, N, dtype: torch.dtype, n_split, nexperts):
         assert_allclose(out_triton, y=out_torch, rtol=1e-2, atol=1e-2, verbose=False)
         print(f"✅ test_reduce_topk with {reduce_topk_fn.__name__} passes")
 
-        torch.cuda._sleep(100000000)
+        sleep_async(100)
         _, duration_ms = perf_func(
             lambda: reduce_topk_fn(t_in, weight, out_triton),
             iters=10,

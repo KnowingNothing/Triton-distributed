@@ -98,7 +98,6 @@ def perf_test(M, config, pg):
         if ctx.is_multinode:
             ctx.ag_internode_stream.wait_stream(current_stream)
         ctx.ag_intranode_stream.wait_stream(current_stream)
-        ctx.gemm_stream.wait_stream(current_stream)
 
         if not ctx.is_multinode:
             cp_engine_producer_all_gather_intra_node(
@@ -121,7 +120,6 @@ def perf_test(M, config, pg):
         if ctx.is_multinode:
             current_stream.wait_stream(ctx.ag_internode_stream)
         current_stream.wait_stream(ctx.ag_intranode_stream)
-        current_stream.wait_stream(ctx.gemm_stream)
 
     def _triton_gemm_func():
         return gemm_persistent(A_gathered, B, ctx=ctx, autotune=args.autotune)

@@ -119,7 +119,7 @@ def init_nvshmem_by_torch_process_group(pg: torch.distributed.ProcessGroup):
     # nvshmem.core.utils._configure_logging("DEBUG")
 
 
-def nvshmem_create_tensor(shape, dtype):
+def nvshmem_create_tensor(shape, dtype) -> torch.Tensor:
     torch.cuda.synchronize()
     tensor = nvshmem.core.tensor(shape, dtype=dtype)
     torch.cuda.synchronize()
@@ -956,14 +956,36 @@ def has_nvshmemi_bc_built():
 
 @functools.lru_cache()
 def is_nvshmem_multimem_supported():
-    cap_major, cap_minor = torch.cuda.get_device_capability()
-    if cap_major < 9:
-        return False
+    # this is a python version of nvshmem nvshmemi_detect_nvls_support
+    err, cuda_driver_version = cuda.cuDriverGetVersion()
+    CUDA_CHECK(err)
+
+    err, is_multicast_supported = cuda.cuDeviceGetAttribute(
+        cuda.CUdevice_attribute.CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, 0)
+    CUDA_CHECK(err)
+
     # nvshmem configure support
     if os.getenv("NVSHMEM_DISABLE_CUDA_VMM", "0") == "1":
         return False
-    # TODO(houqi.1993) check is nvswitch v4 exists.
-    return True
+
+    if os.getenv("NVSHMEM_DISABLE_NVLS", "0") == "1":
+        return False
+
+    return all([
+        hasattr(cuda, x) for x in [
+            "cuMulticastCreate",
+            "cuMulticastBindMem",
+            "cuMulticastUnbind",
+            "cuMulticastGetGranularity",
+            "cuMulticastAddDevice",
+        ]
+    ])
+
+
+@functools.lru_cache()
+def is_tma_support():
+    cap_major = torch.cuda.get_device_capability()[0]
+    return cap_major >= 9
 
 
 def requires(condition_func):
@@ -978,3 +1000,13 @@ def requires(condition_func):
         return wrapper
 
     return decorator
+
+
+@functools.lru_cache()
+def get_device_property(device_id=0):
+    return torch.cuda.get_device_properties(device_id)
+
+
+def sleep_async(duration_ms: int):
+    clock_rate_hz = torch.cuda.clock_rate() * 1e6
+    torch.cuda._sleep(int(clock_rate_hz * duration_ms / 1000))

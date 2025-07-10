@@ -1415,6 +1415,7 @@ def moe_reduce_rs_colwise(
             BLOCK_SIZE_N=N_per_chunk,
             N_CHUNKS=n_chunks,
             num_warps=32,
+            launch_cooperative_grid=True,
         )
         # print("reduce_topk_reduce_scatter_intra_node done")
 

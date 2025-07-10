@@ -412,6 +412,7 @@ def reduce_scatter_ring_push_1d_intra_node_sm(
         input_tensor.numel() // num_ranks,
         BLOCK_SIZE=32 * num_warps * 16 // input_tensor.dtype.itemsize,  # each thread copy a uint4
         num_warps=num_warps,
+        launch_cooperative_grid=True,
     )
     return output
 
@@ -686,7 +687,7 @@ def reducer_scatter_for_each_node(input: torch.Tensor, ctx: ReduceScatter2DConte
 
 @triton.jit(do_not_specialize=["begin_idx"])
 def kernel_ring_reduce_non_tma(
-    c_ptr,  # c of shape [NUM_SPLITS, elems_per_rank]
+    in_ptr,  # c of shape [NUM_SPLITS, elems_per_rank]
     out_ptr,  # out = sum(c, axis=0) of shape [elems_per_rank]
     elems_per_rank,
     begin_idx,  # reduce in order (begin_idx + i) % NUM_SPLITS for i in [0, NUM_SPLITS - 1]
@@ -699,12 +700,12 @@ def kernel_ring_reduce_non_tma(
     for n in range(pid, num_blocks, npid):
         segment = (begin_idx + 1) % NUM_SPLITS
         c_offs = elems_per_rank * segment + BLOCK_SIZE * n + tl.arange(0, BLOCK_SIZE)
-        mask = c_offs < elems_per_rank * NUM_SPLITS
-        accum = tl.load(c_ptr + c_offs, mask=mask)
+        mask = c_offs < elems_per_rank * (segment + 1)
+        accum = tl.load(in_ptr + c_offs, mask=mask)
         for i in range(1, NUM_SPLITS):
             segment = (i + begin_idx + 1) % NUM_SPLITS
             c_offs = elems_per_rank * segment + BLOCK_SIZE * n + tl.arange(0, BLOCK_SIZE)
-            data = tl.load(c_ptr + c_offs)
+            data = tl.load(in_ptr + c_offs, mask=mask)
             accum += data
 
         out_offs = BLOCK_SIZE * n + tl.arange(0, BLOCK_SIZE)

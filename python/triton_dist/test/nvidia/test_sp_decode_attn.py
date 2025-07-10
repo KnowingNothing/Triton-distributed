@@ -36,7 +36,7 @@ import nvshmem.core
 
 from triton_dist.layers.nvidia import SpGQAFlashDecodeAttention
 from triton_dist.utils import (dist_print, group_profile, init_nvshmem_by_torch_process_group,
-                               nvshmem_barrier_all_on_stream, perf_func)
+                               nvshmem_barrier_all_on_stream, perf_func, sleep_async)
 
 ALL_TESTS = {}
 
@@ -261,7 +261,7 @@ def perf_decode(args):
         nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
         with group_profile(f"sp_flash_decode_kv{kv_len_per_rank}", do_prof=args.profile, group=TP_GROUP):
-            torch.cuda._sleep(1000000000)  # in case CPU bound
+            sleep_async(1000)  # in case CPU bound
             _, time_ms = perf_func(
                 func,
                 warmup_iters=20,

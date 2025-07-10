@@ -29,7 +29,7 @@ import torch
 
 import triton
 from triton_dist.kernels.nvidia.reduce_scatter import (kernel_ring_reduce_non_tma, kernel_ring_reduce_tma)
-from triton_dist.utils import perf_func
+from triton_dist.utils import perf_func, sleep_async
 
 
 def ring_reduce_tma(
@@ -120,7 +120,7 @@ def perf_tma_with(
         block_size_m=block_size_m,
         block_size_n=block_size_n,
     )
-    torch.cuda._sleep(100000000)
+    sleep_async(100)
     _, duration_ms = perf_func(
         func,
         iters=iters,

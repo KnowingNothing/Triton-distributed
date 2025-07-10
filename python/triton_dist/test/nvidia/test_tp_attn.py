@@ -29,11 +29,13 @@ import torch
 import torch.distributed
 from functools import partial
 from transformers import AutoModelForCausalLM
-import nvshmem
+import nvshmem.core
 
+from triton_dist.kernels.allreduce import to_allreduce_method
+from triton_dist.kernels.allreduce import get_allreduce_methods
 from triton_dist.layers.nvidia.tp_attn import TP_Attn, _set_cos_sin_cache
 from triton_dist.models.kv_cache import KV_Cache
-from triton_dist.utils import perf_func, dist_print, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream
+from triton_dist.utils import assert_allclose, perf_func, dist_print, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream
 
 THRESHOLD_MAP = {
     torch.float16: 1e-2,
@@ -43,20 +45,6 @@ THRESHOLD_MAP = {
     torch.int8: 0,
     torch.int32: 0,
 }
-
-
-def check_allclose(out: torch.Tensor, golden: torch.Tensor, atol=1e-3, rtol=1e-3):
-    """
-    Check if two tensors are close within a tolerance.
-    """
-    assert out.shape == golden.shape, f"Output shape mismatch: {out.shape} vs {golden.shape}"
-    if torch.allclose(out, golden, atol=atol, rtol=rtol):
-        dist_print(f"✅ [RANK {RANK}] All close.", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-    else:
-        max_diff = torch.max(torch.abs(out - golden))
-        dist_print(f"❗ [RANK {RANK}] Max difference: {max_diff.item()} (atol={atol}, rtol={rtol})")
-        dist_print(f"Output: {out}\nGolden: {golden}", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        assert False, f"❌ [RANK {RANK}] Output mismatch."
 
 
 def rand_tensor(shape: list[int], dtype: torch.dtype):
@@ -97,11 +85,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
 
     # for triton_dist_AR
-    parser.add_argument(
-        "--ar_method",
-        type=str,
-        default=None,
-    )
+    parser.add_argument("--use_allreduce", default=False, action="store_true")
+    parser.add_argument("--allreduce_method", type=str, default="", choices=get_allreduce_methods())
 
     return parser.parse_args()
 
@@ -166,14 +151,13 @@ if __name__ == "__main__":
         world_size=WORLD_SIZE,
     )
     bsz_per_rank = BSZ // WORLD_SIZE
-    if args.ar_method is None:
+    if not args.use_allreduce:
         assert BSZ % WORLD_SIZE == 0, f"BSZ {BSZ} must be divisible by WORLD_SIZE {WORLD_SIZE}"
     BLOCK_M = 128
     BLOCK_N = 128
     BLOCK_K = 128
     stages = 3
     ag_intranode_stream = torch.cuda.Stream(priority=-1)
-    gemm_stream = torch.cuda.Stream()
     ag_internode_stream = torch.cuda.Stream()
     profile = args.profile
 
@@ -195,27 +179,25 @@ if __name__ == "__main__":
 
         # torch prefill
         out_torch = attn.torch_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
-        check_allclose(out_torch, golden, atol=ATOL, rtol=RTOL)
+        assert_allclose(out_torch, golden, atol=ATOL, rtol=RTOL)
 
-        if args.ar_method is None:
+        M = BSZ * SEQ_LEN
+        if not args.use_allreduce:
             # dist triton prefill
-            M = BSZ * SEQ_LEN
-            attn._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream,
-                           ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
-                           stages=stages)
+            attn._init_ctx(max_M=M, ag_intranode_stream=ag_intranode_stream, ag_internode_stream=ag_internode_stream,
+                           BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages)
             dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
 
             out_triton = attn.dist_triton_fwd(dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
                                               ag_gemm_persistent=AG_GEMM_PERSISTENT,
                                               gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True)
             out = golden.split(bsz_per_rank, dim=0)[RANK].contiguous()
-            check_allclose(out_triton, out, atol=ATOL, rtol=RTOL)
+            assert_allclose(out_triton, out, atol=ATOL, rtol=RTOL)
         else:
             # dist triton prefill with AR
-            M = BSZ * SEQ_LEN
-            attn._init_AR_ctx(max_M=M, method=args.ar_method, dtype=DTYPE)
+            attn._init_AR_ctx(max_M=M, method=to_allreduce_method(args.allreduce_method), dtype=DTYPE)
             out_triton = attn.dist_triton_AR_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
-            check_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
+            assert_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
 
         # Efficiency Test
         x = rand_tensor([BSZ, SEQ_LEN, K], dtype=DTYPE)
@@ -224,7 +206,7 @@ if __name__ == "__main__":
         mempool = torch.cuda.graph_pool_handle()
         torch_graph = make_cuda_graph(mempool,
                                       partial(attn.torch_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
-        if args.ar_method is None:
+        if not args.use_allreduce:
             dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
             triton_dist_graph = make_cuda_graph(
                 mempool,
@@ -246,11 +228,11 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         dist_print(f"torch attn prefill #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        if args.ar_method is None:
+        if not args.use_allreduce:
             dist_print(f"dist-triton attn prefill #{RANK}", dist_triton_perf, f"{torch_perf/dist_triton_perf}x",
                        need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         else:
-            dist_print(f"dist-triton_AR_{args.ar_method} attn prefill #{RANK}", dist_triton_perf,
+            dist_print(f"dist-triton_AR_{args.allreduce_method} attn prefill #{RANK}", dist_triton_perf,
                        f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         del torch_graph, triton_dist_graph, mempool
 
@@ -266,20 +248,19 @@ if __name__ == "__main__":
 
         # triton decode
         M = BSZ
-        if args.ar_method is None:
+        if not args.use_allreduce:
             out_torch = out_torch.split(bsz_per_rank, dim=0)[RANK].contiguous()
-            attn._init_ctx(max_M=M, gemm_stream=gemm_stream, ag_intranode_stream=ag_intranode_stream,
-                           ag_internode_stream=ag_internode_stream, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
-                           stages=stages)
+            attn._init_ctx(max_M=M, ag_intranode_stream=ag_intranode_stream, ag_internode_stream=ag_internode_stream,
+                           BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages)
             dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
             out_triton = attn.dist_triton_fwd(dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
                                               ag_gemm_persistent=AG_GEMM_PERSISTENT,
                                               gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True)
-            check_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
+            assert_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
         else:
-            attn._init_AR_ctx(max_M=M, method=args.ar_method, dtype=DTYPE)
+            attn._init_AR_ctx(max_M=M, method=to_allreduce_method(args.allreduce_method), dtype=DTYPE)
             out_triton = attn.dist_triton_AR_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
-            check_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
+            assert_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
 
         # Efficiency Test
 
@@ -290,7 +271,7 @@ if __name__ == "__main__":
         torch_graph = make_cuda_graph(mempool,
                                       partial(attn.torch_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
 
-        if args.ar_method is None:
+        if not args.use_allreduce:
             dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
             triton_dist_graph = make_cuda_graph(
                 mempool,
@@ -312,11 +293,11 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         dist_print(f"torch attn decode #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        if args.ar_method is None:
+        if not args.use_allreduce:
             dist_print(f"dist-triton attn decode #{RANK}", dist_triton_perf, f"{torch_perf/dist_triton_perf}x",
                        need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         else:
-            dist_print(f"dist-triton_AR_{args.ar_method} attn decode #{RANK}", dist_triton_perf,
+            dist_print(f"dist-triton_AR_{args.allreduce_method} attn decode #{RANK}", dist_triton_perf,
                        f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
         del torch_graph, triton_dist_graph, mempool
 

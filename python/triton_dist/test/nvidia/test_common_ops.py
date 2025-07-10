@@ -25,6 +25,7 @@
 import datetime
 import os
 import random
+import pytest
 
 import torch
 import torch.distributed
@@ -33,10 +34,11 @@ import triton.language as tl
 
 from triton_dist.kernels.nvidia.common_ops import (barrier_all_intra_node_non_atomic,
                                                    barrier_all_intra_node_non_atomic_block, barrier_on_this_grid,
-                                                   barrier_all_intra_node_atomic_cas_block, bisect_left_kernel,
+                                                   barrier_all_intra_node_atomic_cas_block,
+                                                   cooperative_barrier_on_this_grid, bisect_left_kernel,
                                                    bisect_left_kernel_aligned, bisect_right_kernel,
                                                    bisect_right_kernel_aligned)
-from triton_dist.utils import check_p2p_native_atomic_supported, nvshmem_barrier_all_on_stream, init_nvshmem_by_torch_process_group, nvshmem_free_tensor_sync, nvshmem_create_tensor
+from triton_dist.utils import check_p2p_native_atomic_supported, nvshmem_barrier_all_on_stream, init_nvshmem_by_torch_process_group, nvshmem_free_tensor_sync, nvshmem_create_tensor, sleep_async
 
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
 LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
@@ -46,17 +48,31 @@ LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
 
 def _random_sleep():
     if random.random() > 0.9:
-        torch.cuda._sleep(int(random.random() * 1000000))
+        sleep_async(int(random.random() * 100))
     elif random.random() > 0.5:
-        torch.cuda._sleep(int(random.random() * 30000))
+        sleep_async(int(random.random() * 30))
 
 
 def test_barrier_on_this_grid():
     print(">> barrier_on_this_grid start...")
     flag = torch.zeros((1, ), dtype=torch.int32, device="cuda")
-    for _ in range(1000):
-        barrier_on_this_grid[(random.randint(1, 1024), )](flag)
+    for _ in range(100):
+        barrier_on_this_grid[(random.randint(1, 1024), )](flag, launch_cooperative_grid=True)
     print("✅ barrier_on_this_grid passed")
+
+    from cuda import cudart
+    err, = cudart.cudaGetLastError()
+    print(err)
+
+    for _ in range(100):
+        cooperative_barrier_on_this_grid[(random.randint(1, 1024), )](launch_cooperative_grid=True)
+    print("✅ cooperative_barrier_on_this_grid passed")
+
+    # If launch_cooperative_grid is False, then it should raise an error.
+    with pytest.raises(RuntimeError, match="an illegal memory access was encountered"):
+        cooperative_barrier_on_this_grid[(random.randint(1, 1024), )](launch_cooperative_grid=False)
+        torch.cuda.synchronize()
+    print("✅ cooperative_barrier_on_this_grid with launch_cooperative_grid=False passed")
 
 
 def test_barrier_all_intra_node_non_atomic():
@@ -192,9 +208,10 @@ if __name__ == "__main__":
     assert torch.distributed.is_initialized()
     TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
 
-    torch.cuda.synchronize()
     init_nvshmem_by_torch_process_group(TP_GROUP)
 
-    test_barrier_on_this_grid()
     test_barrier_all_intra_node_non_atomic()
     test_barrier_all_intra_node()
+
+    # this test corrupt the CUDA context. leave it in last
+    test_barrier_on_this_grid()

@@ -127,17 +127,17 @@ jobs:
         commands:
           - bash ./scripts/build_e2e_env.sh
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_mlp.py --M 4096 --model Qwen/Qwen3-32B
-          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_mlp.py --M 128 --model Qwen/Qwen3-32B --ar_method two_shot_ld_reduce
+          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_mlp.py --M 128 --model Qwen/Qwen3-32B --use_allreduce --allreduce_method two_shot_multimem
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_attn.py --bsz 32 --seq_len 128 --model Qwen/Qwen3-32B --mode prefill
-          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_attn.py --bsz 1 --seq_len 128 --model Qwen/Qwen3-32B --mode prefill --ar_method two_shot_ld_reduce
+          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_attn.py --bsz 1 --seq_len 128 --model Qwen/Qwen3-32B --mode prefill --use_allreduce --allreduce_method two_shot_multimem
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_attn.py --bsz 4096 --seq_len 128 --model Qwen/Qwen3-32B --mode decode
-          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_attn.py --bsz 128 --seq_len 128 --model Qwen/Qwen3-32B --mode decode --ar_method two_shot_ld_reduce
+          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_attn.py --bsz 128 --seq_len 128 --model Qwen/Qwen3-32B --mode decode --use_allreduce --allreduce_method two_shot_multimem
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_e2e.py --bsz 8 --seq_len 256 --model Qwen/Qwen3-32B --check
-          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_e2e.py --bsz 8 --seq_len 128 --model Qwen/Qwen3-32B --check --ar_method two_shot_ld_reduce
+          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_e2e.py --bsz 8 --seq_len 128 --model Qwen/Qwen3-32B --check --use_allreduce --allreduce_method two_shot_multimem
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_e2e.py --bsz 32 --seq_len 128 --model Qwen/Qwen3-32B --mode prefill
-          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_e2e.py --bsz 1 --seq_len 128 --model Qwen/Qwen3-32B --mode prefill --ar_method two_shot_ld_reduce
+          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_e2e.py --bsz 1 --seq_len 128 --model Qwen/Qwen3-32B --mode prefill --use_allreduce --allreduce_method two_shot_multimem
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_e2e.py --bsz 4096 --seq_len 128 --model Qwen/Qwen3-32B --mode decode
-          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_e2e.py --bsz 128 --seq_len 128 --model Qwen/Qwen3-32B --mode decode --ar_method two_shot_ld_reduce
+          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_tp_e2e.py --bsz 128 --seq_len 128 --model Qwen/Qwen3-32B --mode decode --use_allreduce --allreduce_method two_shot_multimem
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_e2e_inference.py --bsz 4096 --gen_len 128 --max_length 150
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_e2e_inference.py --bsz 4096 --gen_len 128 --max_length 150 --triton_dist
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_e2e_inference.py --bsz 128 --gen_len 128 --max_length 150
@@ -187,7 +187,7 @@ jobs:
       - name: nvshmem api tests
         commands:
           # nvshmem related
-          - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_nvshmem_api.py
+          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_nvshmem_api.py
           - bash ./scripts/launch.sh ./python/triton_dist/test/nvidia/test_ring_put.py
       - name: flash decoding tests
         commands:
@@ -221,11 +221,12 @@ jobs:
       - name: allreduce tests
         commands:
           # allreduce
-          - NVSHMEM_DISABLE_CUDA_VMM=1 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method double_tree --stress
-          - NVSHMEM_DISABLE_CUDA_VMM=1 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot_non_tma --stress
-          - NVSHMEM_DISABLE_CUDA_VMM=1 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot_tma --stress
-          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot_ld_reduce --stress
-          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method two_shot_ld_reduce --stress
+          - NVSHMEM_DISABLE_CUDA_VMM=1 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method double_tree --stress --iters 2 --verify_hang 50
+          - NVSHMEM_DISABLE_CUDA_VMM=1 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot --stress --iters 2 --verify_hang 50
+          - NVSHMEM_DISABLE_CUDA_VMM=1 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method two_shot --stress --iters 2 --verify_hang 50
+          - NVSHMEM_DISABLE_CUDA_VMM=1 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot_tma --stress --iters 2 --verify_hang 50
+          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot_multimem --stress --iters 2 --verify_hang 50
+          - NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method two_shot_multimem --stress --iters 2 --verify_hang 50
           #############
           # pytest (disabled)
           #############

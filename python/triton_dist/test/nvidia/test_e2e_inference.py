@@ -27,7 +27,7 @@ import torch
 import os
 from argparse import ArgumentParser, Namespace
 
-from triton_dist.utils import init_nvshmem_by_torch_process_group
+from triton_dist.utils import finalize_distributed, init_nvshmem_by_torch_process_group
 from triton_dist.models import ModelConfig
 from triton_dist.models.engine import Engine
 from triton_dist.models.utils import seed_everything
@@ -112,3 +112,4 @@ if __name__ == "__main__":
 
     engine.serve(input_ids=input_ids, gen_len=gen_len)
     engine.logger.log("✅ Inference completed!", "success")
+    finalize_distributed()
