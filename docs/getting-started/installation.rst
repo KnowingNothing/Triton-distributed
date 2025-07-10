@@ -59,53 +59,28 @@ Steps:
       pip3 install torch==2.4.1
       pip3 install cuda-python==12.4 # need to align with your nvcc version
       pip3 install ninja cmake wheel pybind11 numpy chardet pytest
+      pip3 install pynvml>=11.5.3
 
-5. **Prepare NVSHMEM and Clang-19.**
-
-   See `the guide <prepare_nvshmem.md>`_ to prepare NVSHMEM.
-
-   Clang-19 is required to build NVSHMEM bitcode library and Triton. To install Clang-19, we recommend pre-built binary:
+5. **Install NVSHMEM.**
 
    .. code-block:: sh
 
-      apt update
-      apt install clang-19 llvm-19 libclang-19-dev
-
-   Also, you may install Clang-19 from source by building LLVM (see `how to build LLVM <https://llvm.org/docs/CMake.html>`_).
-
-   .. code-block:: sh
-
-      git clone git@github.com:llvm/llvm-project.git
-      cd llvm-project
-      git checkout llvmorg-19.1.0
-      mkdir build
-      cd build
-      cmake -G Ninja ../llvm    -DLLVM_ENABLE_PROJECTS="clang;lldb;lld"    -DLLVM_BUILD_EXAMPLES=ON    -DLLVM_TARGETS_TO_BUILD="Native;NVPTX;AMDGPU"    -DCMAKE_BUILD_TYPE=Release    -DLLVM_ENABLE_ASSERTIONS=ON    -DMLIR_ENABLE_BINDINGS_PYTHON=ON  -DCMAKE_BUILD_TYPE=Release
-      cmake --build .
-
-   Remember to put the built binary and library path to `PATH` and `LD_LIBRARY_PATH`.
-
-   .. code-block:: sh
-
-      export PATH=$PATH:/home/llvm-project/build/bin
-      export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/llvm-project/build/lib
+      pip3 install nvidia-nvshmem-cu12==3.3.9 cuda.core==0.2.0 "Cython>=0.29.24"
+      CPPFLAGS="-I/usr/local/cuda/include" pip3 install https://developer.download.nvidia.com/compute/nvshmem/redist/nvshmem_python/source/nvshmem_python-source-0.1.0.36132199_cuda12-archive.tar.xz
 
 6. **Build Triton-distributed**
 
    Then you can build Triton-distributed.
 
    .. code-block:: sh
-
-      # Not recommend to use g++
-      export CC=clang-19
-      export CXX=clang++-19
       # Remove triton installed with torch
       pip uninstall triton
+      pip uninstall triton_dist # remove previous triton-dist
       rm -rf /usr/local/lib/python3.12/dist-packages/triton
       # Install Triton-distributed
       cd /workspace/Triton-distributed
       export USE_TRITON_DISTRIBUTED_AOT=0
-      pip3 install -e python --verbose --no-build-isolation
+      pip3 install -e python --verbose --no-build-isolation --use-pep517
 
    We also provide AOT version of Triton-distributed. If you want to use AOT (**Not Recommended**), then
 
@@ -115,7 +90,7 @@ Steps:
       source scripts/setenv.sh
       bash scripts/gen_aot_code.sh
       export USE_TRITON_DISTRIBUTED_AOT=1
-      pip3 install -e python --verbose --no-build-isolation
+      pip3 install -e python --verbose --no-build-isolation --use-pep517
 
    .. note:: You have to first build non-AOT version before building AOT version, once you build AOT version, you will always build for AOT in future. To unset this, you have to remove your build directory: `python/build`
 
@@ -199,7 +174,7 @@ Steps:
 
    .. code-block:: sh
 
-      pip3 install -e python --verbose --no-build-isolation
+      pip3 install -e python --verbose --no-build-isolation --use-pep517
 
 +++++++++++++++++++++++
 Test your installation:

@@ -92,7 +92,7 @@ function set_nvshmem_home() {
     echo "Found NVSHMEM_HOME from environment variable: $NVSHMEM_HOME"
   else
     # 2. Try to find from Python command
-    export NVSHMEM_HOME=$(python -c "import nvidia.nvshmem, pathlib; print(pathlib.Path(nvidia.nvshmem.__path__[0]))" 2>/dev/null)
+    export NVSHMEM_HOME=$(python3 -c "import nvidia.nvshmem, pathlib; print(pathlib.Path(nvidia.nvshmem.__path__[0]))" 2>/dev/null)
 
     if [ -n "$NVSHMEM_HOME" ]; then
       echo "Found NVSHMEM_HOME from Python nvidia-nvshmem-cu12: $NVSHMEM_HOME"
