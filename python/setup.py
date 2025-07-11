@@ -401,6 +401,7 @@ class CMakeClean(clean):
 class CMakeBuildPy(build_py):
 
     def run(self) -> None:
+        add_links(external_only=False, materialization=False)
         self.run_command('build_ext')
         return super().run()
 
@@ -468,6 +469,7 @@ class CMakeBuild(TorchBuildExtension):
     def run(self):
         # We creates symbolic links for each file in backend separately. Since the nvshmem bitcode is moved to nvidia/lib,
         # it needs to be built first.
+        add_links(external_only=False, materialization=False)
         build_shmem()
         for ext in self.extensions:
             if isinstance(ext, CMakeExtension):
