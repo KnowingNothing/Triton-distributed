@@ -29,11 +29,11 @@ import torch
 
 import triton
 import triton.language as tl
+from triton_dist.kernels.nvidia.common_ops import _set_signal_cuda, _wait_eq_cuda
 import triton_dist.language as dl
 from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add, tid, ntid, multimem_ld_reduce_v4,
                                                        st_v4_b32)
-from triton_dist.kernels.nvidia.common_ops import (BarrierAllContext, barrier_all_on_stream, barrier_on_this_grid,
-                                                   set_signal, wait_eq)
+from triton_dist.kernels.nvidia.common_ops import (BarrierAllContext, barrier_all_on_stream, barrier_on_this_grid)
 from triton_dist.kernels.nvidia.reduce_scatter import ring_reduce
 from triton_dist.language.extra import libshmem_device
 from triton_dist.kernels.nvidia.moe_utils import calc_gather_scatter_index_triton, reduce_topk_kernel
@@ -705,7 +705,7 @@ def topk_reduce_scatter_reduce_for_each_node(
                 num_warps=32,
             )
 
-            set_signal(rs_per_node_signal_buf[cur_node_id].data_ptr(), 1, reduction_stream, require_i64=True)
+            _set_signal_cuda(rs_per_node_signal_buf[cur_node_id], 1, reduction_stream)
 
     return rs_per_node_buffer[:M_per_rank * nnodes]
 
@@ -722,12 +722,7 @@ def p2p_inter_node(
     nnodes = world_size // local_world_size
     node_id = rank // local_world_size
     if nnodes == 1:
-        wait_eq(
-            rs_per_node_signal_buf[node_id].data_ptr(),
-            1,
-            stream,
-            require_i64=True,
-        )
+        _wait_eq_cuda(rs_per_node_signal_buf[node_id], 1, stream)
         return input
     M, N = input.shape
     M_per_rank = M // nnodes
@@ -742,7 +737,7 @@ def p2p_inter_node(
             rs_per_node_signal_buf,
             num_warps=16,
         )
-        wait_eq(rs_per_node_signal_buf[node_id].data_ptr(), 1, stream, require_i64=True)
+        _wait_eq_cuda(rs_per_node_signal_buf[node_id], 1, stream)
         output[M_per_rank * node_id:M_per_rank * (node_id + 1)].copy_(input[M_per_rank * node_id:M_per_rank *
                                                                             (node_id + 1)])
     return output[:M_per_rank * nnodes]

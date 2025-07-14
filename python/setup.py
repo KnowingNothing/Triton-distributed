@@ -427,16 +427,26 @@ def build_rocshmem(cap):
     subprocess.check_call(["bash", f"{rocshmem_bind_dir}/build.sh"] + extra_args)
 
 
-def build_shmem():
-    try:
-        import torch
+def _is_cuda_platform():
+    import torch
+    if torch.cuda.is_available():
+        if torch.version.hip is None:
+            return True
+    return False
 
-        if torch.cuda.is_available():
-            if torch.version.hip is not None:
-                build_rocshmem(torch.cuda.get_device_capability())  # (9, 4)
-    except Exception as e:
-        print("Cannot import torch.")
-        raise e
+
+def _is_hip_platform():
+    import torch
+    if torch.cuda.is_available():
+        if torch.version.hip is not None:
+            return True
+    return False
+
+
+def build_shmem():
+    if _is_hip_platform():
+        import torch
+        build_rocshmem(torch.cuda.get_device_capability())  # (9, 4)
 
 
 class SHMEMBuildOnly(Command):
@@ -971,6 +981,9 @@ PYTHON_CLASSIFIERS = [
 ]
 CLASSIFIERS = BASE_CLASSIFIERS + PYTHON_CLASSIFIERS
 
+DEPS_NVIDIA = ["cuda-python==12.4", "nvidia-nvshmem-cu12>=3.3.9", "nvshmem4py-cu12"]
+DEPS = DEPS_NVIDIA if _is_cuda_platform() else []
+
 setup(
     name=os.environ.get("TRITON_WHEEL_NAME", "triton_dist"),
     version="3.4.0" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", ""),
@@ -1003,7 +1016,7 @@ setup(
     classifiers=CLASSIFIERS,
     test_suite="tests",
     extras_require={
-        "build": ["cmake>=3.20,<4.0", "lit", "packaging", "ninja", "cuda-python==12.4", "pybind11"],
+        "build": ["cmake>=3.20,<4.0", "lit", "packaging", "ninja", "pybind11"] + DEPS,
         "tests": [
             "autopep8",
             "isort",

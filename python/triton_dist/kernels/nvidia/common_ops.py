@@ -24,18 +24,18 @@
 ################################################################################
 from typing import Optional
 
+from cuda import cuda, cudart
 import nvshmem.bindings
 import nvshmem.core
 import torch
-from cuda import cuda
 
 import triton
 import triton.language as tl
+from triton_dist.utils import CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE
 import triton_dist.language as dl
 from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add, atomic_cas, ld, ld_acquire, ntid, st,
                                                        tid)
-from triton_dist.utils import (CUDA_CHECK, check_p2p_native_atomic_supported, nvshmem_barrier_all_on_stream,
-                               nvshmem_create_tensor)
+from triton_dist.utils import (check_p2p_native_atomic_supported, nvshmem_barrier_all_on_stream, nvshmem_create_tensor)
 
 
 @triton.jit
@@ -239,44 +239,6 @@ def barrier_all_on_stream(ctx: BarrierAllContext, stream: Optional[torch.cuda.St
         ctx.target_value += 1
 
 
-def wait_eq(ptr: int, signal: int, stream: Optional[torch.cuda.Stream] = None, require_i64=False):
-    stream = stream or torch.cuda.current_stream()
-    if not require_i64:
-        (err, ) = cuda.cuStreamWaitValue32(
-            stream.cuda_stream,
-            ptr,
-            signal,
-            cuda.CUstreamWaitValue_flags.CU_STREAM_WAIT_VALUE_EQ,
-        )
-    else:
-        (err, ) = cuda.cuStreamWaitValue64(
-            stream.cuda_stream,
-            ptr,
-            signal,
-            cuda.CUstreamWaitValue_flags.CU_STREAM_WAIT_VALUE_EQ,
-        )
-    CUDA_CHECK(err)
-
-
-def set_signal(ptr: int, signal: int, stream: Optional[torch.cuda.Stream] = None, require_i64=False):
-    stream = stream or torch.cuda.current_stream()
-    if not require_i64:
-        (err, ) = cuda.cuStreamWriteValue32(
-            stream.cuda_stream,
-            ptr,
-            signal,
-            cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
-        )
-    else:
-        (err, ) = cuda.cuStreamWriteValue64(
-            stream.cuda_stream,
-            ptr,
-            signal,
-            cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
-        )
-    CUDA_CHECK(err)
-
-
 @tl.constexpr_function
 def log2(n):
     return len(bin(n)) - 3
@@ -439,3 +401,56 @@ def get_flat_tid():
     tid_x, tid_y, tid_z = tid(0), tid(1), tid(2)
     ntid_x, ntid_y = ntid(0), ntid(1)
     return tid_z * ntid_y * ntid_x + tid_y * ntid_x + tid_x
+
+
+def _wait_eq_cuda(signal_tensor: torch.Tensor, signal: int, stream: Optional[torch.cuda.Stream] = None,
+                  require_i64=False):
+    stream = stream or torch.cuda.current_stream()
+    if signal_tensor.dtype == torch.int32:
+        (err, ) = cuda.cuStreamWaitValue32(
+            stream.cuda_stream,
+            signal_tensor.data_ptr(),
+            signal,
+            cuda.CUstreamWaitValue_flags.CU_STREAM_WAIT_VALUE_EQ,
+        )
+        CUDA_CHECK(err)
+    elif signal_tensor.dtype == NVSHMEM_SIGNAL_DTYPE:
+        (err, ) = cuda.cuStreamWaitValue64(
+            stream.cuda_stream,
+            signal_tensor.data_ptr(),
+            signal,
+            cuda.CUstreamWaitValue_flags.CU_STREAM_WAIT_VALUE_EQ,
+        )
+        CUDA_CHECK(err)
+    else:
+        raise Exception(f"Unsupported signal dtype {signal_tensor.dtype}")
+
+
+def _set_signal_cuda(signal_tensor: torch.Tensor, signal: int, stream: Optional[torch.cuda.Stream] = None):
+    stream = stream or torch.cuda.current_stream()
+    if signal_tensor.dtype == torch.int32:
+        (err, ) = cuda.cuStreamWriteValue32(
+            stream.cuda_stream,
+            signal_tensor.data_ptr(),
+            signal,
+            cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
+        )
+        CUDA_CHECK(err)
+    elif signal_tensor.dtype == NVSHMEM_SIGNAL_DTYPE:
+        (err, ) = cuda.cuStreamWriteValue64(
+            stream.cuda_stream,
+            signal_tensor.data_ptr(),
+            signal,
+            cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
+        )
+        CUDA_CHECK(err)
+    else:
+        raise Exception(f"Unsupported signal dtype {signal_tensor.dtype}")
+
+
+def _memcpy_async_cuda(dst: torch.Tensor, src: torch.Tensor, nbytes: int, stream: Optional[torch.cuda.Stream] = None):
+    stream = stream or torch.cuda.current_stream()
+    (err, ) = cudart.cudaMemcpyAsync(dst.data_ptr(), src.data_ptr(), nbytes, cudart.cudaMemcpyKind.cudaMemcpyDefault,
+                                     stream.cuda_stream)
+
+    CUDA_CHECK(err)

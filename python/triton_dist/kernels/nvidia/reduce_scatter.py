@@ -31,12 +31,12 @@ import torch
 import triton
 import triton.language as tl
 from cuda import cudart
-import nvshmem.core
 import nvshmem.bindings
+from triton_dist.kernels.nvidia.common_ops import _set_signal_cuda, _wait_eq_cuda
 from triton_dist.language.extra import libshmem_device
 
 import triton_dist.language as dl
-from triton_dist.kernels.nvidia.common_ops import (set_signal, wait_eq, barrier_on_this_grid, BarrierAllContext)
+from triton_dist.kernels.nvidia.common_ops import (barrier_on_this_grid, BarrierAllContext)
 from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, get_has_fullmesh_nvlink, nvshmem_barrier_all_on_stream,
                                nvshmem_create_tensors, nvshmem_free_tensor_sync)
 from triton.language.extra.cuda.language_extra import tid, __syncthreads, ld, st
@@ -299,7 +299,6 @@ def reduce_scatter_ring_push_1d_intra_node_ce(
         assert (output.dtype == input_tensor.dtype and output.is_contiguous() and output.is_cuda
                 and output.shape == (M_per_rank, _))
 
-    if_64bit_flag = input_flag.dtype.itemsize == 8
     to_rank = (rank - 1 + num_ranks) % num_ranks
     for stage in range(num_ranks):
         segment = (rank + stage + 1) % num_ranks
@@ -307,13 +306,9 @@ def reduce_scatter_ring_push_1d_intra_node_ce(
         M_end = M_start + M_per_rank
         src = input_tensor[M_start:M_end]
         dst = symm_reduce_tensors[to_rank][M_start:M_end]
-        wait_eq(input_flag[segment].data_ptr(), 1, require_i64=if_64bit_flag)
+        _wait_eq_cuda(input_flag[segment], 1)
         if stage != 0:
-            wait_eq(
-                symm_reduce_flags[rank][segment].data_ptr(),
-                1,
-                require_i64=if_64bit_flag,
-            )
+            _wait_eq_cuda(symm_reduce_flags[rank][segment], 1)
             buffer = symm_reduce_tensors[rank][M_start:M_end]
             cur_out = output if output is not None and stage == num_ranks - 1 else buffer
             add_continuous(src, buffer, cur_out)  # directly reduce to output
@@ -323,11 +318,7 @@ def reduce_scatter_ring_push_1d_intra_node_ce(
             dst.copy_(src)
         else:
             dst.copy_(buffer)
-        set_signal(
-            symm_reduce_flags[to_rank][segment].data_ptr(),
-            1,
-            require_i64=if_64bit_flag,
-        )
+        _set_signal_cuda(symm_reduce_flags[to_rank][segment], 1)
     return output
 
 
@@ -608,15 +599,12 @@ def intra_node_scatter(input_intra_node, scatter_bufs_intra_node: List[torch.Ten
     nbytes_per_rank = M_per_rank * N * input_intra_node.dtype.itemsize
     local_buf_base_ptr = input_intra_node.data_ptr()
     remote_offset = local_rank * nbytes_per_rank
-    signal_base_ptr = scatter_signal_buf_intra_node.data_ptr()
-    nbytes_per_scatter_signal = scatter_signal_buf_intra_node.dtype.itemsize
     stream = torch.cuda.current_stream()
     for i in range(0, local_world_size):
         # same node
         remote_local_rank = (local_rank + i + 1) % local_world_size
         if overlap_with_gemm:
-            wait_eq(signal_base_ptr + nbytes_per_scatter_signal * remote_local_rank, 1,  # signal
-                    stream, True)
+            _wait_eq_cuda(scatter_signal_buf_intra_node[remote_local_rank], 1, stream)
         remote_buf_ptr = scatter_bufs_intra_node[remote_local_rank].data_ptr() + remote_offset
         local_buf_ptr = local_buf_base_ptr + remote_local_rank * nbytes_per_rank
         (err, ) = cudart.cudaMemcpyAsync(

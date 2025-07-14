@@ -44,7 +44,7 @@ import os
 import torch
 from typing import Optional
 from triton_dist.utils import (initialize_distributed, TP_GROUP, nvshmem_barrier_all_on_stream)
-from triton_dist.kernels.nvidia.common_ops import wait_eq, set_signal
+from triton_dist.kernels.common_ops import wait_eq, set_signal
 from cuda import cudart
 
 import nvshmem.core

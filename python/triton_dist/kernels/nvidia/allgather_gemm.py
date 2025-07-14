@@ -25,13 +25,14 @@
 import torch
 import triton
 import triton.language as tl
+from triton_dist.kernels.nvidia.common_ops import _set_signal_cuda
 import triton_dist.language as dl
 from triton.language.extra.cuda.language_extra import tid, st
 
 from typing import Optional, List
 from dataclasses import dataclass, field
 
-from triton_dist.kernels.nvidia.common_ops import set_signal, barrier_all_intra_node_non_atomic
+from triton_dist.kernels.nvidia.common_ops import barrier_all_intra_node_non_atomic
 from triton_dist.kernels.nvidia.allgather import AllGatherMethod, cp_engine_producer_all_gather_intra_node, get_auto_all_gather_method, cp_engine_producer_all_gather_inter_node
 from triton_dist.kernels.nvidia.ag_gemm_threadblock_swizzle import threadblock_swizzle_allgather_gemm_kernel
 from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors, nvshmem_free_tensor_sync
@@ -113,7 +114,7 @@ def local_copy_and_barrier_all(local_rank, rank, num_ranks, local_data, global_d
         grid = lambda META: (triton.cdiv(M_per_rank, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
         copy_kernel[grid](rank, local_data, global_data, M_per_rank, N, local_data.stride(0), local_data.stride(1),
                           global_data.stride(0), global_data.stride(1), 128, 256)
-        set_signal(barrier_ptr[rank].data_ptr(), 1, torch.cuda.current_stream(), is_internode)
+        _set_signal_cuda(barrier_ptr[rank], 1, torch.cuda.current_stream())
         nvshmem_barrier_all_on_stream()
 
 

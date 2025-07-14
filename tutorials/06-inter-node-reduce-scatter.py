@@ -43,7 +43,8 @@ import triton_dist.language as dl
 
 from typing import Optional, List
 import nvshmem.core
-from triton_dist.kernels.nvidia.common_ops import BarrierAllContext, wait_eq, barrier_all_on_stream
+from triton_dist.kernels.common_ops import wait_eq
+from triton_dist.kernels.nvidia.common_ops import BarrierAllContext, barrier_all_on_stream
 from triton_dist.kernels.nvidia.reduce_scatter import ring_reduce
 from triton_dist.language.extra import libshmem_device
 from triton_dist.utils import initialize_distributed, nvshmem_barrier_all_on_stream, NVSHMEM_SIGNAL_DTYPE, nvshmem_create_tensors, nvshmem_free_tensor_sync

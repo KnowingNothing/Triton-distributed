@@ -68,7 +68,6 @@ else:
 
 # Some code from python/flux/util.py in flux project
 
-_TP_LOCAL_GROUP = None
 _TP_GROUP = None
 
 
@@ -151,7 +150,8 @@ def nvshmem_free_tensor_sync(tensor):
 
 
 def finalize_distributed():
-    nvshmem.core.finalize()
+    if is_cuda():
+        nvshmem.core.finalize()
     torch.distributed.destroy_process_group()
 
 
