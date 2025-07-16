@@ -44,6 +44,7 @@ import warnings
 from functools import wraps
 
 import numpy as np
+import packaging.version
 import torch
 
 
@@ -956,6 +957,8 @@ def has_nvshmemi_bc_built():
 
 @functools.lru_cache()
 def is_nvshmem_multimem_supported():
+    if not is_cuda():
+        return False
     # this is a python version of nvshmem nvshmemi_detect_nvls_support
     err, cuda_driver_version = cuda.cuDriverGetVersion()
     CUDA_CHECK(err)
@@ -983,9 +986,9 @@ def is_nvshmem_multimem_supported():
 
 
 @functools.lru_cache()
-def is_tma_support():
+def has_tma():
     cap_major = torch.cuda.get_device_capability()[0]
-    return cap_major >= 9
+    return is_cuda() and cap_major >= 9
 
 
 def requires(condition_func):
@@ -1010,3 +1013,21 @@ def get_device_property(device_id=0):
 def sleep_async(duration_ms: int):
     clock_rate_hz = torch.cuda.clock_rate() * 1e6
     torch.cuda._sleep(int(clock_rate_hz * duration_ms / 1000))
+
+
+def triton_packed_version():
+    import triton
+    return packaging.version.Version(triton.__version__)
+
+
+@functools.lru_cache()
+def support_launch_cooperative_grid():
+    return triton_packed_version() >= packaging.version.Version("3.3.0")
+
+
+def launch_cooperative_grid_options():
+    # launch_cooperative_grid is enabled since 3.3.0
+    if support_launch_cooperative_grid:
+        return {"launch_cooperative_grid": True}
+
+    return {}

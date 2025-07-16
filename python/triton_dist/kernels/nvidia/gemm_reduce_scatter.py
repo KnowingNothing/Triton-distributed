@@ -34,7 +34,7 @@ from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add
 from triton_dist.kernels.nvidia.reduce_scatter import (ReduceScatter2DContext, create_reduce_scater_2d_ctx,
                                                        reduce_scatter_2d_op, ring_reduce)
 from triton_dist.kernels.nvidia.gemm_rs_threadblock_swizzle import threadblock_swizzle_gemm_reduce_scatter_kernel
-from triton_dist.utils import nvshmem_barrier_all_on_stream, nvshmem_create_tensors, nvshmem_free_tensor_sync
+from triton_dist.utils import has_tma, nvshmem_barrier_all_on_stream, nvshmem_create_tensors, nvshmem_free_tensor_sync, requires
 
 
 ################### context ###################
@@ -419,6 +419,7 @@ def kernel_gemm_rs_producer_non_persistent(
             tl.store(remote_c_ptrs, accumulator, mask=remote_mask)
 
 
+@requires(has_tma)
 def gemm_rs_producer_persistent(a, b, c, barrier, workspace, world_size, local_world_size, fuse_scatter, num_gemm_sms,
                                 triton_config: triton.Config):
     # Check constraints.

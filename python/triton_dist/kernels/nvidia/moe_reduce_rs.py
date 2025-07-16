@@ -37,7 +37,7 @@ from triton_dist.kernels.nvidia.common_ops import (BarrierAllContext, barrier_al
 from triton_dist.kernels.nvidia.reduce_scatter import ring_reduce
 from triton_dist.language.extra import libshmem_device
 from triton_dist.kernels.nvidia.moe_utils import calc_gather_scatter_index_triton, reduce_topk_kernel
-from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors, nvshmem_free_tensor_sync
+from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, launch_cooperative_grid_options, nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors, nvshmem_free_tensor_sync
 
 ################### helper functions ###################
 
@@ -1410,7 +1410,7 @@ def moe_reduce_rs_colwise(
             BLOCK_SIZE_N=N_per_chunk,
             N_CHUNKS=n_chunks,
             num_warps=32,
-            launch_cooperative_grid=True,
+            **launch_cooperative_grid_options(),
         )
         # print("reduce_topk_reduce_scatter_intra_node done")
 

@@ -37,8 +37,9 @@ from triton_dist.language.extra import libshmem_device
 
 import triton_dist.language as dl
 from triton_dist.kernels.nvidia.common_ops import (barrier_on_this_grid, BarrierAllContext)
-from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, get_has_fullmesh_nvlink, nvshmem_barrier_all_on_stream,
-                               nvshmem_create_tensors, nvshmem_free_tensor_sync)
+from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, get_has_fullmesh_nvlink, has_tma,
+                               launch_cooperative_grid_options, nvshmem_barrier_all_on_stream, nvshmem_create_tensors,
+                               nvshmem_free_tensor_sync)
 from triton.language.extra.cuda.language_extra import tid, __syncthreads, ld, st
 
 
@@ -403,7 +404,7 @@ def reduce_scatter_ring_push_1d_intra_node_sm(
         input_tensor.numel() // num_ranks,
         BLOCK_SIZE=32 * num_warps * 16 // input_tensor.dtype.itemsize,  # each thread copy a uint4
         num_warps=num_warps,
-        launch_cooperative_grid=True,
+        **launch_cooperative_grid_options(),
     )
     return output
 
@@ -822,8 +823,7 @@ def ring_reduce(
     num_splits,
     num_sms=-1,
 ):
-    # TODO(houqi.1993) cache this.
-    if torch.cuda.get_device_capability()[0] >= 9:
+    if has_tma():
         return ring_reduce_tma(input, output, begin_idx, num_splits, num_sms)
     else:
         return ring_reduce_non_tma(input, output, begin_idx, num_splits, 16 if num_sms == -1 else num_sms)

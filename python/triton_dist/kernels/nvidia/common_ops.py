@@ -169,16 +169,10 @@ def barrier_all_intra_node_non_atomic_block(local_rank, rank, num_ranks, symm_fl
 
         symm_flags [0, num_ranks * 2) is used to sync all ranks.
     """
-    tl.static_assert(symm_flags.dtype.element_ty == tl.int32)
+    tl.static_assert(symm_flags.dtype.element_ty == tl.int32 or symm_flags.dtype.element_ty == tl.int64)
     _barrier_all_intra_node_non_atomic_once_block(local_rank, rank, num_ranks, symm_flags, target_value)
-
-    # barrier all CTAs
-    barrier_on_this_grid(symm_flags + 2 * num_ranks)
-
     # next iter
     _barrier_all_intra_node_non_atomic_once_block(local_rank, rank, num_ranks, symm_flags + num_ranks, target_value)
-
-    barrier_on_this_grid(symm_flags + 2 * num_ranks)
 
 
 @triton.jit(do_not_specialize=["local_rank", "rank", "num_ranks", "target_value"])

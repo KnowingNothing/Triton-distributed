@@ -47,6 +47,7 @@ import triton.language as tl
 from triton.language.extra import libdevice
 
 from triton_dist.tools import aot_compile_spaces
+from triton_dist.utils import launch_cooperative_grid_options
 
 if "USE_TRITON_DISTRIBUTED_AOT" in os.environ and os.environ["USE_TRITON_DISTRIBUTED_AOT"] in [
         "1", "true", "on", "ON", "On", True
@@ -999,7 +1000,7 @@ def gqa_fwd_batch_decode_persistent(q, k_cache, v_cache, workspace, q_lens, kv_l
         v_head_dim,
         num_warps=8,
         num_stages=2,
-        launch_cooperative_grid=True,
+        **launch_cooperative_grid_options(),
     )
 
     return output_combine

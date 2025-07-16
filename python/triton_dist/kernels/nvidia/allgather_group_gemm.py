@@ -38,7 +38,7 @@ from triton_dist.kernels.nvidia.common_ops import (barrier_on_this_grid, next_po
 from triton_dist.kernels.nvidia.threadblock_swizzle_ag_moe_triton import \
     threadblock_swizzle_ag_moe_kernel
 from triton_dist.language.extra import libshmem_device
-from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_create_tensors, nvshmem_free_tensor_sync
+from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, launch_cooperative_grid_options, nvshmem_barrier_all_on_stream, nvshmem_create_tensors, nvshmem_free_tensor_sync
 
 
 @triton.jit(do_not_specialize=["rank"])
@@ -328,7 +328,7 @@ class MoEAllGatherGroupGEMMTensorParallelContext:
             self.grid_barrier,
             BLOCK_SIZE=1024 * 16 // local_data.itemsize,
             num_warps=32,
-            launch_cooperative_grid=True,
+            **launch_cooperative_grid_options(),
         )
 
 
