@@ -94,16 +94,6 @@ def init_seed(seed=0):
     random.seed(3 + seed)
 
 
-def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup):
-    if not tensor.is_cuda:
-        tensor_gpu = tensor.cuda()
-        torch.distributed.broadcast(tensor_gpu, src=src, group=group)
-        tensor.copy_(tensor_gpu)
-    else:
-        torch.distributed.broadcast(tensor, src=src, group=group)
-    torch.cuda.synchronize()
-
-
 def init_nvshmem_by_torch_process_group(pg: torch.distributed.ProcessGroup):
     # Extract rank, nranks from process group
     num_ranks = pg.size()
@@ -181,7 +171,7 @@ def initialize_distributed(seed=None):
     WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
     torch.cuda.set_device(LOCAL_RANK)
     torch.distributed.init_process_group(
-        backend="nccl",
+        backend="cpu:gloo,cuda:nccl",
         world_size=WORLD_SIZE,
         rank=RANK,
         timeout=datetime.timedelta(seconds=1800),
@@ -189,9 +179,12 @@ def initialize_distributed(seed=None):
     assert torch.distributed.is_initialized()
     # use all ranks as tp group
     _TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
+    torch.distributed.barrier(_TP_GROUP)
+    _TP_GROUP_GLOO = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="gloo")
+    torch.distributed.barrier(_TP_GROUP_GLOO)
 
     init_seed(seed=seed if seed is not None else RANK)
-    init_nvshmem_by_torch_process_group(_TP_GROUP)
+    init_nvshmem_by_torch_process_group(_TP_GROUP_GLOO)
     return _TP_GROUP
 
 
@@ -403,7 +396,7 @@ def _merge_json_v1(to_merge_files: List[Path], output_json: Path, compress: bool
     logging.info("compress...")
     trace["traceEvents"] = events
     if compress:
-        with gzip.open(output_json + ".tar.gz", mode="wt", compresslevel=3) as g:
+        with gzip.open(str(output_json) + ".tar.gz", mode="wt", compresslevel=3) as g:
             json.dump(trace, g)
     else:
         with open(output_json, "w") as f:
@@ -1027,7 +1020,7 @@ def support_launch_cooperative_grid():
 
 def launch_cooperative_grid_options():
     # launch_cooperative_grid is enabled since 3.3.0
-    if support_launch_cooperative_grid:
+    if support_launch_cooperative_grid():
         return {"launch_cooperative_grid": True}
 
     return {}

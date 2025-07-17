@@ -788,8 +788,7 @@ def allreduce_two_shot_push_intra_node(
 
 def allreduce_one_shot_tma_push_intra_node(ctx: AllReduceContext, x: torch.Tensor,
                                            output: Optional[torch.Tensor] = None, straggler_option=None,
-                                           max_sm: int = -1, num_warps: int = 32,  # dummy arg
-                                           ):
+                                           max_sm: int = -1, num_warps: int = 32):
     """ P2P sends full-length copy of local tensor to other ranks, then uses TMA reduce.
 
     Args:

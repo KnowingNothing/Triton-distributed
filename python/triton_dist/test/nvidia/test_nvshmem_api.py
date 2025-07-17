@@ -22,7 +22,6 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-import datetime
 import functools
 import os
 
@@ -40,7 +39,7 @@ import triton.language as tl
 from triton.language.extra.cuda.language_extra import (__syncthreads, load_v4_u32, multimem_st_b32, multimem_st_v2,
                                                        multimem_st_v4, ntid, st, tid, multimem_st_p_b32)
 from triton_dist.language.extra import libshmem_device
-from triton_dist.utils import (NVSHMEM_SIGNAL_DTYPE, has_nvshmemi_bc_built, init_nvshmem_by_torch_process_group,
+from triton_dist.utils import (NVSHMEM_SIGNAL_DTYPE, has_nvshmemi_bc_built, initialize_distributed,
                                nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, nvshmem_create_tensor,
                                is_nvshmem_multimem_supported)
 
@@ -948,18 +947,7 @@ def test_nvshmemi_putmem_rma_signal_with_scope(N, dtype: torch.dtype = torch.int
 
 
 if __name__ == "__main__":
-    torch.cuda.set_device(LOCAL_RANK)
-    torch.distributed.init_process_group(
-        backend="nccl",
-        world_size=WORLD_SIZE,
-        rank=RANK,
-        timeout=datetime.timedelta(seconds=1800),
-    )
-    assert torch.distributed.is_initialized()
-    TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
-
-    torch.cuda.synchronize()
-    init_nvshmem_by_torch_process_group(TP_GROUP)
+    TP_GROUP = initialize_distributed()
 
     test_nvshmem_basic()
     test_nvshmemx_getmem_with_scope(31 * WORLD_SIZE, torch.int8)

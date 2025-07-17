@@ -35,7 +35,7 @@ from triton_dist.kernels.allreduce import to_allreduce_method
 from triton_dist.kernels.allreduce import get_allreduce_methods
 from triton_dist.layers.nvidia.tp_attn import TP_Attn, _set_cos_sin_cache
 from triton_dist.models.kv_cache import KV_Cache
-from triton_dist.utils import assert_allclose, perf_func, dist_print, group_profile, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream
+from triton_dist.utils import assert_allclose, initialize_distributed, perf_func, dist_print, group_profile, nvshmem_barrier_all_on_stream
 
 THRESHOLD_MAP = {
     torch.float16: 1e-2,
@@ -98,30 +98,11 @@ DTYPE_MAP = {
 
 if __name__ == "__main__":
     args = parse_args()
-
     RANK = int(os.environ.get("RANK", 0))
     LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
     WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
-    torch.cuda.set_device(LOCAL_RANK)
-    torch.distributed.init_process_group(
-        backend="nccl",
-        world_size=WORLD_SIZE,
-        rank=RANK,
-    )
-    assert torch.distributed.is_initialized()
-    TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
-    torch.distributed.barrier(TP_GROUP)
-    torch.use_deterministic_algorithms(False, warn_only=True)
-    torch.set_printoptions(precision=2)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+    TP_GROUP = initialize_distributed()
 
-    current_stream = torch.cuda.current_stream()
-    torch.cuda.synchronize()
-    init_nvshmem_by_torch_process_group(TP_GROUP)
     DTYPE = DTYPE_MAP[args.dtype]
     ATOL = THRESHOLD_MAP[DTYPE]
     RTOL = THRESHOLD_MAP[DTYPE]

@@ -981,8 +981,18 @@ PYTHON_CLASSIFIERS = [
 ]
 CLASSIFIERS = BASE_CLASSIFIERS + PYTHON_CLASSIFIERS
 
-DEPS_NVIDIA = ["cuda-python==12.4", "nvidia-nvshmem-cu12>=3.3.9", "nvshmem4py-cu12"]
-DEPS = DEPS_NVIDIA if _is_cuda_platform() else []
+# nvshmem4py-cu12 does not write install_requires. list them here
+DEPS_NVIDIA = [
+    "cuda.core==0.2.0",
+    "cuda-python>=12.0",
+    "nvidia-nvshmem-cu12>=3.3.9",
+    "Cython>=0.29.24",
+    "numpy",
+    "nvshmem4py-cu12>=0.1.0",
+]
+DEPS_HIP = ["hip-python"]
+DEPS = DEPS_NVIDIA if _is_cuda_platform() else DEPS_HIP
+DEPS_BUILD_NVIDIA = ["nvidia-ml-py>=12.0"]
 
 setup(
     name=os.environ.get("TRITON_WHEEL_NAME", "triton_dist"),
@@ -991,7 +1001,7 @@ setup(
     author_email="zheng.size@bytedance.com",
     description="Triton language and compiler extension for distributed deep learning systems",
     long_description="",
-    install_requires=["setuptools>=40.8.0", "importlib-metadata; python_version < '3.10'"],
+    install_requires=["setuptools>=40.8.0", "importlib-metadata; python_version < '3.10'", "packaging"] + DEPS,
     packages=get_packages(),
     entry_points=get_entry_points(),
     package_data=package_data,
@@ -1016,7 +1026,7 @@ setup(
     classifiers=CLASSIFIERS,
     test_suite="tests",
     extras_require={
-        "build": ["cmake>=3.20,<4.0", "lit", "packaging", "ninja", "pybind11"] + DEPS,
+        "build": ["cmake>=3.20,<4.0", "lit", "ninja", "pybind11"],
         "tests": [
             "autopep8",
             "isort",
@@ -1026,10 +1036,9 @@ setup(
             "pytest-xdist",
             "scipy>=1.7.1",
             "llnl-hatchet",
-            "pytest",
-            "nvidia-ml-py",
             "transformers",
-        ],
+            "tqdm",
+        ] + DEPS_BUILD_NVIDIA,
         "tutorials": [
             "matplotlib",
             "pandas",

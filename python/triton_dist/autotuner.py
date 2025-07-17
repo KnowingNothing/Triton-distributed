@@ -224,7 +224,6 @@ def _contextual_tuning_run(self: Autotuner, *args, **kwargs):
                 raise RuntimeError("cannot find valid config")
             if ctx_tuner.is_dist:
                 import torch
-                torch.cuda.Event.elapsed_time
 
                 times_tensor = torch.tensor(ctx.config_times, device="cuda")
                 torch.distributed.all_reduce(times_tensor, torch.distributed.ReduceOp.MAX)

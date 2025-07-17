@@ -22,13 +22,11 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 ################################################################################
-import datetime
 import os
 import random
 import pytest
 
 import torch
-import torch.distributed
 import triton
 import triton.language as tl
 
@@ -38,7 +36,7 @@ from triton_dist.kernels.nvidia.common_ops import (barrier_all_intra_node_non_at
                                                    cooperative_barrier_on_this_grid, bisect_left_kernel,
                                                    bisect_left_kernel_aligned, bisect_right_kernel,
                                                    bisect_right_kernel_aligned)
-from triton_dist.utils import check_p2p_native_atomic_supported, launch_cooperative_grid_options, nvshmem_barrier_all_on_stream, init_nvshmem_by_torch_process_group, nvshmem_free_tensor_sync, nvshmem_create_tensor, sleep_async, support_launch_cooperative_grid
+from triton_dist.utils import check_p2p_native_atomic_supported, finalize_distributed, initialize_distributed, launch_cooperative_grid_options, nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, nvshmem_create_tensor, sleep_async, support_launch_cooperative_grid
 
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
 LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
@@ -196,19 +194,11 @@ def test_bisect_cases():
 
 if __name__ == "__main__":
     torch.cuda.set_device(LOCAL_RANK)
-    torch.distributed.init_process_group(
-        backend="nccl",
-        world_size=WORLD_SIZE,
-        rank=RANK,
-        timeout=datetime.timedelta(seconds=1800),
-    )
-    assert torch.distributed.is_initialized()
-    TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
-
-    init_nvshmem_by_torch_process_group(TP_GROUP)
+    initialize_distributed()
 
     test_barrier_all_intra_node_non_atomic()
     test_barrier_all_intra_node()
 
     # this test corrupt the CUDA context. leave it in last
     test_barrier_on_this_grid()
+    finalize_distributed()

@@ -21,7 +21,6 @@ jobs:
       - name: code-format-check
         commands:
           - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43
-          - pip3 install pytest
           - pip3 install chardet
           # - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           # - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
@@ -30,7 +29,7 @@ jobs:
 
       - name: build
         commands:
-          - python3 -m pip install cmake==3.26 ninja wheel lit numpy plotly pandas pytest scipy==1.10.1 matplotlib tabulate pybind11 setuptools==69.0.0 tqdm
+          - python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
           - python3 -m pip install https://tosv.byted.org/obj/flux/packages/hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
           - git submodule update --init --recursive
           # download prebuild ompi
@@ -39,7 +38,7 @@ jobs:
           - unset http_proxy
           - bash shmem/rocshmem_bind/build.sh
           - export http_proxy=http://sys-proxy-rd-relay.byted.org:3128
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+          - MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
 
       - name: distributed tests
         commands:
@@ -84,10 +83,7 @@ jobs:
     steps:
       - name: code-format-check
         commands:
-          - pip3 install ninja black "clang-format==19.1.2" pre-commit ruff yapf==0.43 setuptools==69.0.0
-          - pip3 install cuda-python==12.4
-          - pip3 install pynvml==11.5.3
-          - pip3 install pytest
+          - pip3 install black "clang-format==19.1.2" pre-commit ruff yapf==0.43
           - pip3 install chardet
           # - pre-commit run ruff --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
           # - pre-commit run yapf --from-ref=${{Event.Change.Target.SHA}} --to-ref=${{Event.Change.Source.SHA}} --show-diff-on-failure
@@ -105,16 +101,15 @@ jobs:
           - python3 --version
           - pip3 --version
           - python3 -c "import torch; print(torch.__version__)"
-          # install nvshmem4py and deps
-          - pip3 install nvidia-nvshmem-cu12==3.3.9 cuda.core==0.2.0 "Cython>=0.29.24"
-          - CPPFLAGS="-I/usr/local/cuda/include" pip3 install https://developer.download.nvidia.com/compute/nvshmem/redist/nvshmem_python/source/nvshmem_python-source-0.1.0.36132199_cuda12-archive.tar.xz
 
       - name: build
         commands:
           - git submodule update --init --recursive
-          - pip3 install ninja cmake wheel pybind11
+          - pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
+          # install nvshmem4py and deps
+          - CPPFLAGS="-I/usr/local/cuda/include" pip3 install nvshmem4py-cu12==0.1.0
           - export USE_TRITON_DISTRIBUTED_AOT=0
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+          - MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
           - bash ./scripts/gen_aot_code.sh
           - export USE_TRITON_DISTRIBUTED_AOT=1
           - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517

@@ -50,14 +50,12 @@ In doing so, you will learn about:
 # Kernel
 # --------------
 import torch
-import os
-import datetime
 import nvshmem.core
 
 import triton
 import triton.language as tl
 import triton_dist.language as dl
-from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, dist_print, init_nvshmem_by_torch_process_group, nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, nvshmem_create_tensor
+from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, dist_print, initialize_distributed, nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, nvshmem_create_tensor
 from triton.language.extra.cuda.language_extra import (__syncthreads)
 
 
@@ -131,31 +129,6 @@ def producer_consumer_kernel(
                       )  # This notifies the consumer that the data is ready
     else:
         pass
-
-
-# %%
-# Initialization
-# --------------
-def initialize_distributed():
-    RANK = int(os.environ.get("RANK", 0))
-    LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
-    WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
-    assert WORLD_SIZE <= 8  # This example only runs on a single node
-    torch.cuda.set_device(LOCAL_RANK)
-    torch.distributed.init_process_group(
-        backend="nccl",
-        world_size=WORLD_SIZE,
-        rank=RANK,
-        timeout=datetime.timedelta(seconds=1800),
-    )
-    assert torch.distributed.is_initialized()
-    TP_GROUP = torch.distributed.new_group(ranks=list(range(WORLD_SIZE)), backend="nccl")
-
-    torch.cuda.synchronize()
-    # You need to use `init_nvshmem_by_uniqueid` to initialize
-    # the distributed system
-    init_nvshmem_by_torch_process_group(TP_GROUP)
-    return TP_GROUP
 
 
 INPUT_SIZE = 2025  # A large input size
