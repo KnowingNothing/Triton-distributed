@@ -40,16 +40,19 @@ In doing so, you will learn about:
 
 """
 
+import os
+from typing import List, Optional
+
+import nvshmem.core
 import torch
+
 import triton
 import triton.language as tl
-from triton_dist.kernels.nvidia.common_ops import barrier_all_intra_node_atomic_cas_block
-from triton_dist.utils import nvshmem_barrier_all_on_stream, nvshmem_create_tensors, nvshmem_free_tensor_sync, p2p_native_atomic_required, nvshmem_create_tensor
-from typing import List, Optional
 import triton_dist
-import nvshmem.core
-
-import os
+from triton_dist.kernels.nvidia.common_ops import \
+    barrier_all_intra_node_atomic_cas_block
+from triton_dist.utils import (nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors,
+                               nvshmem_free_tensor_sync, requires_p2p_native_atomic, supports_p2p_native_atomic)
 
 ################### triton kernel ####################
 
@@ -181,8 +184,8 @@ def intra_node_scatter(input_intra_node, scatter_bufs_intra_node: List[torch.Ten
             remote_buf.copy_(local_buf)
 
 
-@p2p_native_atomic_required
-def reducer_scatter_intra_node(input, scatter_bufs, sync_buf, local_rank, local_world_size):
+@requires_p2p_native_atomic
+def reduce_scatter_intra_node(input, scatter_bufs, sync_buf, local_rank, local_world_size):
 
     stream = torch.cuda.current_stream()
     M, N = input.shape
@@ -210,6 +213,11 @@ def torch_rs(
 
 
 if __name__ == "__main__":
+    if not supports_p2p_native_atomic():
+        print("Skip because this testcase need P2P native atomic support. use `nvidia-smi topo -p2p a` to check it out")
+        import sys
+        sys.exit()
+
     # init
     RANK = int(os.environ.get("RANK", 0))
     LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
@@ -233,8 +241,8 @@ if __name__ == "__main__":
 
     nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
-    dist_triton_output = reducer_scatter_intra_node(input, symm_scatter_bufs, symm_sync_buf, LOCAL_RANK,
-                                                    LOCAL_WORLD_SIZE)
+    dist_triton_output = reduce_scatter_intra_node(input, symm_scatter_bufs, symm_sync_buf, LOCAL_RANK,
+                                                   LOCAL_WORLD_SIZE)
 
     nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
     torch.cuda.synchronize()

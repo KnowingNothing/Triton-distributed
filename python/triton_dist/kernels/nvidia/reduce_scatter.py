@@ -37,7 +37,7 @@ from triton_dist.language.extra import libshmem_device
 
 import triton_dist.language as dl
 from triton_dist.kernels.nvidia.common_ops import (barrier_on_this_grid, BarrierAllContext)
-from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, get_has_fullmesh_nvlink, has_tma,
+from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, has_fullmesh_nvlink, has_tma,
                                launch_cooperative_grid_options, nvshmem_barrier_all_on_stream, nvshmem_create_tensors,
                                nvshmem_free_tensor_sync)
 from triton.language.extra.cuda.language_extra import tid, __syncthreads, ld, st
@@ -528,8 +528,8 @@ def kernel_inter_node_p2p_for_same_local_rank(offset, local_world_size, M_per_ra
     )
 
 
-def reducer_scatter_for_each_node_ring(input: torch.Tensor, ctx: ReduceScatter2DContext,
-                                       output: Optional[torch.Tensor] = None):
+def reduce_scatter_for_each_node_ring(input: torch.Tensor, ctx: ReduceScatter2DContext,
+                                      output: Optional[torch.Tensor] = None):
     world_size = ctx.world_size
     local_world_size = ctx.local_world_size
     local_rank = ctx.local_rank
@@ -618,8 +618,8 @@ def intra_node_scatter(input_intra_node, scatter_bufs_intra_node: List[torch.Ten
         CUDA_CHECK(err)
 
 
-def reducer_scatter_for_each_node(input: torch.Tensor, ctx: ReduceScatter2DContext,
-                                  output: Optional[torch.Tensor] = None):
+def reduce_scatter_for_each_node(input: torch.Tensor, ctx: ReduceScatter2DContext,
+                                 output: Optional[torch.Tensor] = None):
     world_size = ctx.world_size
     local_world_size = ctx.local_world_size
     local_rank = ctx.local_rank
@@ -843,10 +843,10 @@ def reduce_scatter_multi_node(input: torch.Tensor, ctx: ReduceScatter2DContext, 
 
     # directly reduce_scatter to output if nnodes == 1
     out_each_node = output if ctx.nnodes == 1 else None
-    if not get_has_fullmesh_nvlink():
-        rs_result_per_node = reducer_scatter_for_each_node_ring(input, ctx, out_each_node)
+    if not has_fullmesh_nvlink():
+        rs_result_per_node = reduce_scatter_for_each_node_ring(input, ctx, out_each_node)
     else:
-        rs_result_per_node = reducer_scatter_for_each_node(input, ctx, out_each_node)
+        rs_result_per_node = reduce_scatter_for_each_node(input, ctx, out_each_node)
 
     if ctx.nnodes == 1:
         return rs_result_per_node

@@ -162,7 +162,7 @@ def nvshmem_barrier_all_on_stream(stream: Optional[torch.cuda.Stream] = None):
     nvshmem.core.barrier(nvshmem.core.Teams.TEAM_WORLD, stream=TorchStreamWrapper(stream))
 
 
-def initialize_distributed(seed=None):
+def initialize_distributed(seed=None) -> torch.distributed.ProcessGroup:
     global _TP_GROUP
     assert _TP_GROUP is None, "TP_GROUP has already been initialized"
 
@@ -185,12 +185,6 @@ def initialize_distributed(seed=None):
 
     init_seed(seed=seed if seed is not None else RANK)
     init_nvshmem_by_torch_process_group(_TP_GROUP_GLOO)
-    return _TP_GROUP
-
-
-def TP_GROUP() -> torch.distributed.ProcessGroup:
-    global _TP_GROUP
-    assert _TP_GROUP is not None, "TP_GROUP has not been initialized"
     return _TP_GROUP
 
 
@@ -703,7 +697,7 @@ def get_nvlink_max_speed(gpu_index=0):
 
 
 @functools.lru_cache()
-def get_has_fullmesh_nvlink_pynvml():
+def has_fullmesh_nvlink_pynvml():
     num_devices = torch.cuda.device_count()
 
     ensure_nvml_initialized()
@@ -809,8 +803,8 @@ def get_pcie_link_max_speed(gpu_index):
         return get_pcie_link_max_speed_pynvml(gpu_index)
 
 
-def get_intranode_max_speed(gpu_index=0, with_scale: bool = True):
-    if get_has_fullmesh_nvlink():
+def get_intranode_max_speed(gpu_index=0, with_scale: bool = False):
+    if has_fullmesh_nvlink():
         # 200GB/s => 160GB/s
         _factor = 1.0 if not with_scale else 0.8
         return get_nvlink_max_speed(gpu_index) * _factor
@@ -829,18 +823,18 @@ def get_numa_node(gpu_index):
 
 
 @functools.lru_cache()
-def get_has_fullmesh_nvlink():
+def has_fullmesh_nvlink():
     try:
-        return get_has_fullmesh_nvlink_pynvml()
+        return has_fullmesh_nvlink_pynvml()
     except Exception:
         nvlink_matrix = NvidiaSmiUtil.get_nvlink_adjacency_matrix()
         has_nvlink = any([any(x == 1 for x in row) for row in nvlink_matrix])
-        has_fullmesh_nvlink = all([i == j or v == 1 for i, row in enumerate(nvlink_matrix) for j, v in enumerate(row)])
-        if has_nvlink and not has_fullmesh_nvlink:
+        _has_fullmesh_nvlink = all([i == j or v == 1 for i, row in enumerate(nvlink_matrix) for j, v in enumerate(row)])
+        if has_nvlink and not _has_fullmesh_nvlink:
             warnings.warn(
                 "⚠️ found NVLink but not fullmesh NVLink, this may cause undefined behavior, please check your GPU topology"
             )
-        return has_fullmesh_nvlink
+        return _has_fullmesh_nvlink
 
 
 @functools.lru_cache()
@@ -889,7 +883,7 @@ def assert_allclose(x: torch.Tensor, y: torch.Tensor, rtol, atol, verbose=True):
 
 
 @functools.lru_cache()
-def check_p2p_native_atomic_supported():
+def supports_p2p_native_atomic():
     assert torch.cuda.is_available()
     count = torch.cuda.device_count()
     if count <= 1:
@@ -905,11 +899,11 @@ def check_p2p_native_atomic_supported():
     return support == 1
 
 
-def p2p_native_atomic_required(fn):
+def requires_p2p_native_atomic(fn):
 
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if not check_p2p_native_atomic_supported():
+        if not supports_p2p_native_atomic():
             warnings.warn(
                 f"⚠️ function {fn.__name__} requires P2P native atomic support but you are running on a platform that does not support it. this may cause undefined behavior"
             )
@@ -961,10 +955,11 @@ def is_nvshmem_multimem_supported():
     CUDA_CHECK(err)
 
     # nvshmem configure support
-    if os.getenv("NVSHMEM_DISABLE_CUDA_VMM", "0") == "1":
+    if os.getenv("NVSHMEM_DISABLE_CUDA_VMM", "0") == "1" or os.getenv("NVSHMEM_DISABLE_NVLS", "0") == "1":
         return False
 
-    if os.getenv("NVSHMEM_DISABLE_NVLS", "0") == "1":
+    # hardware support
+    if torch.cuda.get_device_capability()[0] < 9 or not has_fullmesh_nvlink():
         return False
 
     return all([

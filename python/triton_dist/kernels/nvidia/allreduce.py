@@ -41,7 +41,7 @@ from triton.language.extra.cuda.utils import num_warps
 from triton_dist.kernels.nvidia.common_ops import barrier_all_intra_node_atomic_cas_block, barrier_all_intra_node_non_atomic_block, barrier_on_this_grid
 from triton_dist.kernels.nvidia.reduce_scatter import copy_continuous_kernel, kernel_ring_reduce_tma, kernel_ring_reduce_non_tma
 from triton_dist.language.extra import libshmem_device
-from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, check_p2p_native_atomic_supported, get_device_property,
+from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, supports_p2p_native_atomic, get_device_property,
                                launch_cooperative_grid_options, nvshmem_barrier_all_on_stream, nvshmem_create_tensor,
                                nvshmem_free_tensor_sync, requires, is_nvshmem_multimem_supported, has_tma)
 
@@ -593,7 +593,7 @@ def allreduce_two_shot_multimem_st_intra_node_kernel(
         libshmem_device.barrier_all_block()
 
 
-@triton.heuristics({"HAS_ATOMIC_CAS": lambda args: check_p2p_native_atomic_supported()})
+@triton.heuristics({"HAS_ATOMIC_CAS": lambda args: supports_p2p_native_atomic()})
 @triton.jit(do_not_specialize=["rank", "phase"])
 def allreduce_one_shot_multimem_intra_node_kernel(
     in_ptr,

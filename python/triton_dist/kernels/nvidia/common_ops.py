@@ -33,9 +33,8 @@ import triton
 import triton.language as tl
 from triton_dist.utils import CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE
 import triton_dist.language as dl
-from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add, atomic_cas, ld, ld_acquire, ntid, st,
-                                                       tid)
-from triton_dist.utils import (check_p2p_native_atomic_supported, nvshmem_barrier_all_on_stream, nvshmem_create_tensor)
+from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add, atomic_cas, ld, ld_acquire, st, tid)
+from triton_dist.utils import (supports_p2p_native_atomic, nvshmem_barrier_all_on_stream, nvshmem_create_tensor)
 
 
 @triton.jit
@@ -209,6 +208,7 @@ class BarrierAllContext:
 
     def __init__(self, is_intra_node):
         self.is_intra_node = is_intra_node
+        self.target_value = 1
         if self.is_intra_node:
             self.rank = nvshmem.bindings.nvshmem.my_pe()
             self.local_rank = nvshmem.bindings.nvshmem.team_my_pe(nvshmem.core.Teams.TEAM_NODE)
@@ -225,7 +225,7 @@ def barrier_all_on_stream(ctx: BarrierAllContext, stream: Optional[torch.cuda.St
     if ctx is None or not ctx.is_intra_node:
         return nvshmem_barrier_all_on_stream(stream)
 
-    if check_p2p_native_atomic_supported():
+    if supports_p2p_native_atomic():
         barrier_all_intra_node_atomic_cas_block[(1, )](ctx.local_rank, ctx.rank, ctx.num_local_ranks, ctx.symm_barrier)
     else:
         barrier_all_intra_node_non_atomic_block[(1, )](ctx.local_rank, ctx.rank, ctx.num_local_ranks, ctx.symm_barrier,
@@ -240,14 +240,7 @@ def log2(n):
 
 @tl.constexpr_function
 def next_power_of_2(n: tl.constexpr):
-    n -= 1
-    n |= n >> 1
-    n |= n >> 2
-    n |= n >> 4
-    n |= n >> 8
-    n |= n >> 16
-    n += 1
-    return n
+    return triton.next_power_of_2(n)
 
 
 @triton.jit
@@ -339,62 +332,6 @@ def bisect_right_kernel_aligned(
     low = tl.where(low != high and tl.load(sorted_values_ptr + low) <= target_values, low + 1, low)
     # Store result
     return low
-
-
-# copied from https://github.com/cchan/tccl/blob/main/triton_double_tree_allreduce.py
-@triton.jit
-def load_b64_v2(addrs, mask):
-    return tl.inline_asm_elementwise(
-        """
-        {
-            .reg .pred %p0;
-            setp.eq.s32             %p0, $3, 1;
-            @%p0 ld.global.v2.b64   {$0, $1}, [$2];
-        }
-        """,
-        "=l,=l,l,r",
-        args=[addrs, mask.to(tl.int32)],
-        dtype=(tl.int64, tl.int64),
-        is_pure=True,
-        pack=1,
-    )
-
-
-# copied from https://github.com/cchan/tccl/blob/main/triton_double_tree_allreduce.py
-@triton.jit
-def add_v8_bf16(a_hi, a_lo, b_hi, b_lo):
-    #TODO(lsy.314)
-    # v8 doesn't seem necessary and needs to be replaced, given that bf16 can only use x2 add instruction
-    return tl.inline_asm_elementwise(
-        """
-        {
-            .reg .v4 .b32 %acc, %tmp;
-            mov.v4.b32  %acc, 0;
-            mov.b64     {%acc.x, %acc.y}, $2;
-            mov.b64     {%acc.z, %acc.w}, $3;
-            mov.b64     {%tmp.x, %tmp.y}, $4;
-            mov.b64     {%tmp.z, %tmp.w}, $5;
-            add.bf16x2  %acc.x, %acc.x, %tmp.x;
-            add.bf16x2  %acc.y, %acc.y, %tmp.y;
-            add.bf16x2  %acc.z, %acc.z, %tmp.z;
-            add.bf16x2  %acc.w, %acc.w, %tmp.w;
-            mov.b64     $0, {%acc.x, %acc.y};
-            mov.b64     $1, {%acc.z, %acc.w};
-        }
-        """,
-        "=l,=l,l,l,l,l",
-        args=[a_hi, a_lo, b_hi, b_lo],
-        dtype=(tl.int64, tl.int64),
-        is_pure=True,
-        pack=1,
-    )
-
-
-@triton.jit
-def get_flat_tid():
-    tid_x, tid_y, tid_z = tid(0), tid(1), tid(2)
-    ntid_x, ntid_y = ntid(0), ntid(1)
-    return tid_z * ntid_y * ntid_x + tid_y * ntid_x + tid_x
 
 
 def _wait_eq_cuda(signal_tensor: torch.Tensor, signal: int, stream: Optional[torch.cuda.Stream] = None,

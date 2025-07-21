@@ -1,0 +1,115 @@
+#!/bin/bash
+
+set -e
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+PROJECT_ROOT=$(realpath ${SCRIPT_DIR}/../../..)
+pushd ${PROJECT_ROOT}
+
+export PYTHONPATH=$PYTHONPATH:`realpath python`
+
+function run_unittest_testcases() {
+  python3 python/triton_dist/test/nvidia/test_language_extra.py
+}
+
+function run_simt_testcases() {
+  #############
+  # ad-hoc test
+  #############
+  # simt
+  python3 python/triton_dist/test/nvidia/test_simt.py
+  # basic
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_distributed_wait.py --case correctness_tma_multi_barrier
+}
+
+function run_aot_testcases() {
+  #############
+  # ad-hoc test
+  #############
+  # aot compilation
+  USE_TRITON_DISTRIBUTED_AOT=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_compile_aot.py
+}
+
+function run_ag_gemm_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness_autotune
+}
+
+function run_gemm_rs_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568 --check
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py 4096 4096 12288 --fuse_scatter --check
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py 4096 4096 12288 --fuse_scatter --no-persistent --check
+}
+
+function run_allgather_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_small_msg.py
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_all_gather.py
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_fast_allgather.py --iters 10 --warmup_iters 20 --mode push_2d_ll --minbytes 4096 --maxbytes 8192
+}
+
+function run_ep_all2all_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_all_to_all.py
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ep_moe_inference.py
+}
+
+function run_nvshmem_api_testcases() {
+  NVSHMEM_DISABLE_CUDA_VMM=0 bash scripts/launch.sh python/triton_dist/test/nvidia/test_nvshmem_api.py
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ring_put.py
+}
+
+function run_flash_decoding_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_persistent
+  USE_TRITON_DISTRIBUTED_AOT=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_persistent_aot
+  USE_TRITON_DISTRIBUTED_AOT=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_decode_attn.py --case perf_8k_aot
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_sp_decode_attn.py --case perf
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
+  USE_TRITON_DISTRIBUTED_AOT=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_sp_decode_attn.py --case correctness
+}
+
+function run_ag_moe_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --iters 10 --warmup_iters 20
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_moe.py --M 2048 --iters 10 --warmup_iters 20 --autotune
+}
+
+function run_moe_reduce_rs_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --autotune
+}
+
+function run_ep_all2all_testcases() {
+  NVSHMEM_SYMMETRIC_SIZE=10000000000 bash scripts/launch.sh python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8 --check
+  NVSHMEM_SYMMETRIC_SIZE=10000000000 bash scripts/launch.sh python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8
+}
+
+function run_sp_ag_attention_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_sp_ag_attention_intra_node.py --batch_size 1 --q_head 32 --kv_head 32 --max_seqlen_q 8192 --max_seqlen_k 8192 --head_dim 128 --seqlens_q 8192 --seqlens_k 8192
+}
+
+function run_allreduce_testcases() {
+  NVSHMEM_DISABLE_CUDA_VMM=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method double_tree --stress --iters 2 --verify_hang 50
+  NVSHMEM_DISABLE_CUDA_VMM=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot --stress --iters 2 --verify_hang 50
+  NVSHMEM_DISABLE_CUDA_VMM=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method two_shot --stress --iters 2 --verify_hang 50
+  NVSHMEM_DISABLE_CUDA_VMM=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot_tma --stress --iters 2 --verify_hang 50
+  NVSHMEM_DISABLE_CUDA_VMM=0 bash scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method one_shot_multimem --stress --iters 2 --verify_hang 50
+  NVSHMEM_DISABLE_CUDA_VMM=0 bash scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method two_shot_multimem --stress --iters 2 --verify_hang 50
+}
+
+# run all cases
+run_unittest_testcases
+run_simt_testcases
+run_aot_testcases
+run_ag_gemm_testcases
+run_gemm_rs_testcases
+run_allgather_testcases
+run_ep_all2all_testcases
+run_nvshmem_api_testcases
+run_flash_decoding_testcases
+run_ag_moe_testcases
+run_moe_reduce_rs_testcases
+run_ep_all2all_testcases
+run_sp_ag_attention_testcases
+run_allreduce_testcases

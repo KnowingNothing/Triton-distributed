@@ -27,14 +27,15 @@ import itertools
 import os
 import random
 from typing import Optional
+import warnings
 import torch
 import triton
 import sys
 import torch.distributed as dist
 from triton_dist.kernels.allreduce import AllReduceMethod, get_allreduce_methods, to_allreduce_method
 from triton_dist.kernels.nvidia.allreduce import (create_allreduce_ctx, all_reduce)
-from triton_dist.utils import (assert_allclose, group_profile, initialize_distributed, finalize_distributed, perf_func,
-                               sleep_async)
+from triton_dist.utils import (assert_allclose, group_profile, initialize_distributed, finalize_distributed,
+                               is_nvshmem_multimem_supported, perf_func, sleep_async)
 
 DATA_SIZES = [
     128,  # 128B
@@ -179,12 +180,7 @@ def _triton_warmup():
     triton.compiler.compiler.triton_key()  # warmup. don't include this into torch.profiler.
 
 
-if __name__ == "__main__":
-    TP_GROUP = initialize_distributed()
-    RANK = int(os.environ.get("RANK", 0))
-    WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
-    LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
-
+def _parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--max_nbytes", type=int, default=1024 * 4096)
     parser.add_argument("--iters", type=int, default=10)
@@ -199,7 +195,20 @@ if __name__ == "__main__":
     parser.add_argument("--stress", default=False, action="store_true")
     parser.add_argument("--debug", default=False, action="store_true")
     parser.add_argument("--profile", default=False, action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    if args.method in ["one_shot_multimem", "two_shot_multimem"]:
+        if not is_nvshmem_multimem_supported():
+            warnings.warn(f"Skip {args.method} because nvshmem multimem is not supported")
+            sys.exit(0)
+
+    TP_GROUP = initialize_distributed()
+    RANK = int(os.environ.get("RANK", 0))
+    WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
+    LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
 
     DTYPE = {
         "fp32": torch.float32,

@@ -39,7 +39,7 @@ import triton.language as tl
 from triton.language.extra.cuda.language_extra import __syncthreads, tid
 from triton_dist.kernels.nvidia.common_ops import _set_signal_cuda, _wait_eq_cuda
 from triton_dist.language.extra import libshmem_device
-from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, get_has_fullmesh_nvlink, get_numa_world_size,
+from triton_dist.utils import (CUDA_CHECK, NVSHMEM_SIGNAL_DTYPE, has_fullmesh_nvlink, get_numa_world_size,
                                nvshmem_barrier_all_on_stream, sleep_async)
 
 
@@ -55,7 +55,7 @@ class AllGatherMethod(Enum):
 
 @functools.lru_cache()
 def get_auto_all_gather_method(num_ranks, num_local_ranks):
-    if get_has_fullmesh_nvlink():
+    if has_fullmesh_nvlink():
         if num_ranks == num_local_ranks:
             return AllGatherMethod.All2All_IntraNode
         else:

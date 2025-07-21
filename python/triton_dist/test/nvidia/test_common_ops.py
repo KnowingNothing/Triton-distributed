@@ -36,7 +36,7 @@ from triton_dist.kernels.nvidia.common_ops import (barrier_all_intra_node_non_at
                                                    cooperative_barrier_on_this_grid, bisect_left_kernel,
                                                    bisect_left_kernel_aligned, bisect_right_kernel,
                                                    bisect_right_kernel_aligned)
-from triton_dist.utils import check_p2p_native_atomic_supported, finalize_distributed, initialize_distributed, launch_cooperative_grid_options, nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, nvshmem_create_tensor, sleep_async, support_launch_cooperative_grid
+from triton_dist.utils import supports_p2p_native_atomic, finalize_distributed, initialize_distributed, launch_cooperative_grid_options, nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, nvshmem_create_tensor, sleep_async, support_launch_cooperative_grid
 
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
 LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
@@ -94,7 +94,7 @@ def test_barrier_all_intra_node_non_atomic():
 
 
 def test_barrier_all_intra_node():
-    if not check_p2p_native_atomic_supported():
+    if not supports_p2p_native_atomic():
         print("P2P native atomic access is not supported. skip this test...")
         return
 

@@ -33,7 +33,7 @@ import torch
 
 from triton_dist.kernels.nvidia import (gqa_fwd_batch_decode, gqa_fwd_batch_decode_aot, gqa_fwd_batch_decode_persistent,
                                         gqa_fwd_batch_decode_persistent_aot)
-from triton_dist.utils import TP_GROUP, dist_print, finalize_distributed, initialize_distributed, perf_func
+from triton_dist.utils import dist_print, finalize_distributed, initialize_distributed, perf_func
 
 ALL_TESTS = {}
 

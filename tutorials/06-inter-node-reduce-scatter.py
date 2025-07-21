@@ -242,7 +242,7 @@ def intra_node_scatter(input_intra_node, scatter_bufs_intra_node: List[torch.Ten
             remote_buf.copy_(local_buf)
 
 
-def reducer_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
+def reduce_scatter_for_each_node(input, stream, ctx: ReduceScatter2DContext):
     world_size = ctx.world_size
     local_world_size = ctx.local_world_size
     local_rank = ctx.local_rank
@@ -328,7 +328,7 @@ def reduce_scatter_multi_node(input, stream, ctx: ReduceScatter2DContext):
             Finally, we use P2P communication to send the data to the same local rank on the target node.
             This can reduce the inter-node communication volume by a factor of local_world_size.
     """
-    rs_resutl_per_node = reducer_scatter_for_each_node(input, stream, ctx)
+    rs_resutl_per_node = reduce_scatter_for_each_node(input, stream, ctx)
     nvshmem_barrier_all_on_stream(stream)
     output = torch.empty((M_per_rank, N), dtype=input.dtype, device=input.device)
     """

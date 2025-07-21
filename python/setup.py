@@ -987,7 +987,6 @@ DEPS_NVIDIA = [
     "cuda-python>=12.0",
     "nvidia-nvshmem-cu12>=3.3.9",
     "Cython>=0.29.24",
-    "numpy",
     "nvshmem4py-cu12>=0.1.0",
 ]
 DEPS_HIP = ["hip-python"]

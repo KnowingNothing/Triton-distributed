@@ -41,30 +41,21 @@ In doing so, you will learn about:
 
 """
 
-import torch
 import dataclasses
+import os
+from functools import partial
+from typing import List, Optional
+
+import torch
+
 import triton
 import triton.language as tl
 import triton_dist.language as dl
-
-from typing import Optional, List
-import triton_dist
-import nvshmem.core
 # The implementation of reduce_scatter_2d_op is the same as that in 06-intern-node-reudce-scatter.py.
-from triton_dist.kernels.nvidia.reduce_scatter import ReduceScatter2DContext, create_reduce_scater_2d_ctx, reduce_scatter_2d_op
-
-import os
-
-from functools import partial
-
-from triton_dist.utils import (
-    generate_data,
-    nvshmem_barrier_all_on_stream,
-    nvshmem_create_tensors,
-    nvshmem_free_tensor_sync,
-    perf_func,
-    dist_print,
-)
+from triton_dist.kernels.nvidia.reduce_scatter import (ReduceScatter2DContext, create_reduce_scater_2d_ctx,
+                                                       reduce_scatter_2d_op)
+from triton_dist.utils import (dist_print, generate_data, nvshmem_barrier_all_on_stream, nvshmem_create_tensors,
+                               nvshmem_free_tensor_sync, perf_func, finalize_distributed, initialize_distributed)
 
 
 # GEMM and reduce-scatter context. Stores comm info (dtype, nnodes, etc), symm buffers, and signals.
@@ -426,7 +417,7 @@ if __name__ == "__main__":
     LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
     WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
     LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
-    TP_GROUP = triton_dist.utils.initialize_distributed()
+    TP_GROUP = initialize_distributed()
     torch.cuda.synchronize()
     M, N, K = 16384, 12288, 49152
     local_K = K // TP_GROUP.size()
@@ -473,5 +464,4 @@ if __name__ == "__main__":
     dist_print(f"torch #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
     dist_gemm_rs_ctx.finalize()
-    nvshmem.core.finalize()
-    torch.distributed.destroy_process_group()
+    finalize_distributed()

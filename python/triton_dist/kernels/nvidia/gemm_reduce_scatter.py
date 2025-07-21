@@ -30,7 +30,7 @@ import torch
 import triton
 import triton.language as tl
 import triton_dist.language as dl
-from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add, tid)
+from triton.language.extra.cuda.language_extra import (__syncthreads, atomic_add, tid, st)
 from triton_dist.kernels.nvidia.reduce_scatter import (ReduceScatter2DContext, create_reduce_scater_2d_ctx,
                                                        reduce_scatter_2d_op, ring_reduce)
 from triton_dist.kernels.nvidia.gemm_rs_threadblock_swizzle import threadblock_swizzle_gemm_reduce_scatter_kernel
@@ -403,8 +403,9 @@ def kernel_gemm_rs_producer_non_persistent(
             tiled_m_end = m_end // BLOCK_SIZE_M
             tiled_m_size = tiled_m_end - tiled_m_start + 1
             val = atomic_add(counter_ptr + segment, 1, semantic="release", scope="gpu")
-            if (val == num_pid_n * tiled_m_size - 1):
-                atomic_add(barrier_ptr + segment, 1, semantic="release", scope="gpu")
+            if val == num_pid_n * tiled_m_size - 1:
+                # or use other signal op semantic
+                st(barrier_ptr + segment, 1, scope="gpu", semantic="release")
     else:
         rank_start = pid_m * BLOCK_SIZE_M // M_per_rank
         rank_end = (min((pid_m + 1) * BLOCK_SIZE_M, M) - 1) // M_per_rank

@@ -31,7 +31,7 @@ import torch
 
 from triton_dist.autotuner import contextual_autotune
 from triton_dist.kernels.nvidia import ag_gemm, create_ag_gemm_context
-from triton_dist.utils import (assert_allclose, dist_print, group_profile, initialize_distributed, perf_func, TP_GROUP)
+from triton_dist.utils import (assert_allclose, dist_print, group_profile, initialize_distributed, perf_func)
 
 ALL_TESTS = {}
 
@@ -195,19 +195,19 @@ def test_perf_ag_gemm_tma(args, autotune=False):
 register_test("perf_tma_autotune")(lambda args: test_perf_ag_gemm_tma(args, autotune=True))
 
 if __name__ == "__main__":
+    args = get_args()
+
     RANK = int(os.environ.get("RANK", 0))
     LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
     WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
     torch.cuda.set_device(LOCAL_RANK)
-    initialize_distributed()
+    args.default_group = initialize_distributed()
 
-    args = get_args()
     if torch.cuda.get_device_capability() < (9, 0):
         if args.persistent:
             print("Persistent is not supported on device with capability < (9, 0). exit...")
             sys.exit()
 
-    args.default_group = TP_GROUP()
     args.rank = RANK
     args.num_ranks = WORLD_SIZE
     if args.list:
