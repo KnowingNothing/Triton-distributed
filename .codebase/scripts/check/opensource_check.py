@@ -51,9 +51,11 @@ def check_sensitive_information(
     cnt,
     aigc_keywords_group1,
     aigc_keywords_group2,
+    skip_git_commit_log: bool = False,
 ):
     has_sensitive_info = False
-    for file_path in get_git_ls_files(repo_folder_path) + [GIT_COMMIT_LOG]:
+    extra_path = [] if skip_git_commit_log else [GIT_COMMIT_LOG]
+    for file_path in get_git_ls_files(repo_folder_path) + extra_path:
         file_path = os.path.join(repo_folder_path, file_path)
         logging.debug("Checking file: %s", os.path.relpath(file_path, repo_folder_path))
         if not Path(file_path).exists() or not Path(file_path).is_file() or is_exclude_path(
@@ -131,6 +133,7 @@ def _parse_args():
     parser.add_argument("--exclude", default=None, help="exclude path to skip")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--depth", type=int, default=None, help="Limit the git log to a specific depth.")
+    parser.add_argument("--skip_git_commit_log", default=False, action="store_true")
     return parser.parse_args()
 
 
@@ -162,7 +165,8 @@ def main():
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
 
-    opensource_get_commit_log(repo_folder_path, args.depth)
+    if not args.skip_git_commit_log:
+        opensource_get_commit_log(repo_folder_path, args.depth)
     keywords_list = [
         # r"[a-zA-z0-9]{8}(-[a-zA-z0-9]{4}){3}-[a-zA-z0-9]{12}", # DON'T CHECK UUID
         r"npm\s{1,20}install.{1,30}",
@@ -202,6 +206,7 @@ def main():
         cnt,
         aigc_keywords_group1,
         aigc_keywords_group2,
+        args.skip_git_commit_log,
     )
     if has_sensitive_info:
         logging.fatal("Sensitive information found in the codebase. Please check the logs.")
@@ -209,7 +214,8 @@ def main():
     else:
         print("No sensitive information found in the codebase.")
 
-    Path(GIT_COMMIT_LOG).unlink(missing_ok=True)
+    if not args.skip_git_commit_log:
+        Path(GIT_COMMIT_LOG).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

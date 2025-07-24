@@ -394,14 +394,19 @@ def multimem_ld_reduce_p_v4(ptr, mask, _semantic=None):
 
 
 @core.extern
-def _multimem_ld_reduce_128bit(ptr, suffix: core.constexpr, _semantic=None):
+def _multimem_ld_reduce_128bit(ptr, acc_dtype: core.constexpr, suffix: core.constexpr, _semantic=None):
     # Use with caution: @p and multicast instructions are incompatible;
     # Mask may not control instruction execution correctly with imperfect tiling.
     # May be replaced or deprecated in the future. TODO(lsy.314)
     c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
     val_type: core.constexpr = _ptx_suffix_to_tl_type(suffix, _semantic=_semantic)
+    acc_prec = ""
+    if acc_dtype == tl.float32:
+        acc_prec = ".acc::f32"
+    else:
+        tl.static_assert(False, "Unsupported dtype, acc::f16 is used for fp8", _semantic=_semantic)
     return tl.inline_asm_elementwise(
-        asm=f"multimem.ld_reduce.global.add.v4.{suffix.value} {{$0,$1,$2,$3}}, [$4];",
+        asm=f"multimem.ld_reduce.global.add{acc_prec}.v4.{suffix.value} {{$0,$1,$2,$3}}, [$4];",
         constraints=(f"={c.value},={c.value},={c.value},={c.value},l"),
         args=[ptr],
         dtype=[val_type, val_type, val_type, val_type],
@@ -412,13 +417,27 @@ def _multimem_ld_reduce_128bit(ptr, suffix: core.constexpr, _semantic=None):
 
 
 @core.extern
-def multimem_ld_reduce_v4(ptr, _semantic=None):
+def multimem_ld_reduce_v4(ptr, acc_dtype=None, _semantic=None):
+    """
+    Load data from global memory with PTX instructions multimem.ld_reduce
+    Args:
+        ptr: Pointer to the global memory
+        acc_prec: Accumulation precision, can be "auto", ".acc::f32" or "". for "auto", prefer high precision.
+    Returns:
+        Loaded data of 32-bit register tuple (val0, val1, val2, val3)
+    """
+    tl.static_assert(ptr.dtype.element_ty.kind() == core.dtype.KIND.FLOATING, _semantic=_semantic)
+    if acc_dtype is not None:
+        tl.static_assert(acc_dtype == tl.float32 or acc_dtype == tl.float16,
+                         "Unsupported acc dtype, only fp16/fp32 is supported", _semantic=_semantic)
     if ptr.dtype.element_ty == tl.bfloat16:
-        return _multimem_ld_reduce_128bit(ptr, core.constexpr("bf16x2"), _semantic=_semantic)
+        return _multimem_ld_reduce_128bit(ptr, core.float32 if acc_dtype is None else acc_dtype,
+                                          core.constexpr("bf16x2"), _semantic=_semantic)
     elif ptr.dtype.element_ty == tl.float16:
-        return _multimem_ld_reduce_128bit(ptr, core.constexpr("f16x2"), _semantic=_semantic)
+        return _multimem_ld_reduce_128bit(ptr, core.float32 if acc_dtype is None else acc_dtype,
+                                          core.constexpr("f16x2"), _semantic=_semantic)
     elif ptr.dtype.element_ty == tl.float32:
-        return _multimem_ld_reduce_128bit(ptr, core.constexpr("f32"), _semantic=_semantic)
+        return _multimem_ld_reduce_128bit(ptr, acc_dtype, core.constexpr("f32"), _semantic=_semantic)
     else:
         tl.static_assert(False, "Unsupported dtype, only fp16/bf16/fp32 is supported", _semantic=_semantic)
 

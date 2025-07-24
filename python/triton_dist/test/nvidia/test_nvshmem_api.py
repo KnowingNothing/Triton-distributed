@@ -32,9 +32,6 @@ import torch
 import torch.distributed
 
 import triton
-import triton.backends
-import triton.backends.nvidia
-import triton.backends.nvidia.compiler
 import triton.language as tl
 from triton.language.extra.cuda.language_extra import (__syncthreads, load_v4_u32, multimem_st_b32, multimem_st_v2,
                                                        multimem_st_v4, ntid, st, tid, multimem_st_p_b32)

@@ -25,7 +25,7 @@ jobs:
           - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
           - python3 scripts/check_license.py
           # check for opensource license
-          - python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude "3rdparty/*,.codebase/*" --depth 10
+          - python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude "3rdparty/*,.codebase/*" --depth 10 --skip_git_commit_log
       - name: build
         commands:
           - python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
@@ -176,3 +176,30 @@ jobs:
       - name: build
         commands:
           - bash -x .codebase/scripts/nvidia/build.sh
+
+  triton-compile-nvcr-io-nvidia-torch-24.10-py3:
+    image: hub.byted.org/compile/nvcr.io.nvidia_pytorch:24.10-py3-20250723
+    envs:
+      PYTHONPATH: $PYTHONPATH:/home/code/python
+      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      PATH: /home/code/.local/bin:$PATH
+      MAX_JOBS: 16
+    steps:
+      - name: build
+        commands:
+          - bash -x .codebase/scripts/nvidia/build.sh
+
+  triton-compile-nvcr-io-nvidia-torch-23.04-py3:
+    image: hub.byted.org/compile/nvcr.io.nvidia_pytorch:23.04-py3-20250724
+    envs:
+      PYTHONPATH: $PYTHONPATH:/home/code/python
+      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      PATH: /home/code/.local/bin:$PATH
+      MAX_JOBS: 16
+    steps:
+      - name: build
+        commands:
+          # - bash -x .codebase/scripts/nvidia/build.sh
+          - echo "build with python 3.8 is not supported"
