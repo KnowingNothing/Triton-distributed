@@ -24,29 +24,33 @@ jobs:
           - pip3 install chardet
           - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
           - python3 scripts/check_license.py
-
+          # check for opensource license
+          - python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude "3rdparty/*,.codebase/*" --depth 10
       - name: build
         commands:
           - python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
           - python3 -m pip install https://tosv.byted.org/obj/flux/packages/hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
           - git submodule update --init --recursive
           # download prebuild ompi
-          - bash scripts/download_prebuild_ompi.sh
+          - bash .codebase/scripts/amd/download_prebuild_ompi.sh
           # some unknown proxy issue caused apt install fail for some packages
           - unset http_proxy
           - bash shmem/rocshmem_bind/build.sh
           - export http_proxy=http://sys-proxy-rd-relay.byted.org:3128
           - MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
 
-      - name: distributed tests
+      - name: unit tests
         commands:
-          # distributed ops
           - bash -x .codebase/scripts/amd/run_unittest.sh
 
       - name: e2e tests
         commands:
           - bash ./scripts/build_e2e_env.sh
           - bash -x .codebase/scripts/amd/run_e2e_test.sh
+
+      - name: tutorial tests
+        commands:
+          - bash -x .codebase/scripts/amd/run_tutorial_test.sh
 
 
   triton-nvidia-H800:
@@ -159,3 +163,16 @@ jobs:
       - name: unit tests
         commands:
           - bash -x .codebase/scripts/nvidia/run_unittest.sh
+
+  triton-compile-nvcr-io-nvidia-torch-25.06-py3:
+    image: hub.byted.org/compile/nvcr.io.nvidia_pytorch:25.06-py3-byted-20250718
+    envs:
+      PYTHONPATH: $PYTHONPATH:/home/code/python
+      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      PATH: /home/code/.local/bin:$PATH
+      MAX_JOBS: 16
+    steps:
+      - name: build
+        commands:
+          - bash -x .codebase/scripts/nvidia/build.sh

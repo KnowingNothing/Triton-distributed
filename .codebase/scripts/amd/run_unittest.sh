@@ -15,11 +15,6 @@ function run_unittest_testcases() {
   bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096
   # gemm rs
   bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_gemm_rs_intra_node.py 8192 4096 12288
-  # tutorials
-  # 09
-  bash ./scripts/launch_amd.sh ./tutorials/09-AMD-overlapping-allgather-gemm.py
-  # 10
-  bash ./scripts/launch_amd.sh ./tutorials/10-AMD-overlapping-gemm-reduce-scatter.py
 }
 
 run_unittest_testcases

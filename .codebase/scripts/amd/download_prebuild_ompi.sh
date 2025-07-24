@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT=$(realpath ${SCRIPT_DIR}/../)
+PROJECT_ROOT=$(realpath ${SCRIPT_DIR}/../../../)
 ROCSHMEM_BIND_DIR="${PROJECT_ROOT}/shmem/rocshmem_bind/"
 TEMP_DIR="${TMPDIR:-/tmp}"
 

@@ -429,18 +429,13 @@ def build_rocshmem(cap):
 
 def _is_cuda_platform():
     import torch
-    if torch.cuda.is_available():
-        if torch.version.hip is None:
-            return True
-    return False
+    # just follow torch version. no need for GPU card to run CUDA programs
+    return torch.version.cuda is not None
 
 
 def _is_hip_platform():
     import torch
-    if torch.cuda.is_available():
-        if torch.version.hip is not None:
-            return True
-    return False
+    return torch.version.hip is not None
 
 
 def build_shmem():
@@ -988,10 +983,10 @@ DEPS_NVIDIA = [
     "nvidia-nvshmem-cu12>=3.3.9",
     "Cython>=0.29.24",
     "nvshmem4py-cu12>=0.1.0",
-]
-DEPS_HIP = ["hip-python"]
-DEPS = DEPS_NVIDIA if _is_cuda_platform() else DEPS_HIP
-DEPS_BUILD_NVIDIA = ["nvidia-ml-py>=12.0"]
+] if _is_cuda_platform() else []
+DEPS_HIP = ["hip-python"] if _is_hip_platform() else []
+DEPS = DEPS_NVIDIA + DEPS_HIP
+DEPS_TEST = ["nvidia-ml-py>=12.0"] if _is_cuda_platform() else []
 
 setup(
     name=os.environ.get("TRITON_WHEEL_NAME", "triton_dist"),
@@ -1037,7 +1032,7 @@ setup(
             "llnl-hatchet",
             "transformers",
             "tqdm",
-        ] + DEPS_BUILD_NVIDIA,
+        ] + DEPS_TEST,
         "tutorials": [
             "matplotlib",
             "pandas",

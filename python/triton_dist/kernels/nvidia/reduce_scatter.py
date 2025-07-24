@@ -31,7 +31,7 @@ import torch
 import triton
 import triton.language as tl
 from cuda import cudart
-import nvshmem.bindings
+import nvshmem.bindings.nvshmem as pynvshmem
 from triton_dist.kernels.nvidia.common_ops import _set_signal_cuda, _wait_eq_cuda
 from triton_dist.language.extra import libshmem_device
 
@@ -573,7 +573,7 @@ def reduce_scatter_for_each_node_ring(input: torch.Tensor, ctx: ReduceScatter2DC
                 M_start = M_per_rank * node_id
                 M_end = M_start + M_per_rank
 
-                nvshmem.bindings.nvshmem.putmem_on_stream(
+                pynvshmem.putmem_on_stream(
                     p2p_buf[M_start:M_end].data_ptr(),
                     scatter_buf.data_ptr(),
                     nbytes_per_rank,

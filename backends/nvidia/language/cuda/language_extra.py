@@ -273,7 +273,7 @@ def _multimem_st_v2_impl(ptr, val0, val1, suffix: core.constexpr, _semantic=None
     c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
     return tl.inline_asm_elementwise(
         asm=f"""
-        multimem.st.global.v2.{suffix.value} [$1], $2, $3;
+        multimem.st.global.v2.{suffix.value} [$1], {{$2, $3}};
         mov.u32 $0, 0;
         """,
         constraints=(f"=r,l,{c.value},{c.value}"),  # no use output
@@ -287,7 +287,6 @@ def _multimem_st_v2_impl(ptr, val0, val1, suffix: core.constexpr, _semantic=None
 
 @core.extern
 def multimem_st_v2(ptr, val0, val1, _semantic=None):
-    """ no multimem.st.b32.v2. store b32x2 as b64 """
     # it seems that multimem.st does not support v2, when doc say so: https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-multimem
     tl.static_assert(val0.dtype.primitive_bitwidth == 32, _semantic=_semantic)
     tl.static_assert(val1.dtype.primitive_bitwidth == 32, _semantic=_semantic)
@@ -306,7 +305,7 @@ def _multimem_st_v4_impl(ptr, val0, val1, val2, val3, suffix: core.constexpr, _s
     c: core.constexpr = _ptx_suffix_to_constraint(suffix, _semantic=_semantic)
     return tl.inline_asm_elementwise(
         asm=f"""
-        multimem.st.global.v4.{suffix.value} [$1], $2, $3, $4, $5;
+        multimem.st.global.v4.{suffix.value} [$1], {{$2, $3, $4, $5}};
         mov.u32 $0, 0;
         """,
         constraints=(f"=r,l,{c.value},{c.value},{c.value},{c.value}"),  # no use output

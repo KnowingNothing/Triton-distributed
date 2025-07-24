@@ -29,7 +29,7 @@ import functools
 from enum import Enum
 from typing import List
 
-import nvshmem.bindings
+import nvshmem.bindings.nvshmem as pynvshmem
 import nvshmem.core
 import torch
 from cuda import cuda, cudart
@@ -351,7 +351,7 @@ def cp_engine_producer_all_gather_ring_push_2d_inter_node(
                 M_end = M_start + M_per_rank
                 src = remote_tensor_buffers[local_rank][M_start:M_end, :]
                 # with gridDim = 1
-                nvshmem.bindings.nvshmem.putmem_signal_on_stream(
+                pynvshmem.putmem_signal_on_stream(
                     src.data_ptr(),
                     src.data_ptr(),
                     nbytes_per_rank,

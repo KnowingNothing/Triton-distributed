@@ -186,7 +186,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonDistributed ${PYTHON_DIST_SRC_PATH}/triton_distributed.cc
                                       ${PYTHON_DIST_SRC_PATH}/passes.cc
                                       ${PYTHON_DIST_SRC_PATH}/ir.cc)
-  target_link_libraries(TritonDistributed PRIVATE DistributedIR Python3::Module pybind11::headers)
+  target_link_libraries(TritonDistributed PRIVATE DistributedIR SIMTIR ProtonIR Python3::Module pybind11::headers)
 endif()
 
 if(TRITON_BUILD_PYTHON_MODULE)

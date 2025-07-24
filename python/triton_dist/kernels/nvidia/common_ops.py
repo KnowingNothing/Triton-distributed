@@ -25,7 +25,7 @@
 from typing import Optional
 
 from cuda import cuda, cudart
-import nvshmem.bindings
+import nvshmem.bindings.nvshmem as pynvshmem
 import nvshmem.core
 import torch
 
@@ -210,9 +210,9 @@ class BarrierAllContext:
         self.is_intra_node = is_intra_node
         self.target_value = 1
         if self.is_intra_node:
-            self.rank = nvshmem.bindings.nvshmem.my_pe()
-            self.local_rank = nvshmem.bindings.nvshmem.team_my_pe(nvshmem.core.Teams.TEAM_NODE)
-            self.num_local_ranks = nvshmem.bindings.nvshmem.team_n_pes(nvshmem.core.Teams.TEAM_NODE)
+            self.rank = pynvshmem.my_pe()
+            self.local_rank = pynvshmem.team_my_pe(nvshmem.core.Teams.TEAM_NODE)
+            self.num_local_ranks = pynvshmem.team_n_pes(nvshmem.core.Teams.TEAM_NODE)
             self.symm_barrier = nvshmem_create_tensor((1, ), torch.int32)
             self.symm_barrier.fill_(0)
             nvshmem_barrier_all_on_stream(torch.cuda.current_stream())

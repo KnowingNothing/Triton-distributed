@@ -38,7 +38,6 @@ import triton.backends
 import triton.language as tl
 from packaging.version import Version
 from triton.tools.link import HeaderParser, KernelLinkerMeta
-from triton.backends.nvidia.driver import include_dirs
 
 if Version(triton.__version__) < Version("3.0.0"):
     raise RuntimeError("AOT compilation requires triton>=3.0.0")
@@ -737,6 +736,7 @@ def gen_cmakelists(workspace: Path, libname: str, with_runtime: bool = False):
         _copy_if_changed(workspace / "triton_aot_runtime.cc", aot_runtime_path() / "triton_aot_runtime.cc")
         _copy_if_changed(workspace / "triton_aot_runtime.h", aot_runtime_path() / "triton_aot_runtime.h")
 
+    include_dirs = [os.path.join(triton.__path__[0], "backends/nvidia/include")]
     content = CMAKE_TEMPLATE.format(
         LIBNAME=libname,
         CCFLAGS=" ".join([f"-I{x}" for x in include_dirs]),

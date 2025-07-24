@@ -143,10 +143,7 @@ CPP_LICENSES = [
 PYTHON_EXTENSIONS = ['.py', '.pyi']
 TD_EXTENSIONS = ['.td']
 CPP_EXTENSIONS = ['.cc', '.cpp', '.c', '.h', '.hpp', '.cu', '.cuh']
-WHITELIST_PATTERNS = [
-    r'setup.py',
-    r'^.*patches\/triton\/.*$',
-]
+WHITELIST_PATTERNS = [r'setup.py', r'^.*patches\/triton\/.*$', r"\.codebase\/.*"]
 
 
 def get_modified_files():

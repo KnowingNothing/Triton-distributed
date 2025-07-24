@@ -25,10 +25,6 @@
 
 #!/bin/bash
 
-export http_proxy=http://sys-proxy-rd-relay.byted.org:3128
-export https_proxy=http://sys-proxy-rd-relay.byted.org:3128
-export no_proxy=code.byted.org
-
 # --- NVIDIA CUDA ---
 if command -v nvcc &> /dev/null; then
     echo "NVIDIA CUDA compiler (nvcc) found. Proceeding with CUDA-specific installations."
