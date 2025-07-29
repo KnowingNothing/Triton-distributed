@@ -176,8 +176,8 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
 
         dist_print(f"torch tp mlp e2e #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        dist_print(f"dist-triton tp mlp e2e #{RANK}", dist_triton_perf, dist_triton_perf,
-                   f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
+        dist_print(f"dist-triton tp mlp e2e #{RANK}", dist_triton_perf, f"{torch_perf/dist_triton_perf}x",
+                   need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
         # we need to del cuda graphs to avoid dist hang
         del torch_graph, triton_dist_graph, mempool

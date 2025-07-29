@@ -80,7 +80,7 @@ function run_moe_reduce_rs_testcases() {
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --autotune
 }
 
-function run_ep_all2all_testcases() {
+function run_ep_a2a_testcases() {
   NVSHMEM_SYMMETRIC_SIZE=10000000000 bash scripts/launch.sh python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8 --check
   NVSHMEM_SYMMETRIC_SIZE=10000000000 bash scripts/launch.sh python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8
 }
@@ -110,6 +110,6 @@ run_nvshmem_api_testcases
 run_flash_decoding_testcases
 run_ag_moe_testcases
 run_moe_reduce_rs_testcases
-run_ep_all2all_testcases
+run_ep_a2a_testcases
 run_sp_ag_attention_testcases
 run_allreduce_testcases

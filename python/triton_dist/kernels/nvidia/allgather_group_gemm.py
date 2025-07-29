@@ -572,7 +572,7 @@ def kernel_consumer_m_parallel_scatter_group_gemm(
     tiled_m = tl.load(tiled_m_ptr + pid_m)
     offs_token_id = tiled_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
-    token_mask = offs_token < M
+    token_mask = (offs_token < M) & (offs_token >= 0)
 
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     a_ptrs = (a_ptr + offs_token[:, None] // TOP_K * stride_am + offs_k[None, :] * stride_ak)

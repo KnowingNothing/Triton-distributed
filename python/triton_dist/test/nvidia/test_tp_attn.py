@@ -126,7 +126,7 @@ if __name__ == "__main__":
         num_layers=1,
         batch_size=BSZ,
         max_length=SEQ_LEN + 8,
-        kv_heads=8,
+        kv_heads=hf_attn.config.num_key_value_heads,
         head_dim=hf_attn.head_dim,
         dtype=DTYPE,
         world_size=WORLD_SIZE,

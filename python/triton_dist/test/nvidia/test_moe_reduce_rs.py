@@ -185,12 +185,15 @@ if __name__ == "__main__":
 
     if args.autotune:
         configs = [
-            triton.Config({"BLOCK_N": BN, "BLOCK_K": BK}, num_stages=s, num_warps=w)
-            for BN in [128, 256]
+            triton.Config({"BLOCK_SIZE_N": BN, "BLOCK_SIZE_K": BK}, num_stages=s, num_warps=w)
+            for BN in [128]
             for BK in [32, 64]
             for s in [3, 4]
             for w in [4, 8]
         ]
+        from triton_dist.kernels.nvidia import moe_reduce_rs
+        moe_reduce_rs.moe_gather_rs_grouped_gemm_kernel = triton.autotune(configs=configs, key=["M", "N", "K"])(
+            moe_reduce_rs.moe_gather_rs_grouped_gemm_kernel)
         run_moe_reduce_rs = contextual_autotune(is_dist=True)(run_moe_reduce_rs)
 
     tp_group = initialize_distributed(args.seed)
