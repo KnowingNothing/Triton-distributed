@@ -7,7 +7,7 @@ trigger:
 jobs:
   triton-amd-pre-merge:
     name: Triton-distributed CI for amd backend.
-    image: rocm/bytedance-private:bkc24.13_torch2.5.1_ub22.04_aterV4
+    image: hub.byted.org/base/lab.bernard.llmserver_amd:3db122918aee545879df2fbb15635290
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
       LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/home/code/shmem/rocshmem_bind/ompi_build/install/ompi/lib
@@ -29,12 +29,9 @@ jobs:
       - name: build
         commands:
           - python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
-          - python3 -m pip install https://tosv.byted.org/obj/flux/packages/hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
           - git submodule update --init --recursive
-          # download prebuild ompi
-          - bash .codebase/scripts/amd/download_prebuild_ompi.sh
           # some unknown proxy issue caused apt install fail for some packages
-          - unset http_proxy
+          # - unset http_proxy
           - bash shmem/rocshmem_bind/build.sh
           - export http_proxy=http://sys-proxy-rd-relay.byted.org:3128
           - MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517

@@ -99,6 +99,7 @@ fi
 # --- Install common packages ---
 echo "Installing common packages: transformers and numpy..."
 pip install transformers==4.51.3 numpy==1.26.4 termcolor
+pip install --upgrade deepspeed
 
 # --- Define Hugging Face models to download ---
 MODELS=(
