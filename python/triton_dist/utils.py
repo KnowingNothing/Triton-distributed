@@ -61,7 +61,9 @@ def is_hip():
 if is_cuda():
     from cuda import cuda, cudart
 
+    import nvshmem
     import nvshmem.core
+    from nvshmem.core.utils import _get_device
 elif is_hip():
     from hip import hip
 else:
@@ -160,6 +162,21 @@ class TorchStreamWrapper:
 def nvshmem_barrier_all_on_stream(stream: Optional[torch.cuda.Stream] = None):
     stream = stream or torch.cuda.current_stream()
     nvshmem.core.barrier(nvshmem.core.Teams.TEAM_WORLD, stream=TorchStreamWrapper(stream))
+
+
+# nvshmem4py version 0.1.0 bug:
+# wrong parameter order of signal_value and signal_op
+# so we reimplement this signal_wait
+def nvshmem_signal_wait(signal: torch.Tensor, pe: int, signal_val: int, signal_op: int,
+                        stream: torch.cuda.Stream) -> None:
+    signal_buf = nvshmem.core.tensor_get_buffer(nvshmem.core.get_peer_tensor(signal, pe))[0]
+    # signal_buf = nvshmem.core.tensor_get_buffer(signal)[0]
+    user_nvshmem_dev, other_dev = _get_device()
+
+    nvshmem.bindings.signal_wait_until_on_stream(signal_buf._mnff.ptr, signal_op, signal_val, stream.cuda_stream)
+
+    if other_dev is not None:
+        other_dev.set_current()
 
 
 def initialize_distributed(seed=None) -> torch.distributed.ProcessGroup:

@@ -110,6 +110,58 @@ jobs:
         commands:
           - bash -x .codebase/scripts/nvidia/run_tutorial_test.sh
 
+  triton-nvidia-H800-internal:
+    image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
+    envs:
+      PYTHONPATH: $PYTHONPATH:/home/code/python
+      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      PATH: /home/code/.local/bin:$PATH
+    runs-on:
+      cluster: triton_distributed_nvidia_121
+      docker:
+        shared-memory: 1024
+
+    steps:
+      - name: code-format-check
+        commands:
+          - pip3 install black "clang-format==20.1.8" pre-commit ruff yapf==0.43 chardet
+          - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
+          - python3 scripts/check_license.py
+
+      - name: env-check
+        commands:
+          - nvidia-smi
+          - curl -IivvL https://oaitriton.blob.core.windows.net/public/llvm-builds/
+          - mkdir -p /home/code/.local/bin
+          - ln -s `which python3` /home/code/.local/bin/python
+          - ln -s `which pip3` /home/code/.local/bin/pip
+          - hash -r
+          - python3 --version
+          - pip3 --version
+          - python3 -c "import torch; print(torch.__version__)"
+
+      - name: build
+        commands:
+          - git submodule update --init --recursive
+          - pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
+          - export USE_TRITON_DISTRIBUTED_AOT=0
+          - echo "numpy<2" > /tmp/pip_install_constraint.txt
+          - MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
+          - bash ./scripts/gen_aot_code.sh
+          - export USE_TRITON_DISTRIBUTED_AOT=1
+          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+          - pip3 uninstall nvshmem4py-cu12 -y
+          - pip3 install https://tosv.byted.org/obj/turing/dist_triton/nvshmem4py/0.1.0_dev/nvshmem4py_cu12-0.1.dev3+g317f038.d20250729-cp311-cp311-linux_x86_64.whl
+      - name: build_wheel
+        commands:
+          - cd python
+          - python3 setup.py bdist_wheel
+          - cd ..
+      - name: m10-related tests # if you fail, fail early
+        commands:
+          - bash -x .codebase/scripts/nvidia/run_m10_related_tests.sh
+
   triton-nvidia-L20:
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
     envs:

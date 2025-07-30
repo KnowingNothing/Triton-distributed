@@ -930,6 +930,27 @@ def _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, 
 
 
 @core.extern
+def _team_translate_pe(src_team, pe_in_src_team, dest_team, _semantic=None):
+    return extern_call(
+        "libnvshmem_device",
+        "",
+        [
+            src_team,
+            tl.cast(pe_in_src_team, tl.int32, _semantic=_semantic),
+            dest_team,
+        ],
+        {
+            (tl.int32, tl.int32, tl.int32): (
+                "nvshmem_team_translate_pe",
+                (tl.int32),
+            ),
+        },
+        is_pure=False,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
 def putmem_signal_rma(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
     return _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr(""),
                                    _semantic=_semantic)
@@ -963,3 +984,8 @@ def putmem_signal_rma_nbi_warp(dest, source, nbytes, sig_addr, signal, sig_op, p
 def putmem_signal_rma_nbi_block(dest, source, nbytes, sig_addr, signal, sig_op, pe, _semantic=None):
     return _putmem_signal_rma_impl(dest, source, nbytes, sig_addr, signal, sig_op, pe, core.constexpr("_block"),
                                    core.constexpr("_nbi"), _semantic=_semantic)
+
+
+@core.extern
+def team_translate_pe(src_team, pe_in_src_team, dest_team, _semantic=None):
+    return _team_translate_pe(src_team, pe_in_src_team, dest_team, _semantic=_semantic)
