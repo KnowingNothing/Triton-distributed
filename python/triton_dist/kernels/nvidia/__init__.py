@@ -38,6 +38,7 @@ from .low_latency_all_to_all import create_all_to_all_context, fast_all_to_all, 
 from .moe_reduce_rs import create_moe_rs_context
 from .sp_ag_attention_intra_node import fused_sp_ag_attn_intra_node, create_sp_ag_attention_context_intra_node
 from .sp_ag_attention_inter_node import fused_sp_ag_attn_inter_node, create_sp_ag_attention_context_inter_node
+from .gemm_allreduce import create_gemm_ar_context, low_latency_gemm_allreduce_op, create_ll_gemm_ar_context, gemm_allreduce_op
 
 __all__ = [
     "_forward_pull_kernel",
@@ -79,4 +80,8 @@ __all__ = [
     "create_sp_ag_attention_context_intra_node",
     "fused_sp_ag_attn_inter_node",
     "create_sp_ag_attention_context_inter_node",
+    "create_gemm_ar_context",
+    "low_latency_gemm_allreduce_op",
+    "create_ll_gemm_ar_context",
+    "gemm_allreduce_op",
 ]

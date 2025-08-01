@@ -98,6 +98,22 @@ function run_allreduce_testcases() {
   NVSHMEM_DISABLE_CUDA_VMM=0 bash scripts/launch.sh python/triton_dist/test/nvidia/test_allreduce.py --method two_shot_multimem --stress --iters 2 --verify_hang 50
 }
 
+function run_gemm_ar_testcases() {
+  # Skip GEMM AR tests for GPUs with compute capability lower than 9.0
+  sm_version=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader -i 0)
+
+  if echo "$sm_version" | awk '$1 >= 9.0 {exit 0} {exit 1}'; then
+      NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 32 5120 25600 --no-copy-to-local --low-latency
+      NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 32 5120 25600 --check  --low-latency
+      NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 28000 7168 4096 --no-copy-to-local --num_comm_sms 4
+      NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 28000 7168 4096 --check --num_comm_sms 4
+  else
+      echo "Skipping GEMM AR tests for GPU with compute capability lower than 9.0"
+  fi
+
+
+}
+
 # run all cases
 run_unittest_testcases
 run_simt_testcases
@@ -113,3 +129,4 @@ run_moe_reduce_rs_testcases
 run_ep_a2a_testcases
 run_sp_ag_attention_testcases
 run_allreduce_testcases
+run_gemm_ar_testcases

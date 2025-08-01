@@ -175,17 +175,17 @@ def load_v4_u32(ptr, _semantic=None):
 
 @core.extern
 def load_v4_b32(ptr, _semantic=None):
-    return _load_v4_impl(ptr, core.constexpr("b32"), _semantic)
+    return _load_v4_impl(ptr, core.constexpr("b32"), _semantic=_semantic)
 
 
 @core.extern
 def load_v4_s32(ptr, _semantic=None):
-    return _load_v4_impl(ptr, core.constexpr("s32"), _semantic)
+    return _load_v4_impl(ptr, core.constexpr("s32"), _semantic=_semantic)
 
 
 @core.extern
 def load_v2_b64(ptr, _semantic=None):
-    return _load_v2_impl(ptr, core.constexpr("b64"), _semantic)
+    return _load_v2_impl(ptr, core.constexpr("b64"), _semantic=_semantic)
 
 
 @core.extern
