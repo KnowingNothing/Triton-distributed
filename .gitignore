@@ -61,3 +61,7 @@ temp_merge_repo
 conflict_list.txt
 
 dev_output/
+
+# cibuildwheel temp
+wheelhouse/
+setup.cfg

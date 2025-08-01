@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.12)
 
 find_package(
   Python3
-  COMPONENTS Interpreter Development
+  COMPONENTS Interpreter Development.Module
   REQUIRED)
 find_program(PYTHON_EXECUTABLE NAMES python3 python)
 

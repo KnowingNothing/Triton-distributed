@@ -33,7 +33,7 @@ import pybind11
 
 from build_helpers import create_symlink_rel, get_base_dir, get_cmake_dir, softlink_apply_patches, copy_file
 
-from torch.utils.cpp_extension import BuildExtension as TorchBuildExtension
+from setuptools.command.build_ext import build_ext
 
 softlink_apply_patches()
 
@@ -413,7 +413,7 @@ class CMakeExtension(Extension):
         self.path = path
 
 
-def build_rocshmem(cap):
+def build_rocshmem():
     rocshmem_bind_dir = os.path.join(get_base_dir(), "shmem", "rocshmem_bind")
     rocshmem_dir = os.path.join(get_base_dir(), "3rdparty", "rocshmem")
     if not os.path.exists(rocshmem_dir) or len(os.listdir(rocshmem_dir)) == 0:
@@ -427,21 +427,34 @@ def build_rocshmem(cap):
     subprocess.check_call(["bash", f"{rocshmem_bind_dir}/build.sh"] + extra_args)
 
 
+# --- Hardware Detection Functions (using subprocess) ---
+# These functions check for the presence of NVIDIA (CUDA) or AMD (HIP/ROCm)
+# drivers and command-line tools.
+
+
 def _is_cuda_platform():
-    import torch
-    # just follow torch version. no need for GPU card to run CUDA programs
-    return torch.version.cuda is not None
+    """Checks if 'nvidia-smi' is available on the system's PATH."""
+    if shutil.which("nvidia-smi"):
+        print("--- CUDA platform detected (nvidia-smi found) ---")
+        return True
+    else:
+        print("--- CUDA platform NOT detected ---")
+        return False
 
 
 def _is_hip_platform():
-    import torch
-    return torch.version.hip is not None
+    """Checks if 'rocm-smi' is available on the system's PATH."""
+    if shutil.which("rocm-smi"):
+        print("--- HIP/ROCm platform detected (rocm-smi found) ---")
+        return True
+    else:
+        print("--- HIP/ROCm platform NOT detected ---")
+        return False
 
 
 def build_shmem():
-    if _is_hip_platform():
-        import torch
-        build_rocshmem(torch.cuda.get_device_capability())  # (9, 4)
+    if _is_hip_platform() or check_env_flag("TRITON_DISTRIBUTED_BUILD_PYROCSHMEM", "0"):
+        build_rocshmem()  # (9, 4)
 
 
 class SHMEMBuildOnly(Command):
@@ -458,17 +471,17 @@ class SHMEMBuildOnly(Command):
         build_shmem()
 
 
-class CMakeBuild(TorchBuildExtension):
+class CMakeBuild(build_ext):
 
-    user_options = TorchBuildExtension.user_options + \
+    user_options = build_ext.user_options + \
         [('base-dir=', None, 'base directory of Triton')]
 
     def initialize_options(self):
-        TorchBuildExtension.initialize_options(self)
+        build_ext.initialize_options(self)
         self.base_dir = get_base_dir()
 
     def finalize_options(self):
-        TorchBuildExtension.finalize_options(self)
+        build_ext.finalize_options(self)
 
     def run(self):
         # We creates symbolic links for each file in backend separately. Since the nvshmem bitcode is moved to nvidia/lib,
@@ -524,7 +537,7 @@ class CMakeBuild(TorchBuildExtension):
         # lit is used by the test suite
         thirdparty_cmake_args = get_thirdparty_packages([get_llvm_package_info()])
         thirdparty_cmake_args += self.get_pybind11_cmake_args()
-        extdir = os.path.dirname(self.get_ext_fullpath(ext.path))
+        extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.path)))
         wheeldir = os.path.dirname(extdir)
         # create build directories
         if not os.path.exists(self.build_temp):
@@ -771,12 +784,6 @@ def add_link_to_proton():
 
 
 def add_link_to_distributed():
-    for name in ["libtriton_distributed.so", "libtriton_distributed_kernel.so"]:
-        distributed_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "python", "triton", "_C", name))
-        distributed_install_dir = os.path.join(os.path.dirname(__file__), "triton_dist", "_C", name)
-        update_symlink(distributed_install_dir, distributed_dir)
-
     triton_dir = os.path.abspath(
         os.path.join(os.path.dirname(__file__), os.pardir, "3rdparty", "triton", "python", "triton"))
     triton_install_dir = os.path.join(os.path.dirname(__file__), "triton")
