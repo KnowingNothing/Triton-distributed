@@ -468,19 +468,6 @@ class AllGatherGEMMTensorParallelContext:
         nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
         torch.cuda.synchronize()
 
-    def update(self, rank, num_ranks, num_local_ranks=8, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, stages=3,
-               for_correctness=False, ag_stream=None, internode_ag_stream=None):
-        self.rank = rank
-        self.num_ranks = num_ranks
-        self.num_local_ranks = num_local_ranks
-        self.BLOCK_M = BLOCK_M
-        self.BLOCK_N = BLOCK_N
-        self.BLOCK_K = BLOCK_K
-        self.stages = stages
-        self.for_correctness = for_correctness
-        self.ag_stream = ag_stream
-        self.internode_ag_stream = internode_ag_stream
-
     def finailize(self):
         nvshmem_free_tensor_sync(self.symm_workspace)
         nvshmem_free_tensor_sync(self.symm_barrier)
@@ -532,8 +519,7 @@ def create_ag_gemm_context(tensor_A, tensor_B, rank, num_ranks, max_M, num_local
     return ctx
 
 
-def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext = None, rank=None, num_ranks=None, persistent=True,
-            autotune=False, straggler_option=None):
+def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext, persistent=True, autotune=False, straggler_option=None):
     """allgather gemm
     Allgather global matrix A and do matmul with local matrix B, produces local matrix C
 
@@ -557,11 +543,6 @@ def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext = None, rank=None, num
 
     M_per_rank, K = a.shape
     N_per_rank, _ = b.shape
-
-    if ctx is None:
-        assert rank is not None and num_ranks is not None
-        M = M_per_rank * ctx.num_ranks
-        ctx = create_ag_gemm_context(a, b, rank, num_ranks, max_M=M)
 
     assert a.shape[0] * ctx.num_ranks <= ctx.max_M and a.shape[
         1] == ctx.K, f"Shape of tensor_A must not exceed the maxmize M of ctx: tensor_A shape [{a.shape}], ctx shape [{ctx.max_M},{ctx.K}]"

@@ -61,15 +61,6 @@ class GEMMReduceScatterTensorParallelContext:
         self.rs_ctx.finalize()
         nvshmem_free_tensor_sync(self.gemm_out_bufs[self.rs_ctx.local_rank])
 
-    def update(self, rs_stream, output_dtype, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, GROUP_M=8, stages=3):
-        self.rs_stream = rs_stream
-        self.output_dtype = output_dtype
-        self.BLOCK_M = BLOCK_M
-        self.BLOCK_N = BLOCK_N
-        self.BLOCK_K = BLOCK_K
-        self.GROUP_M = GROUP_M
-        self.stages = stages
-
     def get_gemm_out_buf(self, input):
         M, _ = input.shape
         local_rank = self.rs_ctx.local_rank
