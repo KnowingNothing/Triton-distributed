@@ -340,6 +340,7 @@ def allreduce_one_shot_push_intra_node_kernel(
     world_size: tl.constexpr,
     n_elements,
     BLOCK_SIZE: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     thread_idx = tid(0)
     pid = tl.program_id(0)
@@ -354,7 +355,7 @@ def allreduce_one_shot_push_intra_node_kernel(
         tl.store(symm_signal_ptr + offs, 0)
         libshmem_device.barrier_all_block()
 
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
     # all-gather with push
     for peer in range(pid, world_size, num_pid):
@@ -396,6 +397,7 @@ def allreduce_one_shot_tma_push_intra_node_kernel(
     n_elements,
     BLOCK_SIZE_REDUCE_M: tl.constexpr,
     BLOCK_SIZE_REDUCE_N: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     tl.static_assert(input_ptr.dtype == output_ptr.dtype)
     symm_recv_ptr = tl.cast(symm_recv_ptr, input_ptr.dtype)
@@ -410,7 +412,7 @@ def allreduce_one_shot_tma_push_intra_node_kernel(
         offs = tl.arange(0, world_size)
         tl.store(symm_signal_ptr + offs, 0)
         libshmem_device.barrier_all_block()
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
     # all-gather with push
     for peer in range(pid, world_size, num_pid):
@@ -453,6 +455,7 @@ def allreduce_two_shot_push_intra_node_kernel(
     world_size: tl.constexpr,
     n_elements,
     BLOCK_SIZE: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     thread_idx = tid(0)
     pid = tl.program_id(0)
@@ -466,7 +469,7 @@ def allreduce_two_shot_push_intra_node_kernel(
         offs = tl.arange(0, world_size * 2)
         tl.store(symm_signal_ptr + offs, 0)
         libshmem_device.barrier_all_block()
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
     # this is an allgather with push
     if pid < world_size:
@@ -495,7 +498,7 @@ def allreduce_two_shot_push_intra_node_kernel(
         world_size,
         BLOCK_SIZE=BLOCK_SIZE,
     )
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
     symm_signal_ptr += world_size
     # the second shot:
@@ -531,6 +534,7 @@ def allreduce_two_shot_multimem_st_intra_node_kernel(
     world_size,
     n_elements,
     BLOCK_SIZE: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     thread_idx = tid(0)
     pid = tl.program_id(0)
@@ -548,7 +552,7 @@ def allreduce_two_shot_multimem_st_intra_node_kernel(
         offs = tl.arange(0, world_size)
         tl.store(symm_signal_ptr + offs, 0)
         libshmem_device.barrier_all_block()
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
     # this is a allgather with push
     if pid < world_size - 1:
@@ -588,7 +592,7 @@ def allreduce_two_shot_multimem_st_intra_node_kernel(
             multimem_st_b64(mc_ptr + n * 16, val0)
             multimem_st_b64(mc_ptr + n * 16 + 8, val1)
 
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
     if pid == 0:
         libshmem_device.barrier_all_block()
 
@@ -607,6 +611,7 @@ def allreduce_one_shot_multimem_intra_node_kernel(
     WORLD_SIZE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,  # used for memcpy
     HAS_ATOMIC_CAS: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     symm_in_ptr = tl.cast(symm_in_ptr, out_ptr.dtype)
     pid = tl.program_id(0)
@@ -630,7 +635,7 @@ def allreduce_one_shot_multimem_intra_node_kernel(
             barrier_all_intra_node_non_atomic_block(rank, rank, WORLD_SIZE, symm_signal_ptr, phase)
 
     if num_pid != 1:
-        barrier_on_this_grid(grid_barrier_ptr)  # zero_ signal here
+        barrier_on_this_grid(grid_barrier_ptr, use_cooperative)  # zero_ signal here
 
     data_mc_ptr = libshmem_device.remote_mc_ptr(libshmem_device.NVSHMEMX_TEAM_NODE, symm_in_ptr)
     VEC_SIZE = 128 // tl.constexpr(symm_in_ptr.dtype.element_ty.primitive_bitwidth)
@@ -642,7 +647,7 @@ def allreduce_one_shot_multimem_intra_node_kernel(
 
     # wait for all ranks to finish
     if num_pid != 1:
-        barrier_on_this_grid(grid_barrier_ptr)
+        barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
     if pid == 0:
         symm_signal_ptr += WORLD_SIZE * 2
         if thread_idx < WORLD_SIZE and thread_idx != rank:
@@ -652,7 +657,8 @@ def allreduce_one_shot_multimem_intra_node_kernel(
 
 
 @triton.jit(do_not_specialize=["rank"])
-def allreduce_two_shot_multimem_intra_node_kernel(symm_ptr, grid_barrier_ptr, elems, rank, world_size):
+def allreduce_two_shot_multimem_intra_node_kernel(symm_ptr, grid_barrier_ptr, elems, rank, world_size,
+                                                  use_cooperative: tl.constexpr):
     elems_per_rank = elems // world_size
     # each rank do all-reduce for elems_per_rank
     pid = tl.program_id(0)
@@ -662,7 +668,7 @@ def allreduce_two_shot_multimem_intra_node_kernel(symm_ptr, grid_barrier_ptr, el
     VEC_SIZE = 128 // tl.constexpr(symm_ptr.dtype.element_ty.primitive_bitwidth)
     if pid == 0:
         libshmem_device.barrier_all_block()
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
     thread_idx = tid(0)
     block_dim = num_warps() * 32
@@ -671,7 +677,7 @@ def allreduce_two_shot_multimem_intra_node_kernel(symm_ptr, grid_barrier_ptr, el
         multimem_st_b64(data_mc_ptr + idx * VEC_SIZE, pack_b32_v2(val0, val1))
         multimem_st_b64(data_mc_ptr + idx * VEC_SIZE + VEC_SIZE // 2, pack_b32_v2(val2, val3))
 
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
     if pid == 0:
         libshmem_device.barrier_all_block()
 
@@ -718,6 +724,7 @@ def allreduce_one_shot_push_intra_node(
         num_elem,
         BLOCK_SIZE=block_size,
         num_warps=num_warps,
+        use_cooperative=True,
         **launch_cooperative_grid_options(),
     )
     return output
@@ -781,6 +788,7 @@ def allreduce_two_shot_push_intra_node(
         num_elem,
         BLOCK_SIZE=block_size,
         num_warps=num_warps,
+        use_cooperative=True,
         **launch_cooperative_grid_options(),
     )
     return output
@@ -830,6 +838,7 @@ def allreduce_one_shot_tma_push_intra_node(ctx: AllReduceContext, x: torch.Tenso
         BLOCK_SIZE_REDUCE_M=block_size_m,
         BLOCK_SIZE_REDUCE_N=block_size_n,
         num_warps=num_warps,
+        use_cooperative=True,
         **launch_cooperative_grid_options(),
     )
     return output
@@ -876,6 +885,7 @@ def allreduce_one_shot_multimem_intra_node(
         WORLD_SIZE=ctx.world_size,
         BLOCK_SIZE=num_warps * 32 * 16 // x.itemsize,
         num_warps=num_warps,
+        use_cooperative=True,
         **launch_cooperative_grid_options(),
     )
     return output
@@ -1007,6 +1017,7 @@ def allreduce_two_shot_multimem_intra_node(
         ctx.rank,
         ctx.world_size,
         num_warps=num_warps,
+        use_cooperative=True,
         **launch_cooperative_grid_options(),
     )
     if output is None:
@@ -1077,6 +1088,7 @@ def allreduce_two_shot_multimem_st_intra_node(
         num_elem,
         BLOCK_SIZE=block_size,
         num_warps=num_warps,
+        use_cooperative=True,
         **launch_cooperative_grid_options(),
     )
     if output is None:

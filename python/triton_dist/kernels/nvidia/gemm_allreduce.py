@@ -28,11 +28,8 @@ from typing import List
 import triton
 import triton.language as tl
 import triton_dist.language as dl
-from triton_dist.utils import (
-    nvshmem_barrier_all_on_stream,
-    nvshmem_create_tensor,
-    nvshmem_free_tensor_sync,
-)
+from triton_dist.utils import (nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_free_tensor_sync,
+                               launch_cooperative_grid_options)
 from triton_dist.language.extra import libshmem_device
 from triton.language.extra.cuda.utils import num_warps
 from triton.language.extra.cuda.language_extra import (
@@ -259,6 +256,7 @@ def kernel_fused_gemm_allreduce(
     NUM_COMM_SMS: tl.constexpr,  #
     USE_MULTIMEM_ST: tl.constexpr,  #
     FUSE_OUTPUT_CP: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     global_pid = tl.program_id(axis=0)
     if global_pid < NUM_COMM_SMS:
@@ -310,7 +308,7 @@ def kernel_fused_gemm_allreduce(
             if thread_idx == 0:
                 st(gemm_barrier_ptr + gemm_barrier_idx, 1, scope="gpu", semantic="release")
 
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
     # if USE_MULTIMEM_ST == false, the result
     if FUSE_OUTPUT_CP and USE_MULTIMEM_ST:
@@ -531,28 +529,15 @@ def low_latency_gemm_allreduce_op(ctx: LLGemmARContext, a, b, gemm_config: trito
                                             triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"])
                                             ), )
     kernel_fused_gemm_allreduce[grid](
-        a,
-        b,
-        symm_c,
-        symm_ar_out,
-        ar_out,  #
-        gemm_barrier,
-        multi_st_barrier,
-        grid_barrier,  #
-        M,
-        N,
-        K,  #
-        a.stride(0),
-        a.stride(1),  #
-        b.stride(0),
-        b.stride(1),  #
-        symm_c.stride(0),
-        symm_c.stride(1),  #
+        a, b, symm_c, symm_ar_out, ar_out,  #
+        gemm_barrier, multi_st_barrier, grid_barrier,  #
+        M, N, K,  #
+        a.stride(0), a.stride(1),  #
+        b.stride(0), b.stride(1),  #
+        symm_c.stride(0), symm_c.stride(1),  #
         **gemm_config.all_kwargs(),  #
-        NUM_COMM_SMS=NUM_COMM_SMS,
-        USE_MULTIMEM_ST=USE_MULTIMEM_ST,
-        FUSE_OUTPUT_CP=copy_to_local,
-    )
+        NUM_COMM_SMS=NUM_COMM_SMS, USE_MULTIMEM_ST=USE_MULTIMEM_ST, FUSE_OUTPUT_CP=copy_to_local, use_cooperative=True,
+        **launch_cooperative_grid_options())
     if USE_MULTIMEM_ST and not copy_to_local:
         return symm_ar_out.reshape(-1)[:M * N].reshape(M, N)
     return ar_out

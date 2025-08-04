@@ -310,6 +310,7 @@ def reduce_topk_reduce_scatter_a2a_intra_node_kernel(
     TOPK: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     """
     output = reduce_scatter(symm_buffer)
@@ -344,10 +345,10 @@ def reduce_topk_reduce_scatter_a2a_intra_node_kernel(
             )
 
     # for intra-node, you may replace this with reduce flag to avoid nvshmem_barrier_block. which may cost a lot of registers and a little higher latency
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
     if pid == 0:
         libshmem_device.barrier_all_block()
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
     # reduce symm_buffer_n_ptr to output_n_ptr
     blocks_n_per_chunk = tl.cdiv(N_per_chunk, BLOCK_SIZE_N)
@@ -510,6 +511,7 @@ def reduce_topk_reduce_scatter_a2a_intra_node(grouped_gemm_out: torch.Tensor, ct
         BLOCK_SIZE_N=BLOCK_SIZE_N,  #N_per_chunk,
         N_CHUNKS=n_chunks,
         num_warps=32,
+        use_cooperative=True,
         **launch_cooperative_grid_options(),
     )
     return out

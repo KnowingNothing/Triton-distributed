@@ -58,7 +58,7 @@ jobs:
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
     runs-on:
-      cluster: triton_distributed_nvidia_121
+      cluster: gpu-h100
       docker:
         shared-memory: 1024
 
@@ -115,7 +115,7 @@ jobs:
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
     runs-on:
-      cluster: triton_distributed_nvidia_121
+      cluster: gpu-h100
       docker:
         shared-memory: 1024
 
@@ -211,7 +211,7 @@ jobs:
           - echo "e2e consumes too much memory. skip on L20 machine"
       - name: unit tests
         commands:
-          - bash -x .codebase/scripts/nvidia/run_unittest.sh
+          - L20_NO_RUN=1 bash -x .codebase/scripts/nvidia/run_unittest.sh
 
   triton-compile-nvcr-io-nvidia-torch-25.06-py3:
     image: hub.byted.org/compile/nvcr.io.nvidia_pytorch:25.06-py3-byted-20250718

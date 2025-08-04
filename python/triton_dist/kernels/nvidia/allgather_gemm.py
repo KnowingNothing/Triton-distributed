@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from triton_dist.kernels.nvidia.common_ops import barrier_all_intra_node_non_atomic
 from triton_dist.kernels.nvidia.allgather import AllGatherMethod, cp_engine_producer_all_gather_intra_node, get_auto_all_gather_method, cp_engine_producer_all_gather_inter_node
 from triton_dist.kernels.nvidia.ag_gemm_threadblock_swizzle import threadblock_swizzle_allgather_gemm_kernel
-from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors, nvshmem_free_tensor_sync
+from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors, nvshmem_free_tensor_sync, launch_cooperative_grid_options
 
 
 @triton.jit(do_not_specialize=["rank"])
@@ -53,22 +53,26 @@ def copy_kernel(
     BLOCK_SIZE_N: tl.constexpr,
 ):
     sm_id = tl.program_id(axis=0)
-    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-
-    pid_m = sm_id // num_pid_n
-    pid_n = sm_id % num_pid_n
+    num_sms = tl.num_programs(axis=0)
 
     offs_m = tl.arange(0, BLOCK_SIZE_M)
     offs_n = tl.arange(0, BLOCK_SIZE_N)
-    data_ptr = local_buf_ptr + (pid_m * BLOCK_SIZE_M + offs_m[:, None]) * stride_local_m + (
-        pid_n * BLOCK_SIZE_N + offs_n[None, :]) * stride_local_n
-    dst_ptr = global_buf_ptr + (rank * M_per_rank + pid_m * BLOCK_SIZE_M + offs_m[:, None]) * stride_global_m + (
-        pid_n * BLOCK_SIZE_N + offs_n[None, :]) * stride_global_n
-    mask_data = (pid_m * BLOCK_SIZE_M + offs_m[:, None] < M_per_rank) & (pid_n * BLOCK_SIZE_N + offs_n[None, :] < N)
-    mask_dst = (pid_m * BLOCK_SIZE_M + offs_m[:, None] < M_per_rank) & (pid_n * BLOCK_SIZE_N + offs_n[None, :] < N)
+    num_iters_m = tl.cdiv(M_per_rank, BLOCK_SIZE_M)
+    num_iters_n = tl.cdiv(N, BLOCK_SIZE_N)
+    num_iters = num_iters_m * num_iters_n
 
-    data = tl.load(data_ptr, mask=mask_data)
-    tl.store(dst_ptr, data, mask=mask_dst)
+    for i in range(sm_id, num_iters, num_sms):
+        pid_m = i // num_iters_n
+        pid_n = i % num_iters_n
+        data_ptr = local_buf_ptr + (pid_m * BLOCK_SIZE_M + offs_m[:, None]) * stride_local_m + (
+            pid_n * BLOCK_SIZE_N + offs_n[None, :]) * stride_local_n
+        dst_ptr = global_buf_ptr + (rank * M_per_rank + pid_m * BLOCK_SIZE_M + offs_m[:, None]) * stride_global_m + (
+            pid_n * BLOCK_SIZE_N + offs_n[None, :]) * stride_global_n
+        mask_data = (pid_m * BLOCK_SIZE_M + offs_m[:, None] < M_per_rank) & (pid_n * BLOCK_SIZE_N + offs_n[None, :] < N)
+        mask_dst = (pid_m * BLOCK_SIZE_M + offs_m[:, None] < M_per_rank) & (pid_n * BLOCK_SIZE_N + offs_n[None, :] < N)
+
+        data = tl.load(data_ptr, mask=mask_data)
+        tl.store(dst_ptr, data, mask=mask_dst)
 
 
 @triton.jit(do_not_specialize=["local_rank", "rank", "num_ranks", "flag_value"])
@@ -89,25 +93,33 @@ def copy_and_barrier_all_intra_node_kernel(
     flag_value,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
-    barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_sync_ptr, flag_value)
+    barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_sync_ptr, flag_value, use_cooperative)
     copy_kernel(rank, local_buf_ptr, global_buf_ptr, M_per_rank, N, stride_local_m, stride_local_n, stride_global_m,
                 stride_global_n, BLOCK_SIZE_M, BLOCK_SIZE_N)
     thread_idx = tid(0)
     if thread_idx < num_ranks:  # set symm barrier
         st(symm_barrier_ptr + thread_idx, 1 if thread_idx == rank else 0)
-    barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_sync_ptr, flag_value + 1)
+    barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_sync_ptr, flag_value + 1, use_cooperative)
 
 
 def local_copy_and_barrier_all(local_rank, rank, num_ranks, local_data, global_data, comm_buf, barrier_ptr, M_per_rank,
-                               N, phase, is_internode: bool = False):
+                               N, phase, is_internode: bool = False, use_cooperative: bool = True):
     if not is_internode:
-        grid = lambda META: (triton.cdiv(M_per_rank, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
+        grid = lambda META: (min(
+            triton.cdiv(M_per_rank, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+            torch.cuda.get_device_properties("cuda").multi_processor_count), )
+        additional_options = {}
+        CPY_BLOCKS = [128, 256]
+
+        if use_cooperative:
+            additional_options.update(launch_cooperative_grid_options())
         copy_and_barrier_all_intra_node_kernel[grid](local_rank, rank, num_ranks, local_data,
                                                      global_data, barrier_ptr, comm_buf, M_per_rank, N,
                                                      local_data.stride(0), local_data.stride(1), global_data.stride(0),
-                                                     global_data.stride(1), phase, 128, 256)
-
+                                                     global_data.stride(1), phase, CPY_BLOCKS[0], CPY_BLOCKS[1],
+                                                     use_cooperative, **additional_options)
     else:
         nvshmem_barrier_all_on_stream()
         barrier_ptr.fill_(0)
@@ -519,7 +531,8 @@ def create_ag_gemm_context(tensor_A, tensor_B, rank, num_ranks, max_M, num_local
     return ctx
 
 
-def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext, persistent=True, autotune=False, straggler_option=None):
+def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext, persistent=True, autotune=False, straggler_option=None,
+            use_cooperative=True):
     """allgather gemm
     Allgather global matrix A and do matmul with local matrix B, produces local matrix C
 
@@ -553,7 +566,8 @@ def ag_gemm(a, b, ctx: AllGatherGEMMTensorParallelContext, persistent=True, auto
     C = torch.empty([ctx.num_ranks * M_per_rank, N_per_rank], dtype=a.dtype, device=a.device)
 
     local_copy_and_barrier_all(ctx.local_rank, ctx.rank, ctx.num_ranks, a, ctx.symm_workspace, ctx.symm_comm_buf,
-                               ctx.symm_barrier, M_per_rank, K, ctx.phase, is_internode=ctx.is_multinode)
+                               ctx.symm_barrier, M_per_rank, K, ctx.phase, is_internode=ctx.is_multinode,
+                               use_cooperative=use_cooperative)
     ctx.phase += 2
 
     rowise_ag_gemm_dispatcher(a, b, C, ctx, persistent=persistent, autotune=autotune, straggler_option=straggler_option)

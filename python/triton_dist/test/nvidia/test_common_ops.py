@@ -87,7 +87,7 @@ def test_barrier_all_intra_node_non_atomic():
         _random_sleep()
         # print(f"iter {n}", flush=True)
         barrier_all_intra_node_non_atomic[(random.randint(1, 1024), )](LOCAL_RANK, RANK, LOCAL_WORLD_SIZE, symm_flag,
-                                                                       n + 1)
+                                                                       n + 1, use_cooperative=True)
 
     print("✅ barrier_all_intra_node_non_atomic passed")
     nvshmem_free_tensor_sync(symm_flag)

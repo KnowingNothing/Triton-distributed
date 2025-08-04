@@ -55,6 +55,7 @@ def get_args():
     parser.add_argument("--persistent", action=argparse.BooleanOptionalAction,
                         default=torch.cuda.get_device_capability() >= (9, 0))
     parser.add_argument("--profile", default=False, action="store_true")
+    parser.add_argument("--local_world_size", default=8, type=int)
 
     args = parser.parse_args()
     return args
@@ -73,8 +74,8 @@ def test_ag_gemm(args, autotune=False):
     dtype = torch.float16
     rank = args.rank
     num_ranks = args.num_ranks
-    M = 999 * num_ranks
-    N = 1024
+    M = 4091 * num_ranks
+    N = 5120
     K = 1024
 
     assert M % num_ranks == 0
@@ -86,8 +87,7 @@ def test_ag_gemm(args, autotune=False):
     B = torch.randn([N_per_rank, K], dtype=dtype, device=device)
 
     debug = args.debug
-    LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
-    ctx = create_ag_gemm_context(A, B, rank, num_ranks, num_local_ranks=LOCAL_WORLD_SIZE, max_M=M,
+    ctx = create_ag_gemm_context(A, B, rank, num_ranks, num_local_ranks=args.local_world_size, max_M=M,
                                  for_correctness=debug)
     if rank == 0:
         print(f"all gather with: {ctx.all_gather_method}")

@@ -34,7 +34,13 @@ function run_aot_testcases() {
 
 function run_ag_gemm_testcases() {
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness
+if [ -z "$L20_NO_RUN" ]; then
+  bash scripts/launch.sh --nproc_per_node 2 python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness --local_world_size 2
+fi
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness_autotune
+if [ -z "$L20_NO_RUN" ]; then
+  bash scripts/launch.sh --nproc_per_node 4 python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness_autotune --local_world_size 2
+fi
 }
 
 function run_gemm_rs_testcases() {
@@ -110,8 +116,11 @@ function run_gemm_ar_testcases() {
   else
       echo "Skipping GEMM AR tests for GPU with compute capability lower than 9.0"
   fi
+}
 
 
+function run_utils_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_utils.py --case max_occupancy
 }
 
 # run all cases
@@ -130,3 +139,4 @@ run_ep_a2a_testcases
 run_sp_ag_attention_testcases
 run_allreduce_testcases
 run_gemm_ar_testcases
+run_utils_testcases

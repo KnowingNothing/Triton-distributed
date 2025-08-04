@@ -54,7 +54,7 @@ def _is_gpu_master():
 
 
 @triton.jit
-def barrier_on_this_grid(ptr):
+def unsafe_barrier_on_this_grid(ptr):
     """ triton implementation of cooperative_group::thid_grid().sync()
     WARNING: use with care. better launch triton with launch_cooperative_grid=True to throw an explicit error instead of hang without notice.
     """
@@ -130,6 +130,14 @@ def cooperative_barrier_on_this_grid():
     __syncthreads()
 
 
+@triton.jit
+def barrier_on_this_grid(ptr, use_cooperative: tl.constexpr):
+    if use_cooperative:
+        cooperative_barrier_on_this_grid()
+    else:
+        unsafe_barrier_on_this_grid(ptr)
+
+
 @triton.jit(do_not_specialize=["local_rank", "rank", "local_world_size"])
 def barrier_all_intra_node_atomic_cas_block(local_rank, rank, local_world_size, symm_flag_ptr):
     """ NOTE: this function should only be called with atomic support. memory over PCI-e does not support atomic r/w. DON'T use this function on such platforms.
@@ -175,7 +183,8 @@ def barrier_all_intra_node_non_atomic_block(local_rank, rank, num_ranks, symm_fl
 
 
 @triton.jit(do_not_specialize=["local_rank", "rank", "num_ranks", "target_value"])
-def barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_flags, target_value):
+def barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_flags, target_value,
+                                      use_cooperative: tl.constexpr):
     """ symm_flags is expected to:
         1. of int32 dtype
         2. has at least num_ranks * 2 + 1 elements
@@ -190,13 +199,14 @@ def barrier_all_intra_node_non_atomic(local_rank, rank, num_ranks, symm_flags, t
         _barrier_all_intra_node_non_atomic_once_block(local_rank, rank, num_ranks, symm_flags, target_value)
 
     # barrier all CTAs
-    barrier_on_this_grid(symm_flags + 2 * num_ranks)
+    barrier_on_this_grid(symm_flags + 2 * num_ranks, use_cooperative)
 
     # next iter
     if pid == 0:
         _barrier_all_intra_node_non_atomic_once_block(local_rank, rank, num_ranks, symm_flags + num_ranks, target_value)
 
-    barrier_on_this_grid(symm_flags + 2 * num_ranks)
+    # barrier all CTAs
+    barrier_on_this_grid(symm_flags + 2 * num_ranks, use_cooperative)
 
 
 class BarrierAllContext:

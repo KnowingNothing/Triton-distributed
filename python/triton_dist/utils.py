@@ -1036,3 +1036,13 @@ def launch_cooperative_grid_options():
         return {"launch_cooperative_grid": True}
 
     return {}
+
+
+def cuda_occupancy_max_activate_blocks_per_multiprocessor(triton_func, num_warps, *func_args, **func_kwargs):
+
+    compiled = triton_func.run(*func_args, grid=(1, ), warmup=True, **func_kwargs)
+    compiled._init_handles()
+    ret = cudart.cudaOccupancyMaxActiveBlocksPerMultiprocessor(compiled.function, num_warps * 32,
+                                                               compiled.metadata.shared)
+    CUDA_CHECK(ret[0])
+    return ret[1]

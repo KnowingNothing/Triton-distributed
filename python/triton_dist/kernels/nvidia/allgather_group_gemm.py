@@ -51,13 +51,14 @@ def _copy_and_reset_and_barrier_all_kernel(
     NUM_RANKS: tl.constexpr,
     grid_barrier_ptr,
     BLOCK_SIZE: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     pid = tl.program_id(0)
     npid = tl.num_programs(0)
     # barrier_all
     if pid == 0:
         libshmem_device.barrier_all_block()
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
     # copy data
     num_blocks = tl.cdiv(N, BLOCK_SIZE)
@@ -77,7 +78,7 @@ def _copy_and_reset_and_barrier_all_kernel(
     # barrier_all
     if pid == 0:
         libshmem_device.barrier_all_block()
-    barrier_on_this_grid(grid_barrier_ptr)
+    barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
 
 @triton.jit
@@ -328,6 +329,7 @@ class MoEAllGatherGroupGEMMTensorParallelContext:
             self.grid_barrier,
             BLOCK_SIZE=1024 * 16 // local_data.itemsize,
             num_warps=32,
+            use_cooperative=True,
             **launch_cooperative_grid_options(),
         )
 

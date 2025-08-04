@@ -335,6 +335,7 @@ def reduce_scatter_ring_push_1d_intra_node_kernel(
     output_ptr,
     elems_per_rank,
     BLOCK_SIZE: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     to_rank = (rank - 1 + num_ranks) % num_ranks
     peer_reduce_ptr = dl.symm_at(symm_reduce_ptr, to_rank)
@@ -367,7 +368,7 @@ def reduce_scatter_ring_push_1d_intra_node_kernel(
             add_continuous_kernel(src_ptr, reduce_buffer_ptr, output_ptr if stage == num_ranks - 1 else dst_ptr,
                                   elems_per_rank, BLOCK_SIZE)  # directly reduce to output
 
-        barrier_on_this_grid(grid_barrier_ptr)
+        barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
         # set flag only after all CTAs done memcpy/reduce
         if pid == 0 and thread_idx == 0:
             st(peer_symm_reduce_flag_ptr + segment, 1, semantic="release", scope="sys")
@@ -404,6 +405,7 @@ def reduce_scatter_ring_push_1d_intra_node_sm(
         input_tensor.numel() // num_ranks,
         BLOCK_SIZE=32 * num_warps * 16 // input_tensor.dtype.itemsize,  # each thread copy a uint4
         num_warps=num_warps,
+        use_cooperative=True,
         **launch_cooperative_grid_options(),
     )
     return output
@@ -421,6 +423,7 @@ def reduce_scatter_ring_push_1d_intra_node_rma_kernel(
     output_ptr,
     elems_per_rank,
     BLOCK_SIZE: tl.constexpr,
+    use_cooperative: tl.constexpr,
 ):
     """ why this kernel, what's the difference with reduce_scatter_ring_push_1d_intra_node_kernel?
 
@@ -440,7 +443,8 @@ def reduce_scatter_ring_push_1d_intra_node_rma_kernel(
     if not use_rma:
         return reduce_scatter_ring_push_1d_intra_node_kernel(rank, num_ranks, symm_input_ptr, symm_input_flag_ptr,
                                                              symm_reduce_ptr, symm_reduce_flag_ptr, grid_barrier_ptr,
-                                                             output_ptr, elems_per_rank, BLOCK_SIZE=BLOCK_SIZE)
+                                                             output_ptr, elems_per_rank, BLOCK_SIZE=BLOCK_SIZE,
+                                                             use_cooperative=use_cooperative)
 
     for stage in range(num_ranks):
         segment = (rank + stage + 1) % num_ranks
@@ -462,7 +466,7 @@ def reduce_scatter_ring_push_1d_intra_node_rma_kernel(
 
             add_continuous_kernel(src_ptr, dst_ptr, output_ptr if stage == num_ranks - 1 else dst_ptr, elems_per_rank,
                                   BLOCK_SIZE)  # directly reduce to output
-            barrier_on_this_grid(grid_barrier_ptr)
+            barrier_on_this_grid(grid_barrier_ptr, use_cooperative)
 
         if stage != num_ranks - 1 and pid == 0:
             # set flag only after all CTAs done memcpy/reduce
@@ -490,18 +494,10 @@ def reduce_scatter_ring_push_1d_intra_node_sm_rma(
         (M_per_rank, _), dtype=input_tensor.dtype, device=input_tensor.device)
     num_warps = 32
     reduce_scatter_ring_push_1d_intra_node_kernel[(num_sms, )](
-        rank,
-        num_ranks,
-        input_tensor,
-        input_flag,
-        symm_reduce_tensor,
-        symm_reduce_flag,
-        grid_barrier,
-        output,
+        rank, num_ranks, input_tensor, input_flag, symm_reduce_tensor, symm_reduce_flag, grid_barrier, output,
         input_tensor.numel() // num_ranks,
         BLOCK_SIZE=32 * num_warps * 16 // input_tensor.dtype.itemsize,  # each thread copy a uint4
-        num_warps=num_warps,
-    )
+        num_warps=num_warps, use_cooperative=True, **launch_cooperative_grid_options())
     return output
 
 
