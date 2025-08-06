@@ -29,6 +29,7 @@ from datetime import datetime
 import logging
 import numpy as np
 import random
+import os
 
 if torch.version.cuda:
     PLATFORM = 'nvidia'
@@ -46,6 +47,9 @@ class MyLogger:
         self.logger.setLevel(logging.INFO)
         self.logger.addHandler(logging.StreamHandler())
         self.logger.propagate = False
+        if os.getenv('TRITON_DIST_DEBUG', '').lower() in ('true', '1', 't'):
+            self.logger.setLevel(logging.DEBUG)
+            self.logger.debug("Debug logging enabled")
 
     def log(self, msg, level="info"):
         if level == "info":
@@ -56,6 +60,8 @@ class MyLogger:
             self.logger.error(colored(f"> [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", "red"))
         elif level == "success":
             self.logger.info(colored(f"> [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", "green"))
+        elif level == "debug":
+            self.logger.debug(colored(f"> [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", "magenta"))
         else:
             raise ValueError(
                 colored(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Unknown log level: {level}", "red"))

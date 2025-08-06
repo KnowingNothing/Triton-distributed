@@ -1,0 +1,220 @@
+################################################################################
+#
+# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+################################################################################
+from typing import Dict, Type, List, Any, Tuple, Union
+from dataclasses import dataclass, field
+from .config import ConfigBase
+import torch
+
+# To satisfy the alignment requirement of tensor data_ptr, MAX_NUM_TENSOR_DIMS must be an even number.
+MAX_NUM_TENSOR_DIMS = 4
+
+UNUSED_KEY = -1
+
+
+class CodeGenKey:
+
+    def __init__(self, task_type: int, layer_id: int = UNUSED_KEY, task_id: int = UNUSED_KEY):
+        self.task_type = task_type
+        self.layer_id = layer_id
+        self.task_id = task_id
+        self._validate()
+
+    def _validate(self):
+        is_layer_invalid = (self.layer_id == UNUSED_KEY)
+        is_task_invalid = (self.task_id == UNUSED_KEY)
+        if is_layer_invalid != is_task_invalid and self.task_type != UNUSED_KEY:
+            raise ValueError(f"illegal codegen key {str(self)}")
+
+    def only_use_task_type(self):
+        return self.layer_id == UNUSED_KEY and self.task_id == UNUSED_KEY
+
+    def __eq__(self, other):
+        if not isinstance(other, CodeGenKey):
+            return False
+
+        if self.task_type == other.task_type:
+            if UNUSED_KEY in {self.layer_id, other.layer_id} and self.layer_id != other.layer_id:
+                raise ValueError(f"compare with illegal codegen key x = {str(self)}, y = {str(other)}")
+
+        return ((self.task_type == other.task_type) and (self.layer_id == other.layer_id)
+                and (self.task_id == other.task_id))
+
+    def __hash__(self):
+        return hash((
+            self.task_type,
+            self.layer_id if self.layer_id != UNUSED_KEY else None,
+            self.task_id if self.task_id != UNUSED_KEY else None,
+        ))
+
+    def __repr__(self):
+        return f"CodeGenKey({self.task_type}, {self.layer_id}, {self.task_id})"
+
+
+class TaskIDManager:
+    _type_id_counter: int = 0
+    _type_id_map: Dict[Type, int] = {}
+    _task_id_map: Dict[int, int] = {}
+
+    @classmethod
+    def get_task_type_id(cls, task_cls: Type) -> int:
+        if task_cls not in cls._type_id_map:
+            if cls._type_id_counter >= 2**31 - 1:
+                raise OverflowError("task_type_id exceeded int32 range")
+
+            cls._type_id_map[task_cls] = cls._type_id_counter
+            cls._type_id_counter += 1
+        return cls._type_id_map[task_cls]
+
+    @classmethod
+    def get_task_id(cls, layer_id: int) -> int:
+        # Get a unique task_id for a specific layer_id
+        current = cls._task_id_map.get(layer_id, 0)
+        if current >= 2**31 - 1:
+            raise OverflowError(f"task_id exceeded int32 range for layer {layer_id}")
+
+        cls._task_id_map[layer_id] = current + 1
+        return current
+
+    @classmethod
+    def reset_task_ids(cls):
+        cls._task_id_map.clear()
+
+    @classmethod
+    def reset_all_ids(cls):
+        cls._type_id_counter = 0
+        cls._type_id_map.clear()
+        cls._task_id_map.clear()
+
+
+@dataclass
+class TaskDependency:
+    layer_id: int
+    task_id: int
+    start_tiles: int  # include
+    end_tiles: int  # exclude
+
+    def __init__(self, layer_id=-1, task_id=-1, start_tiles=0, end_tiles=0):
+        self.layer_id = layer_id
+        self.task_id = task_id
+        self.start_tiles = start_tiles
+        self.end_tiles = end_tiles
+
+
+@dataclass
+class OutputTilingDesc:
+    tile_sizes: Union[Tuple[int], None]
+
+
+@dataclass
+class InputDependencyDesc:
+    input: 'torch.Tensor'
+    start_indices: Tuple[int]
+    data_sizes: Tuple[int]
+    # only require_full == false, start_indices/data_sizes are valid
+    require_full: bool = True
+
+    def __init__(self, input, require_full=True, start_indices: Tuple[int] = (), data_sizes: Tuple[int] = ()):
+        self.input = input
+        self.require_full = require_full
+        if require_full:
+            self.start_indices = (0, ) * len(input.shape)
+            self.data_sizes = input.shape
+        else:
+            self.start_indices = start_indices
+            self.data_sizes = data_sizes
+
+
+@dataclass
+class TaskBase:
+    layer_id: int
+    task_id: int
+    tile_id_or_start: int
+    num_tiles: int
+    config: ConfigBase  # kernel config (e.g. BLOCK_SIZE/NUM_STAGE)
+    dependency: TaskDependency
+    io_tensors: List[List['torch.Tensor']]  # inputs and outputs
+    extra_params: Dict[str, Any]
+    inputs_dep: Dict['torch.Tensor', InputDependencyDesc] = field(default_factory=dict)
+    outs_tile_mapping: Dict['torch.Tensor', OutputTilingDesc] = field(
+        default_factory=dict
+    )  # tasks belong to same op has the same `outs_tile_mapping`, only used for build dependency
+
+    @classmethod
+    def get_task_type_id(cls) -> int:
+        return TaskIDManager.get_task_type_id(cls)
+
+    @classmethod
+    def get_codegen_key(cls, layer_id: int, task_id: int) -> CodeGenKey:
+        return CodeGenKey(task_type=cls.get_task_type_id(), layer_id=layer_id, task_id=task_id)
+
+    def io_to_tuple(self):
+        io_tuple = tuple()
+        assert len(self.io_tensors) == 2
+        all_tensors = self.io_tensors[0] + self.io_tensors[1]
+        for tensor in all_tensors:
+            data_ptr = tensor.data_ptr()
+            ptr_high = (data_ptr >> 32) & 0xFFFFFFFF
+            ptr_low = data_ptr & 0xFFFFFFFF
+
+            shape = list(tensor.shape)
+            assert MAX_NUM_TENSOR_DIMS >= len(shape)
+            padded_shape = shape + [1] * (MAX_NUM_TENSOR_DIMS - len(shape))
+
+            tensor_tuple = (ptr_low, ptr_high) + tuple(padded_shape)
+            assert len(tensor_tuple) % 2 == 0, "tensor data_ptr alignemnt"
+            io_tuple += tensor_tuple
+        return io_tuple
+
+    def dependency_to_tuple(self):
+        return (self.dependency.layer_id, self.dependency.task_id, self.dependency.start_tiles,
+                self.dependency.end_tiles)
+
+    def extra_params_to_tuple(self) -> Tuple[int]:
+        assert len(self.extra_params) == 0
+        return ()
+
+    def encoding(self) -> Tuple[int]:
+        """
+        task_type | layer_id | task_id | tile_id_or_start | dependency | io_tensors | extra_params
+        """
+        entrys = []
+        entrys.append(self.get_task_type_id())
+        entrys.append(self.layer_id)
+        entrys.append(self.task_id)
+        entrys.append(self.tile_id_or_start)
+        entrys += self.dependency_to_tuple()
+        assert len(entrys) % 2 == 0, "tensor data_ptr alignemnt"
+        entrys += self.io_to_tuple()
+        entrys += self.extra_params_to_tuple()
+        for x in entrys:
+            if not isinstance(x, (int, )):
+                raise ValueError(f"got unexpected value {x}")
+
+        return tuple(entrys)
+
+
+@dataclass
+class DeviceProp:
+    NUM_SMS: int
