@@ -362,13 +362,13 @@ def create_ag_gemm_intra_node_context(max_M, N, K, input_dtype, output_dtype, ra
     M_per_rank = max_M // num_ranks
     assert M_per_rank % M_PER_CHUNK == 0
     dtype = input_dtype
-    workspaces = pyrocshmem.hipipc_create_tensor_list(tp_group, [max_M, K], dtype)
+    workspaces = pyrocshmem.rocshmem_create_tensor_list_intra_node([max_M, K], dtype)
 
     m_chunk_num = (max_M + M_PER_CHUNK - 1) // M_PER_CHUNK
-    barriers = pyrocshmem.hipipc_create_tensor_list(tp_group, [m_chunk_num], torch.int32)
+    barriers = pyrocshmem.rocshmem_create_tensor_list_intra_node([m_chunk_num], torch.int32)
     barriers[rank].fill_(0)
 
-    comm_bufs = pyrocshmem.hipipc_create_tensor_list(tp_group, [num_ranks], torch.int32)
+    comm_bufs = pyrocshmem.rocshmem_create_tensor_list_intra_node([num_ranks], torch.int32)
     comm_bufs[rank].fill_(0)
     comm_buf_ptr = torch.tensor([t.data_ptr() for t in comm_bufs], device=torch.cuda.current_device(),
                                 requires_grad=False)

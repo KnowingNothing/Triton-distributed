@@ -33,6 +33,7 @@ import numpy as np
 
 from functools import partial
 
+import pyrocshmem
 from triton_dist.utils import (
     generate_data,
     get_torch_prof_ctx,
@@ -177,6 +178,7 @@ if __name__ == "__main__":
 
     torch.cuda.synchronize()
     torch.distributed.barrier()
+    pyrocshmem.init_rocshmem_by_uniqueid(TP_GROUP)
 
     input_dtype = DTYPE_MAP[args.dtype]
     output_dtype = input_dtype
@@ -264,4 +266,5 @@ if __name__ == "__main__":
     dist_print(f"dist-triton #{RANK}", dist_triton_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
     dist_print(f"torch #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
 
+    pyrocshmem.rocshmem_finalize()
     torch.distributed.destroy_process_group()

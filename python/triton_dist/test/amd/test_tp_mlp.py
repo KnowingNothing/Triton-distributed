@@ -30,6 +30,7 @@ import torch.distributed
 from functools import partial
 from transformers import AutoModelForCausalLM
 
+import pyrocshmem
 import triton
 from triton_dist.layers.amd.tp_mlp import TP_MLP
 from triton_dist.utils import perf_func, dist_print, group_profile
@@ -124,6 +125,7 @@ if __name__ == "__main__":
     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
+    pyrocshmem.init_rocshmem_by_uniqueid(TP_GROUP)
     current_stream = torch.cuda.current_stream()
     torch.cuda.synchronize()
     DTYPE = DTYPE_MAP[args.dtype]
@@ -283,4 +285,5 @@ if __name__ == "__main__":
         torch.cuda.synchronize()
         torch.distributed.barrier(TP_GROUP)
 
+    pyrocshmem.rocshmem_finalize()
     torch.distributed.destroy_process_group()

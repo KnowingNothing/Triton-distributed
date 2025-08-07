@@ -28,6 +28,7 @@ import triton
 import triton.language as tl
 from triton.language.extra.hip import libdevice
 from typing import List
+
 import pyrocshmem
 from triton_dist.kernels.amd.common_ops import barrier_all_on_stream
 
@@ -399,12 +400,12 @@ def create_gemm_rs_intra_node_context(max_M, N, output_dtype, rank, num_ranks, t
     if transpose_weight:
         raise NotImplementedError()
 
-    sync_bufs = pyrocshmem.hipipc_create_tensor_list(tp_group, [num_ranks], torch.int32)
+    sync_bufs = pyrocshmem.rocshmem_create_tensor_list_intra_node([num_ranks], torch.int32)
     sync_bufs[rank].fill_(0)
     sync_bufs_ptr = torch.tensor([t.data_ptr() for t in sync_bufs], device=torch.cuda.current_device(),
                                  requires_grad=False)
 
-    scatter_bufs = pyrocshmem.hipipc_create_tensor_list(tp_group, [max_M, N], output_dtype)
+    scatter_bufs = pyrocshmem.rocshmem_create_tensor_list_intra_node([max_M, N], output_dtype)
     scatter_bufs_ptr = torch.tensor([t.data_ptr() for t in scatter_bufs], device=torch.cuda.current_device(),
                                     requires_grad=False)
 

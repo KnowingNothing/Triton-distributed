@@ -27,12 +27,42 @@ from typing import List, Sequence
 import numpy as np
 import torch
 
+ROCSHMEM_TEAM_INVALID = -1
+ROCSHMEM_TEAM_WORLD = 0
 
-def rocshmemx_cumodule_init(module: np.intp) -> None:
+
+# FIXME: class SymmHeap:
+class symm_rocshmem_buffer:
+
+    def __init__(self, nbytes: int):
+        ...
+
+    def data_ptr(self) -> np.intp:
+        ...
+
+    def nbytes(self) -> int:
+        ...
+
+    def symm_at(self, rank) -> symm_rocshmem_buffer:
+        ...
+
+    def __cuda_array_interface__(self) -> dict:
+        ...
+
+
+def rocshmem_my_pe() -> np.int32:
     ...
 
 
-def rocshmemx_cumodule_finalize(module: np.intp) -> None:
+def rocshmem_n_pes() -> np.int32:
+    ...
+
+
+def rocshmem_team_my_pe(team: np.uintp) -> np.int32:
+    ...
+
+
+def rocshmem_team_n_pes(team: np.uintp) -> np.int32:
     ...
 
 
@@ -40,11 +70,17 @@ def rocshmem_malloc(size: np.uint) -> np.intp:
     ...
 
 
-def rocshmemx_get_uniqueid() -> bytes:
+def rocshmem_free(ptr: np.intp) -> None:
     ...
 
 
-def rocshmemx_init_attr_with_uniqueid(rank: np.int32, nranks: np.int32, unique_id: bytes) -> None:
+def rocshmem_get_uniqueid() -> bytes:
+    ...
+
+
+# def rocshmem_init_attr_with_uniqueid(rank: np.int32, nranks: np.int32, unique_id: bytes) -> None:
+def rocshmem_init_attr(rank: np.int32, nranks: np.int32,
+                       unique_id: bytes) -> None:
     ...
 
 
@@ -56,14 +92,31 @@ def rocshmem_barrier_all():
     ...
 
 
-def rocshmem_barrier_all_on_stream():
+def rocshmem_ptr(dest: np.intp, pe: np.int32) -> np.intp:
+    ...
+
+
+## for device side api
+def rocshmem_get_device_ctx() -> np.intp:
     ...
 
 
 # torch related
-def rocshmem_create_tensor(shape: Sequence[int], dtype: torch.dtype) -> torch.Tensor:
+
+
+def rocshmem_create_tensor_list_intra_node(
+        shape: Sequence[int], dtype: torch.dtype) -> List[torch.Tensor]:
     ...
 
 
-def rocshmem_create_tensor_list_intra_node(shape: Sequence[int], dtype: torch.dtype) -> List[torch.Tensor]:
+def rocshmem_getmem(dest: np.intp, source: np.intp, nelems: int, pe: int):
     ...
+
+
+def rocshmem_putmem(dest: np.intp, source: np.intp, nelems: int, pe: int):
+    ...
+
+
+## TODO: add host side API
+# def rocshmem_putmem_signal(dest: np.intp, source: np.intp, nelems: int, sig_addr: np.intp, signal: int, sig_op: int, pe: int):
+#     ...
