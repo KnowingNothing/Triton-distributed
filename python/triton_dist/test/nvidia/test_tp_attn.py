@@ -28,30 +28,61 @@ import argparse
 import torch
 import torch.distributed
 from functools import partial
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig
 import nvshmem.core
 
-from triton_dist.kernels.allreduce import to_allreduce_method
-from triton_dist.kernels.allreduce import get_allreduce_methods
+from triton_dist.kernels.allreduce import to_allreduce_method, get_allreduce_methods
 from triton_dist.layers.nvidia.tp_attn import TP_Attn, _set_cos_sin_cache
 from triton_dist.models.kv_cache import KV_Cache
-from triton_dist.utils import assert_allclose, initialize_distributed, perf_func, dist_print, group_profile, nvshmem_barrier_all_on_stream
+from triton_dist.models.utils import init_model_cpu
+from triton_dist.utils import (assert_allclose, initialize_distributed, perf_func, dist_print, group_profile,
+                               nvshmem_barrier_all_on_stream)
 
 THRESHOLD_MAP = {
     torch.float16: 1e-2,
     torch.bfloat16: 2e-2,
-    torch.float8_e4m3fn: 2e-2,
-    torch.float8_e5m2: 2e-2,
-    torch.int8: 0,
-    torch.int32: 0,
+}
+
+DTYPE_MAP = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
 }
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bsz", default=128, type=int, help="Batch size")
+    parser.add_argument("--seq_len", default=128, type=int, help="Sequence length for prefill")
+    parser.add_argument("--model", default="Qwen/Qwen3-32B", type=str, help="HuggingFace model name")
+    parser.add_argument("--warmup", default=20, type=int, help="Warmup iterations")
+    parser.add_argument("--iters", default=100, type=int, help="Performance iterations")
+    parser.add_argument("--dtype", default="bfloat16", type=str, choices=list(DTYPE_MAP.keys()))
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--profile", default=False, action="store_true", help="Enable torch.profiler")
+
+    # Argument to select which test to run: prefill or decode
+    parser.add_argument(
+        "--run_type", default="prefill", type=str, choices=["prefill", "decode"],
+        help="Type of test to run: 'prefill' for long sequences or 'decode' for single-token generation.")
+
+    # Argument to select the communication strategy
+    parser.add_argument(
+        "--mode", type=str, default="ag_rs", choices=["ag_rs", "allreduce", "gemm_ar"], help=
+        "Communication strategy mode: 'ag_rs' (AllGather+ReduceScatter), 'allreduce', or 'gemm_ar' (Fused GEMM+AllReduce)."
+    )
+    # Strategy-specific arguments
+    parser.add_argument("--ag_gemm_persistent", default=False, action="store_true",
+                        help="Use persistent kernel for AG-GEMM (ag_rs mode only)")
+    parser.add_argument("--gemm_rs_persistent", default=False, action="store_true",
+                        help="Use persistent kernel for GEMM-RS (ag_rs mode only)")
+    parser.add_argument("--allreduce_method", type=str, default="two_shot_multimem", choices=get_allreduce_methods(),
+                        help="All-reduce method (allreduce mode only)")
+
+    return parser.parse_args()
+
+
 def rand_tensor(shape: list[int], dtype: torch.dtype):
-    if dtype in [torch.int32, torch.int8]:
-        return torch.randint(-127, 128, shape, dtype=dtype).cuda()
-    else:
-        return torch.rand(shape, dtype=dtype).cuda() / 10
+    return torch.rand(shape, dtype=dtype).cuda() / 10
 
 
 def make_cuda_graph(mempool, func):
@@ -60,7 +91,6 @@ def make_cuda_graph(mempool, func):
     with torch.cuda.stream(s):
         for _ in range(30):
             func()
-        s.synchronize()
     torch.cuda.current_stream().wait_stream(s)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph, pool=mempool):
@@ -68,33 +98,94 @@ def make_cuda_graph(mempool, func):
     return graph
 
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--bsz", default=128, type=int, help="batch size")
-    parser.add_argument("--seq_len", default=128, type=int, help="sequence length")
-    parser.add_argument("--model", default="Qwen/Qwen3-32B", type=str, help="HuggingFace model name")
-    parser.add_argument("--warmup", default=20, type=int, help="warmup iterations")
-    parser.add_argument("--iters", default=100, type=int, help="perf iterations")
-    parser.add_argument("--dtype", default="bfloat16", type=str, help="data type")
-    parser.add_argument("--mode", default="prefill", type=str, choices=["prefill", "decode"],
-                        help="mode of operation: prefill or decode")
+def run_benchmark(test_name: str, torch_func, triton_func, args: argparse.Namespace, group, rank: int, world_size: int):
+    """Encapsulates the benchmarking logic for a given torch and triton function."""
+    mempool = torch.cuda.graph_pool_handle()
+    torch_graph = make_cuda_graph(mempool, torch_func)
+    triton_dist_graph = make_cuda_graph(mempool, triton_func)
 
-    parser.add_argument("--profile", default=False, action="store_true", help="dump torch.profiler.profile")
-    parser.add_argument("--ag_gemm_persistent", default=False, action="store_true")
-    parser.add_argument("--gemm_rs_persistent", default=False, action="store_true")
-    parser.add_argument("--seed", type=int, default=42)
+    with group_profile(f"tp_attn_{test_name}", args.profile, group=group):
+        torch.cuda.synchronize()
+        _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
+        torch.cuda.synchronize()
 
-    # for triton_dist_AR
-    parser.add_argument("--use_allreduce", default=False, action="store_true")
-    parser.add_argument("--allreduce_method", type=str, default="", choices=get_allreduce_methods())
+        torch.cuda.synchronize()
+        _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
+        nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
+        torch.cuda.synchronize()
 
-    return parser.parse_args()
+    dist_print(f"torch {test_name} #{rank}", torch_perf, need_sync=True, allowed_ranks=list(range(world_size)))
+    dist_print(f"dist-triton {test_name} #{rank}", dist_triton_perf, f"{torch_perf/dist_triton_perf:.2f}x",
+               need_sync=True, allowed_ranks=list(range(world_size)))
+
+    del torch_graph, triton_dist_graph, mempool
+    torch.cuda.empty_cache()
 
 
-DTYPE_MAP = {
-    "bfloat16": torch.bfloat16,
-    "float16": torch.float16,
-}
+def run_attention_test(run_type: str, attn: TP_Attn, cos_sin_cache, kv_cache: KV_Cache, args: argparse.Namespace,
+                       rank: int, world_size: int, tp_group, dtype: torch.dtype, atol: float, rtol: float):
+    """
+    Runs a full test (correctness and performance) for a given attention run_type (prefill/decode).
+    The communication strategy is determined by args.mode.
+    """
+    # 1. Setup inputs based on 'prefill' or 'decode' run_type
+    if run_type == "prefill":
+        seq_len = args.seq_len
+        position_ids = torch.arange(0, seq_len, dtype=torch.int64, device="cuda").unsqueeze(0).expand(args.bsz, -1)
+        kv_cache.kv_offset.fill_(0)
+    else:  # decode
+        seq_len = 1
+        position_ids = torch.arange(args.seq_len, args.seq_len + 1, dtype=torch.int64,
+                                    device="cuda").unsqueeze(0).expand(args.bsz, -1)
+        kv_cache.kv_offset.fill_(args.seq_len)
+        kv_cache.rand_fill_kv_cache(args.seq_len)
+
+    x = rand_tensor([args.bsz, seq_len, attn.wqkv.shape[1]], dtype=dtype)
+    M = args.bsz * seq_len
+    bsz_per_rank = args.bsz // world_size
+
+    # 2. Get PyTorch baseline result
+    torch_func = partial(attn.torch_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
+    golden_output = torch_func()
+
+    # 3. Configure Triton function and inputs based on communication strategy (args.mode)
+    triton_func = None
+    golden_for_assert = None
+    test_name_suffix = ""
+
+    ag_intranode_stream = torch.cuda.Stream(priority=-1)
+    ag_internode_stream = torch.cuda.Stream()
+
+    if args.mode == 'ag_rs':
+        assert args.bsz % world_size == 0, f"Batch size {args.bsz} must be divisible by world size {world_size} for 'ag_rs' mode."
+        dist_x = x.split(bsz_per_rank, dim=0)[rank].contiguous()
+        attn._init_ctx(max_M=M, ag_intranode_stream=ag_intranode_stream, ag_internode_stream=ag_internode_stream,
+                       BLOCK_M=128, BLOCK_N=128, BLOCK_K=128, stages=3)
+        triton_func = partial(attn.dist_triton_fwd, dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
+                              ag_gemm_persistent=args.ag_gemm_persistent, gemm_rs_persistent=args.gemm_rs_persistent,
+                              autotune=True)
+        golden_for_assert = golden_output.split(bsz_per_rank, dim=0)[rank].contiguous()
+        test_name_suffix = "ag_rs"
+    elif args.mode == 'allreduce':
+        attn._init_AR_ctx(max_M=M, method=to_allreduce_method(args.allreduce_method), dtype=dtype)
+        triton_func = partial(attn.dist_triton_AR_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
+        golden_for_assert = golden_output
+        test_name_suffix = f"AR_{args.allreduce_method}"
+    elif args.mode == 'gemm_ar':
+        attn._init_gemm_ar_ctx(M, dtype)
+        triton_func = partial(attn.dist_triton_gemm_ar_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
+        golden_for_assert = golden_output
+        test_name_suffix = "gemm_ar"
+
+    # 4. Correctness Check
+    triton_output = triton_func()
+    assert_allclose(triton_output, golden_for_assert, atol=atol, rtol=rtol)
+
+    # 5. Performance Benchmark
+    test_name = f"attn_{run_type}_{test_name_suffix}"
+    run_benchmark(test_name, torch_func, triton_func, args, tp_group, rank, world_size)
+
 
 if __name__ == "__main__":
     args = parse_args()
@@ -102,186 +193,37 @@ if __name__ == "__main__":
     LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
     WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
     TP_GROUP = initialize_distributed()
+    torch.manual_seed(args.seed)
 
     DTYPE = DTYPE_MAP[args.dtype]
-    ATOL = THRESHOLD_MAP[DTYPE]
-    RTOL = THRESHOLD_MAP[DTYPE]
-    MODE = args.mode
+    ATOL = THRESHOLD_MAP.get(DTYPE, 1e-2)
+    RTOL = THRESHOLD_MAP.get(DTYPE, 1e-2)
 
-    hf_model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=DTYPE,
-                                                    attn_implementation="flash_attention_2")
-    hf_attn = hf_model.model.layers[0].self_attn.eval()
+    # Common setup
+    config = AutoConfig.from_pretrained(args.model)
+    hf_model = init_model_cpu(model_name=args.model, dtype=DTYPE)
+    hf_attn = hf_model.model.layers[0].self_attn.eval().cuda()
+
     attn = TP_Attn(rank=RANK, world_size=WORLD_SIZE, group=TP_GROUP)
-    cos_sin_cache = _set_cos_sin_cache(hf_model.model.rotary_emb.inv_freq.cuda(), max_length=args.seq_len + 128)
     attn._init_parameters(hf_attn, verbose=True)
 
-    torch.manual_seed(args.seed)
-    BSZ = args.bsz
-    SEQ_LEN = args.seq_len
-    K = attn.wqkv.shape[1]
-    AG_GEMM_PERSISTENT = args.ag_gemm_persistent
-    GEMM_RS_PERSISTENT = args.gemm_rs_persistent
-
+    cos_sin_cache = _set_cos_sin_cache(hf_model.model.rotary_emb.inv_freq.cuda(), max_length=args.seq_len + 128)
     kv_cache = KV_Cache(
         num_layers=1,
-        batch_size=BSZ,
-        max_length=SEQ_LEN + 8,
+        batch_size=args.bsz,
+        max_length=args.seq_len + 128,
         kv_heads=hf_attn.config.num_key_value_heads,
         head_dim=hf_attn.head_dim,
         dtype=DTYPE,
         world_size=WORLD_SIZE,
     )
-    bsz_per_rank = BSZ // WORLD_SIZE
-    if not args.use_allreduce:
-        assert BSZ % WORLD_SIZE == 0, f"BSZ {BSZ} must be divisible by WORLD_SIZE {WORLD_SIZE}"
-    BLOCK_M = 128
-    BLOCK_N = 128
-    BLOCK_K = 128
-    stages = 3
-    ag_intranode_stream = torch.cuda.Stream(priority=-1)
-    ag_internode_stream = torch.cuda.Stream()
-    profile = args.profile
 
-    # prefill
-    if MODE == "prefill":
-        # Preicision Test
-        position_ids = torch.arange(0, SEQ_LEN, dtype=torch.int64, device="cuda").unsqueeze(0).expand(BSZ, -1)
-        x = rand_tensor([BSZ, SEQ_LEN, K], dtype=DTYPE)
-        # golden prefill from HF
-        with torch.inference_mode():
-            t = torch.arange(4096, device="cuda", dtype=hf_model.model.rotary_emb.inv_freq.cuda().dtype)
-            freqs = torch.outer(t, hf_model.model.rotary_emb.inv_freq.cuda())
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos().to(torch.bfloat16)
-            sin = emb.sin().to(torch.bfloat16)
-            position_embeddings = hf_model.model.rotary_emb(x, position_ids)
-            golden = hf_attn.cuda().forward(x, position_ids=position_ids, position_embeddings=position_embeddings,
-                                            attention_mask=None)[0]
+    # --- Run the selected test (prefill or decode) based on the --run_type argument ---
+    dist_print(f"\n===== Running {args.run_type.capitalize()} Test (Communication Mode: {args.mode}) =====")
+    run_attention_test(run_type=args.run_type, attn=attn, cos_sin_cache=cos_sin_cache, kv_cache=kv_cache, args=args,
+                       rank=RANK, world_size=WORLD_SIZE, tp_group=TP_GROUP, dtype=DTYPE, atol=ATOL, rtol=RTOL)
 
-        # torch prefill
-        out_torch = attn.torch_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
-        assert_allclose(out_torch, golden, atol=ATOL, rtol=RTOL)
-
-        M = BSZ * SEQ_LEN
-        if not args.use_allreduce:
-            # dist triton prefill
-            attn._init_ctx(max_M=M, ag_intranode_stream=ag_intranode_stream, ag_internode_stream=ag_internode_stream,
-                           BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages)
-            dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
-
-            out_triton = attn.dist_triton_fwd(dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
-                                              ag_gemm_persistent=AG_GEMM_PERSISTENT,
-                                              gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True)
-            out = golden.split(bsz_per_rank, dim=0)[RANK].contiguous()
-            assert_allclose(out_triton, out, atol=ATOL, rtol=RTOL)
-        else:
-            # dist triton prefill with AR
-            attn._init_AR_ctx(max_M=M, method=to_allreduce_method(args.allreduce_method), dtype=DTYPE)
-            out_triton = attn.dist_triton_AR_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
-            assert_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
-
-        # Efficiency Test
-        x = rand_tensor([BSZ, SEQ_LEN, K], dtype=DTYPE)
-        position_ids = torch.arange(0, SEQ_LEN, dtype=torch.int64, device="cuda").unsqueeze(0).expand(BSZ, -1)
-        kv_cache.kv_offset.fill_(0)
-        mempool = torch.cuda.graph_pool_handle()
-        torch_graph = make_cuda_graph(mempool,
-                                      partial(attn.torch_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
-        if not args.use_allreduce:
-            dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
-            triton_dist_graph = make_cuda_graph(
-                mempool,
-                partial(attn.dist_triton_fwd, dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
-                        ag_gemm_persistent=AG_GEMM_PERSISTENT, gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True))
-        else:
-            triton_dist_graph = make_cuda_graph(
-                mempool, partial(attn.dist_triton_AR_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
-
-        with group_profile("tp_attn_prefill", profile, group=TP_GROUP):
-            torch.cuda.synchronize()
-            _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
-            torch.cuda.synchronize()
-
-            torch.cuda.synchronize()
-            _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
-            torch.cuda.synchronize()
-
-        dist_print(f"torch attn prefill #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        if not args.use_allreduce:
-            dist_print(f"dist-triton attn prefill #{RANK}", dist_triton_perf, f"{torch_perf/dist_triton_perf}x",
-                       need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        else:
-            dist_print(f"dist-triton_AR_{args.allreduce_method} attn prefill #{RANK}", dist_triton_perf,
-                       f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        del torch_graph, triton_dist_graph, mempool
-
-    else:
-        # decode
-        # torch decode
-        x = rand_tensor([BSZ, 1, K], dtype=DTYPE)
-        position_ids = torch.arange(SEQ_LEN, SEQ_LEN + 1, dtype=torch.int64, device="cuda").unsqueeze(0).expand(BSZ, -1)
-        kv_cache.kv_offset.fill_(SEQ_LEN)
-        kv_cache.rand_fill_kv_cache(SEQ_LEN)
-
-        out_torch = attn.torch_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
-
-        # triton decode
-        M = BSZ
-        if not args.use_allreduce:
-            out_torch = out_torch.split(bsz_per_rank, dim=0)[RANK].contiguous()
-            attn._init_ctx(max_M=M, ag_intranode_stream=ag_intranode_stream, ag_internode_stream=ag_internode_stream,
-                           BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, stages=stages)
-            dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
-            out_triton = attn.dist_triton_fwd(dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
-                                              ag_gemm_persistent=AG_GEMM_PERSISTENT,
-                                              gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True)
-            assert_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
-        else:
-            attn._init_AR_ctx(max_M=M, method=to_allreduce_method(args.allreduce_method), dtype=DTYPE)
-            out_triton = attn.dist_triton_AR_fwd(x, position_ids, cos_sin_cache, kv_cache, layer_idx=0)
-            assert_allclose(out_triton, out_torch, atol=ATOL, rtol=RTOL)
-
-        # Efficiency Test
-
-        # decode
-        position_ids = torch.arange(SEQ_LEN, SEQ_LEN + 1, dtype=torch.int64, device="cuda").unsqueeze(0).expand(BSZ, -1)
-        kv_cache.kv_offset.fill_(SEQ_LEN)
-        mempool = torch.cuda.graph_pool_handle()
-        torch_graph = make_cuda_graph(mempool,
-                                      partial(attn.torch_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
-
-        if not args.use_allreduce:
-            dist_x = x.split(bsz_per_rank, dim=0)[RANK].contiguous()
-            triton_dist_graph = make_cuda_graph(
-                mempool,
-                partial(attn.dist_triton_fwd, dist_x, position_ids, cos_sin_cache, kv_cache, layer_idx=0,
-                        ag_gemm_persistent=AG_GEMM_PERSISTENT, gemm_rs_persistent=GEMM_RS_PERSISTENT, autotune=True))
-        else:
-            triton_dist_graph = make_cuda_graph(
-                mempool, partial(attn.dist_triton_AR_fwd, x, position_ids, cos_sin_cache, kv_cache, layer_idx=0))
-
-        with group_profile("tp_attn_decode", profile, group=TP_GROUP):
-            torch.cuda.synchronize()
-            _, torch_perf = perf_func(torch_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
-            torch.cuda.synchronize()
-
-            torch.cuda.synchronize()
-            _, dist_triton_perf = perf_func(triton_dist_graph.replay, iters=args.iters, warmup_iters=args.warmup)
-            nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
-            torch.cuda.synchronize()
-
-        dist_print(f"torch attn decode #{RANK}", torch_perf, need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        if not args.use_allreduce:
-            dist_print(f"dist-triton attn decode #{RANK}", dist_triton_perf, f"{torch_perf/dist_triton_perf}x",
-                       need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        else:
-            dist_print(f"dist-triton_AR_{args.allreduce_method} attn decode #{RANK}", dist_triton_perf,
-                       f"{torch_perf/dist_triton_perf}x", need_sync=True, allowed_ranks=list(range(WORLD_SIZE)))
-        del torch_graph, triton_dist_graph, mempool
-
+    # Final cleanup
     attn.finalize()
     nvshmem.core.finalize()
     torch.distributed.destroy_process_group()

@@ -33,6 +33,7 @@ from triton_dist.kernels.nvidia.allgather_gemm import AllGatherGEMMTensorParalle
 from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs
 from triton_dist.utils import nvshmem_barrier_all_on_stream
 from triton_dist.kernels.nvidia.allreduce import (create_allreduce_ctx, all_reduce)
+from triton_dist.layers.nvidia import GemmARLayer
 
 try:
     from flash_attn_interface import flash_attn_with_kvcache
@@ -269,6 +270,38 @@ class TP_Attn:
             out_allreduce = torch.empty_like(out)
             out = all_reduce(x=out.contiguous(), output=out_allreduce, method=self.ar_method, ctx=self.ar_ctx)
         return out.view(bsz, q_len, -1)
+
+    def _init_gemm_ar_ctx(self, max_M, dtype=torch.bfloat16):
+        N = self.wo.shape[0]
+        K = self.wo.shape[1]
+        self.gemm_ar_ctx = GemmARLayer(self.group, max_M, N, K, dtype, dtype, self.world_size, persistent=True,
+                                       use_ll_kernel=max_M <= 256, copy_to_local=False,
+                                       NUM_COMM_SMS=16 if max_M <= 256 else 4)
+
+    @torch.inference_mode()
+    def dist_triton_gemm_ar_fwd(self, x, position_ids, cos_sin_cache, kv_cache, layer_idx: int):
+        bsz, q_len, _ = x.size()
+        qkv = torch.nn.functional.linear(x, self.wqkv)
+
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        v = v.view(bsz, q_len, -1, self.head_dim)
+
+        # qk norm
+        if hasattr(self, 'q_norm_eps'):
+            q = layer_norm(q.contiguous().view(bsz, q_len, -1, self.head_dim), self.q_norm_eps,
+                           self.q_norm_w).view(bsz, q_len, -1)
+        if hasattr(self, 'k_norm_eps'):
+            k = layer_norm(k.contiguous().view(bsz, q_len, -1, self.head_dim), self.k_norm_eps,
+                           self.k_norm_w).view(bsz, q_len, -1)
+        # RoPE
+        q, k = self.apply_rotary_pos_emb(q, k, position_ids, cos_sin_cache)
+        k_cache, v_cache, kv_offset = kv_cache.update_kv_cache(k, v, layer_idx)
+
+        # FlashAttn
+        out = flash_attn_with_kvcache(q=q, k_cache=k_cache, v_cache=v_cache, k=k, v=v, cache_seqlens=kv_offset,
+                                      causal=True)
+        out = self.gemm_ar_ctx.forward(out.view(bsz * q_len, -1), self.wo).view(bsz, q_len, -1)
+        return out
 
     def fwd(self, x: torch.Tensor, position_ids: torch.Tensor, cos_sin_cache: torch.Tensor, kv_cache, layer_idx: int):
         raise NotImplementedError("Please use torch_fwd or dist_triton_fwd instead.")

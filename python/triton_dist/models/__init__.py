@@ -26,17 +26,19 @@
 from transformers import AutoTokenizer as HFTokenizer
 
 from .config import ModelConfig
-from .qwen import Qwen3
+from .dense import DenseLLM
 from .qwen_moe import Qwen3MoE
 
 
 class AutoLLM:
     model_mapping = {
-        "Qwen/Qwen3-8B": Qwen3,
-        "Qwen/Qwen3-14B": Qwen3,
-        "Qwen/Qwen3-32B": Qwen3,
+        "Qwen/Qwen3-0.6B": DenseLLM,
+        "Qwen/Qwen3-8B": DenseLLM,
+        "Qwen/Qwen3-14B": DenseLLM,
+        "Qwen/Qwen3-32B": DenseLLM,
         "Qwen/Qwen3-30B-A3B": Qwen3MoE,
         "Qwen/Qwen3-235B-A22B": Qwen3MoE,
+        "meta-llama/Meta-Llama-3-70B": DenseLLM,
     }
 
     @staticmethod
@@ -44,8 +46,10 @@ class AutoLLM:
         if config.model_name in AutoLLM.model_mapping:
             return AutoLLM.model_mapping[config.model_name](config, group)
         else:
-            raise ValueError(f"Model {config.model_name} not found in model mapping, "
-                             f"available models: {AutoLLM.model_mapping.keys()}")
+            print(f"Model {config.model_name} not found in model mapping, "
+                  f"Available models: {list(AutoLLM.model_mapping.keys())} "
+                  f"Falling back to DenseLLM with default configuration.")
+            return DenseLLM(config, group)
 
 
 class AutoTokenizer:

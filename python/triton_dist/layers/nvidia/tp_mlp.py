@@ -32,6 +32,7 @@ from triton_dist.kernels.nvidia.allgather_gemm import AllGatherGEMMTensorParalle
 from triton_dist.kernels.nvidia import create_gemm_rs_context, gemm_rs
 from triton_dist.utils import nvshmem_barrier_all_on_stream
 from triton_dist.kernels.nvidia.allreduce import (create_allreduce_ctx, all_reduce)
+from triton_dist.layers.nvidia import GemmARLayer
 
 
 def shard_local(tensor: torch.Tensor, world_size: int, dim: int, local_rank: int):
@@ -66,6 +67,7 @@ class TP_MLP:
         self.ag_ctx = None
         self.rs_ctx = None
         self.ar_ctx = None
+        self.gemm_ar_ctx = None
 
     def _init_parameters(self, mlp: nn.Module, verbose=False):
         """
@@ -123,6 +125,8 @@ class TP_MLP:
             self.rs_ctx.finalize()
         if self.ar_ctx:
             self.ar_ctx.finalize()
+        if self.gemm_ar_ctx:
+            self.gemm_ar_ctx.finalize()
 
     @torch.inference_mode()
     def torch_fwd(self, x):
@@ -193,6 +197,35 @@ class TP_MLP:
     @torch.inference_mode()
     def fwd(self, x: torch.Tensor):
         raise NotImplementedError("Please use torch_fwd or dist_triton_fwd instead.")
+
+    def _init_gemm_ar_ctx(self, max_M, dtype=torch.bfloat16):
+        N = self.down_proj.shape[0]
+        K = self.down_proj.shape[1]
+        self.gemm_ar_ctx = GemmARLayer(self.group, max_M, N, K, dtype, dtype, self.world_size, persistent=True,
+                                       use_ll_kernel=max_M <= 256, copy_to_local=False,
+                                       NUM_COMM_SMS=16 if max_M <= 256 else 4)
+
+    @torch.inference_mode()
+    def dist_triton_gemm_ar_fwd(self, x: torch.Tensor):
+        """
+        Triton Dist forward pass using GEMM-AllReduce.
+        This version uses gemm_ar.
+        x: input tensor, shape [batch_size * seq_len, hidden_size]
+        """
+        if len(x.size()) == 3:
+            bsz, seq, d = x.size()
+            x = x.view(-1, d)
+            is_3d_input = True
+        else:
+            is_3d_input = False
+        assert self.gemm_ar_ctx is not None, "GemmAR context is not initialized."
+        out_fused = torch.nn.functional.linear(x, self.gate_up_proj)
+        wg, w1 = torch.chunk(out_fused, 2, dim=-1)
+        out = self.act_fn(wg) * w1
+        out = self.gemm_ar_ctx.forward(out, self.down_proj)
+        if is_3d_input:
+            out = out.view(bsz, seq, -1)
+        return out
 
     @torch.inference_mode()
     def torch_ag_gemm(self, x: torch.Tensor):

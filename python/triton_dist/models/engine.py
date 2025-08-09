@@ -130,7 +130,9 @@ class Engine:
         elif self.backend == 'triton_dist_AR':
             self.model.set_fwd(mode='triton_dist_AR')
             self.model.init_triton_dist_AR_ctx(max_M=bsz, ar_method=AllReduceMethod.TwoShot_Multimem)
-
+        elif self.backend == 'triton_dist_gemm_ar':
+            self.model.set_fwd(mode='triton_dist_gemm_ar')
+            self.model.init_triton_dist_gemm_ar_ctx(max_M=bsz)
         if self.no_graph:
 
             def run(input_ids, position_ids):

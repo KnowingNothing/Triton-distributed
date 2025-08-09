@@ -1,12 +1,17 @@
-name: triton-distributed-pre-merge-ci
+name: Triton Distributed CI
+
 trigger:
   change:
     types: [ create, push ]
     notification:
       when: [ success, failure ]
+
 jobs:
-  triton-amd-pre-merge:
-    name: Triton-distributed CI for amd backend.
+  # ===================================================================
+  # AMD Jobs
+  # ===================================================================
+  triton-amd-unittest:
+    name: AMD Unit Tests
     image: hub.byted.org/base/lab.bernard.llmserver_amd:3db122918aee545879df2fbb15635290
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
@@ -16,41 +21,129 @@ jobs:
       PATH: /home/code/.local/bin:$PATH
     runs-on:
       cluster: triton_distributed_amd_109
-
     steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="amd"
+            export JOB_TYPE="unittest"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
       - name: code-format-check
         commands:
-          - pip3 install ninja black "clang-format==20.1.8" pre-commit ruff yapf==0.43
-          - pip3 install chardet
-          - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
-          - python3 scripts/check_license.py
-          # check for opensource license
-          - python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude "3rdparty/*,.codebase/*" --depth 10 --skip_git_commit_log
+          - bash .codebase/scripts/run_step.sh "pip3 install ninja black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
+          - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
+          - bash .codebase/scripts/run_step.sh "python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude '3rdparty/*,.codebase/*' --depth 10 --skip_git_commit_log"
       - name: build
         commands:
-          - python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
-          - git submodule update --init --recursive
-          # some unknown proxy issue caused apt install fail for some packages
-          # - unset http_proxy
-          - bash shmem/rocshmem_bind/build.sh
-          - export http_proxy=http://sys-proxy-rd-relay.byted.org:3128
-          - MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
-
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
+              git submodule update --init --recursive
+              bash shmem/rocshmem_bind/build.sh
+              MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
+            "
       - name: unit tests
         commands:
-          - bash -x .codebase/scripts/amd/run_unittest.sh
+          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/amd/run_unittest.sh"
 
+  triton-amd-e2e:
+    name: AMD E2E Tests
+    image: hub.byted.org/base/lab.bernard.llmserver_amd:3db122918aee545879df2fbb15635290
+    envs:
+      PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
+      LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/home/code/shmem/rocshmem_bind/ompi_build/install/ompi/lib
+      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      PATH: /home/code/.local/bin:$PATH
+    runs-on:
+      cluster: triton_distributed_amd_109
+    steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="amd"
+            export JOB_TYPE="e2e"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
+      - name: code-format-check
+        commands:
+          - bash .codebase/scripts/run_step.sh "pip3 install ninja black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
+          - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
+          - bash .codebase/scripts/run_step.sh "python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude '3rdparty/*,.codebase/*' --depth 10 --skip_git_commit_log"
+      - name: build
+        commands:
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
+              git submodule update --init --recursive
+              bash shmem/rocshmem_bind/build.sh
+              MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
+            "
       - name: e2e tests
         commands:
-          - bash ./scripts/build_e2e_env.sh
-          - bash -x .codebase/scripts/amd/run_e2e_test.sh
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
+              bash ./scripts/build_e2e_env.sh
+              bash -x .codebase/scripts/amd/run_e2e_test.sh
+            "
 
+  triton-amd-tutorial:
+    name: AMD Tutorial Tests
+    image: hub.byted.org/base/lab.bernard.llmserver_amd:3db122918aee545879df2fbb15635290
+    envs:
+      PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
+      LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/home/code/shmem/rocshmem_bind/ompi_build/install/ompi/lib
+      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      PATH: /home/code/.local/bin:$PATH
+    runs-on:
+      cluster: triton_distributed_amd_109
+    steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="amd"
+            export JOB_TYPE="tutorial"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
+      - name: code-format-check
+        commands:
+          - bash .codebase/scripts/run_step.sh "pip3 install ninja black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
+          - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
+          - bash .codebase/scripts/run_step.sh "python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude '3rdparty/*,.codebase/*' --depth 10 --skip_git_commit_log"
+      - name: build
+        commands:
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
+              git submodule update --init --recursive
+              bash shmem/rocshmem_bind/build.sh
+              MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
+            "
       - name: tutorial tests
         commands:
-          - bash -x .codebase/scripts/amd/run_tutorial_test.sh
+          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/amd/run_tutorial_test.sh"
 
-
+  # ===================================================================
+  # NVIDIA Jobs
+  # ===================================================================
   triton-nvidia-H800-e2e:
+    name: H800 E2E Tests
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python
@@ -61,14 +154,21 @@ jobs:
       cluster: gpu-h100
       docker:
         shared-memory: 1024
-
     steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="nvidia"
+            export JOB_TYPE="e2e"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
       - name: code-format-check
         commands:
-          - pip3 install black "clang-format==20.1.8" pre-commit ruff yapf==0.43 chardet
-          - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
-          - python3 scripts/check_license.py
-
+          - bash .codebase/scripts/run_step.sh "pip3 install black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
+          - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
       - name: env-check
         commands:
           - nvidia-smi
@@ -80,79 +180,40 @@ jobs:
           - python3 --version
           - pip3 --version
           - python3 -c "import torch; print(torch.__version__)"
-
       - name: build
         commands:
-          - git submodule update --init --recursive
-          - pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
-          - export USE_TRITON_DISTRIBUTED_AOT=0
-          - echo "numpy<2" > /tmp/pip_install_constraint.txt
-          - MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
-          - bash ./scripts/gen_aot_code.sh
-          - export USE_TRITON_DISTRIBUTED_AOT=1
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              git submodule update --init --recursive
+              pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
+              export USE_TRITON_DISTRIBUTED_AOT=0
+              echo 'numpy<2' > /tmp/pip_install_constraint.txt
+              MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
+              bash ./scripts/gen_aot_code.sh
+              export USE_TRITON_DISTRIBUTED_AOT=1
+              MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+            "
       - name: build_wheel
         commands:
-          - cd python
-          - python3 setup.py bdist_wheel
-          - cd ..
-      - name: e2e tests # if you fail, fail early
+          - |
+            bash .codebase/scripts/run_step.sh "
+              cd python
+              python3 setup.py bdist_wheel
+              cd ..
+            "
+      - name: e2e tests
         commands:
-          - bash ./scripts/build_e2e_env.sh
-          - bash -x .codebase/scripts/nvidia/run_e2e_test.sh
-
-  triton-nvidia-H800-megakernel:
-    image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
-    envs:
-      PYTHONPATH: $PYTHONPATH:/home/code/python
-      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
-      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
-      PATH: /home/code/.local/bin:$PATH
-    runs-on:
-      cluster: gpu-h100
-      docker:
-        shared-memory: 1024
-
-    steps:
-      - name: code-format-check
-        commands:
-          - pip3 install black "clang-format==20.1.8" pre-commit ruff yapf==0.43 chardet
-          - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
-          - python3 scripts/check_license.py
-
-      - name: env-check
-        commands:
-          - nvidia-smi
-          - curl -IivvL https://oaitriton.blob.core.windows.net/public/llvm-builds/
-          - mkdir -p /home/code/.local/bin
-          - ln -s `which python3` /home/code/.local/bin/python
-          - ln -s `which pip3` /home/code/.local/bin/pip
-          - hash -r
-          - python3 --version
-          - pip3 --version
-          - python3 -c "import torch; print(torch.__version__)"
-
-      - name: build
-        commands:
-          - git submodule update --init --recursive
-          - pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
-          - export USE_TRITON_DISTRIBUTED_AOT=0
-          - echo "numpy<2" > /tmp/pip_install_constraint.txt
-          - MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
-          - bash ./scripts/gen_aot_code.sh
-          - export USE_TRITON_DISTRIBUTED_AOT=1
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
-      - name: build_wheel
-        commands:
-          - cd python
-          - python3 setup.py bdist_wheel
-          - cd ..
-      - name: mega kernel tests
-        commands:
-          - bash ./scripts/build_e2e_env.sh
-          - bash -x .codebase/scripts/nvidia/run_mega_kernel_test.sh
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
+              bash ./scripts/build_e2e_env.sh
+              bash -x .codebase/scripts/nvidia/run_e2e_test.sh
+            "
 
   triton-nvidia-H800-unittest:
+    name: H800 Unit & Tutorial Tests
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python
@@ -163,14 +224,21 @@ jobs:
       cluster: gpu-h100
       docker:
         shared-memory: 1024
-
     steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="nvidia"
+            export JOB_TYPE="unittest"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
       - name: code-format-check
         commands:
-          - pip3 install black "clang-format==20.1.8" pre-commit ruff yapf==0.43 chardet
-          - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
-          - python3 scripts/check_license.py
-
+          - bash .codebase/scripts/run_step.sh "pip3 install black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
+          - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
       - name: env-check
         commands:
           - nvidia-smi
@@ -182,30 +250,37 @@ jobs:
           - python3 --version
           - pip3 --version
           - python3 -c "import torch; print(torch.__version__)"
-
       - name: build
         commands:
-          - git submodule update --init --recursive
-          - pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
-          - export USE_TRITON_DISTRIBUTED_AOT=0
-          - echo "numpy<2" > /tmp/pip_install_constraint.txt
-          - MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
-          - bash ./scripts/gen_aot_code.sh
-          - export USE_TRITON_DISTRIBUTED_AOT=1
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              git submodule update --init --recursive
+              pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
+              export USE_TRITON_DISTRIBUTED_AOT=0
+              echo 'numpy<2' > /tmp/pip_install_constraint.txt
+              MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
+              bash ./scripts/gen_aot_code.sh
+              export USE_TRITON_DISTRIBUTED_AOT=1
+              MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+            "
       - name: build_wheel
         commands:
-          - cd python
-          - python3 setup.py bdist_wheel
-          - cd ..
+          - |
+            bash .codebase/scripts/run_step.sh "
+              cd python
+              python3 setup.py bdist_wheel
+              cd ..
+            "
       - name: unit tests
         commands:
-          - bash -x .codebase/scripts/nvidia/run_unittest.sh
+          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/nvidia/run_unittest.sh"
       - name: tutorial tests
         commands:
-          - bash -x .codebase/scripts/nvidia/run_tutorial_test.sh
+          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/nvidia/run_tutorial_test.sh"
 
-  triton-nvidia-H800-internal:
+  triton-nvidia-H800-megakernel:
+    name: H800 Megakernel Tests
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python
@@ -216,14 +291,21 @@ jobs:
       cluster: gpu-h100
       docker:
         shared-memory: 1024
-
     steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="nvidia"
+            export JOB_TYPE="megakernel"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
       - name: code-format-check
         commands:
-          - pip3 install black "clang-format==20.1.8" pre-commit ruff yapf==0.43 chardet
-          - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
-          - python3 scripts/check_license.py
-
+          - bash .codebase/scripts/run_step.sh "pip3 install black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
+          - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
       - name: env-check
         commands:
           - nvidia-smi
@@ -235,29 +317,106 @@ jobs:
           - python3 --version
           - pip3 --version
           - python3 -c "import torch; print(torch.__version__)"
-
       - name: build
         commands:
-          - git submodule update --init --recursive
-          - pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
-          - export USE_TRITON_DISTRIBUTED_AOT=0
-          - echo "numpy<2" > /tmp/pip_install_constraint.txt
-          - MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
-          - bash ./scripts/gen_aot_code.sh
-          - export USE_TRITON_DISTRIBUTED_AOT=1
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
-          - pip3 uninstall nvshmem4py-cu12 -y
-          - pip3 install https://tosv.byted.org/obj/turing/dist_triton/nvshmem4py/0.1.0_dev/nvshmem4py_cu12-0.1.dev3+g317f038.d20250729-cp311-cp311-linux_x86_64.whl
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              git submodule update --init --recursive
+              pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
+              export USE_TRITON_DISTRIBUTED_AOT=0
+              echo 'numpy<2' > /tmp/pip_install_constraint.txt
+              MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
+              bash ./scripts/gen_aot_code.sh
+              export USE_TRITON_DISTRIBUTED_AOT=1
+              MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+            "
       - name: build_wheel
         commands:
-          - cd python
-          - python3 setup.py bdist_wheel
-          - cd ..
-      - name: m10-related tests # if you fail, fail early
+          - |
+            bash .codebase/scripts/run_step.sh "
+              cd python
+              python3 setup.py bdist_wheel
+              cd ..
+            "
+      - name: mega kernel tests
         commands:
-          - bash -x .codebase/scripts/nvidia/run_m10_related_tests.sh
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
+              bash ./scripts/build_e2e_env.sh
+              bash -x .codebase/scripts/nvidia/run_mega_kernel_test.sh
+            "
+
+  triton-nvidia-H800-internal:
+    name: H800 Internal Tests
+    image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
+    envs:
+      PYTHONPATH: $PYTHONPATH:/home/code/python
+      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
+      PATH: /home/code/.local/bin:$PATH
+    runs-on:
+      cluster: gpu-h100
+      docker:
+        shared-memory: 1024
+    steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="nvidia"
+            export JOB_TYPE="internal"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
+      - name: code-format-check
+        commands:
+          - bash .codebase/scripts/run_step.sh "pip3 install black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
+          - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
+      - name: env-check
+        commands:
+          - nvidia-smi
+          - curl -IivvL https://oaitriton.blob.core.windows.net/public/llvm-builds/
+          - mkdir -p /home/code/.local/bin
+          - ln -s `which python3` /home/code/.local/bin/python
+          - ln -s `which pip3` /home/code/.local/bin/pip
+          - hash -r
+          - python3 --version
+          - pip3 --version
+          - python3 -c "import torch; print(torch.__version__)"
+      - name: build
+        commands:
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              git submodule update --init --recursive
+              pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
+              export USE_TRITON_DISTRIBUTED_AOT=0
+              echo 'numpy<2' > /tmp/pip_install_constraint.txt
+              MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
+              bash ./scripts/gen_aot_code.sh
+              export USE_TRITON_DISTRIBUTED_AOT=1
+              MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+              pip3 uninstall nvshmem4py-cu12 -y
+              pip3 install https://tosv.byted.org/obj/turing/dist_triton/nvshmem4py/0.1.0_dev/nvshmem4py_cu12-0.1.dev3+g317f038.d20250729-cp311-cp311-linux_x86_64.whl
+            "
+      - name: build_wheel
+        commands:
+          - |
+            bash .codebase/scripts/run_step.sh "
+              cd python
+              python3 setup.py bdist_wheel
+              cd ..
+            "
+      - name: m10-related tests
+        commands:
+          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/nvidia/run_m10_related_tests.sh"
 
   triton-nvidia-L20:
+    name: L20 Unit Tests
     image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python
@@ -268,14 +427,21 @@ jobs:
       cluster: gpu-l20
       docker:
         shared-memory: 40960
-
     steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="nvidia"
+            export JOB_TYPE="unittest"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
       - name: code-format-check
         commands:
-          - pip3 install black "clang-format==20.1.8" pre-commit ruff yapf==0.43 chardet
-          - ./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}
-          - python3 scripts/check_license.py
-
+          - bash .codebase/scripts/run_step.sh "pip3 install black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
+          - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
       - name: env-check
         commands:
           - nvidia-smi
@@ -287,31 +453,37 @@ jobs:
           - python3 --version
           - pip3 --version
           - python3 -c "import torch; print(torch.__version__)"
-
       - name: build
         commands:
-          - git submodule update --init --recursive
-          - pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
-          - export USE_TRITON_DISTRIBUTED_AOT=0
-          - echo "numpy<2" > /tmp/pip_install_constraint.txt
-          - MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
-          - bash ./scripts/gen_aot_code.sh
-          - export USE_TRITON_DISTRIBUTED_AOT=1
-          - MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
-
+          - |
+            bash .codebase/scripts/run_step.sh "
+              set -e
+              git submodule update --init --recursive
+              pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
+              export USE_TRITON_DISTRIBUTED_AOT=0
+              echo 'numpy<2' > /tmp/pip_install_constraint.txt
+              MAX_JOBS=126 pip3 install -c /tmp/pip_install_constraint.txt -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
+              bash ./scripts/gen_aot_code.sh
+              export USE_TRITON_DISTRIBUTED_AOT=1
+              MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
+            "
       - name: build_wheel
         commands:
-          - cd python
-          - python3 setup.py bdist_wheel
-          - cd ..
-      - name: e2e tests
-        commands:
-          - echo "e2e consumes too much memory. skip on L20 machine"
+          - |
+            bash .codebase/scripts/run_step.sh "
+              cd python
+              python3 setup.py bdist_wheel
+              cd ..
+            "
       - name: unit tests
         commands:
-          - L20_NO_RUN=1 bash -x .codebase/scripts/nvidia/run_unittest.sh
+          - bash .codebase/scripts/run_step.sh "L20_NO_RUN=1 bash -x .codebase/scripts/nvidia/run_unittest.sh"
 
+  # ===================================================================
+  # Compile Check Jobs
+  # ===================================================================
   triton-compile-nvcr-io-nvidia-torch-25.06-py3:
+    name: triton-compile-nvcr-io-nvidia-torch-25.06-py3
     image: hub.byted.org/compile/nvcr.io.nvidia_pytorch:25.06-py3-byted-20250718
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python
@@ -319,12 +491,24 @@ jobs:
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
       MAX_JOBS: 16
+    runs-on:
+      cluster: gpu-h100
     steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="nvidia"
+            export JOB_TYPE="compile-check"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
       - name: build
         commands:
-          - bash -x .codebase/scripts/nvidia/build.sh
+          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/nvidia/build.sh"
 
   triton-compile-nvcr-io-nvidia-torch-24.10-py3:
+    name: triton-compile-nvcr-io-nvidia-torch-24.10-py3
     image: hub.byted.org/compile/nvcr.io.nvidia_pytorch:24.10-py3-20250723
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python
@@ -332,12 +516,24 @@ jobs:
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
       MAX_JOBS: 16
+    runs-on:
+      cluster: gpu-h100
     steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="nvidia"
+            export JOB_TYPE="compile-check"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
       - name: build
         commands:
-          - bash -x .codebase/scripts/nvidia/build.sh
+          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/nvidia/build.sh"
 
   triton-compile-nvcr-io-nvidia-torch-23.04-py3:
+    name: triton-compile-nvcr-io-nvidia-torch-23.04-py3
     image: hub.byted.org/compile/nvcr.io.nvidia_pytorch:23.04-py3-20250724
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python
@@ -345,8 +541,18 @@ jobs:
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
       MAX_JOBS: 16
+    runs-on:
+      cluster: gpu-h100
     steps:
+      - name: "Pre-flight Check"
+        commands:
+          - |
+            export PLATFORM="nvidia"
+            export JOB_TYPE="compile-check"
+            export BASE_SHA=${{Event.Change.Target.SHA}}
+            export HEAD_SHA=${{Event.Change.Source.SHA}}
+            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
+            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
       - name: build
         commands:
-          # - bash -x .codebase/scripts/nvidia/build.sh
-          - echo "build with python 3.8 is not supported"
+          - bash .codebase/scripts/run_step.sh "echo 'build with python 3.8 is not supported'"

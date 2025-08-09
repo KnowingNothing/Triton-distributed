@@ -28,11 +28,12 @@ import argparse
 import torch
 import torch.distributed
 from functools import partial
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig
 
 import triton
 import nvshmem.core
 from triton_dist.layers.nvidia.tp_moe import TP_MoE
+from triton_dist.models.utils import init_model_cpu
 from triton_dist.utils import initialize_distributed, perf_func, dist_print, group_profile, nvshmem_barrier_all_on_stream, assert_allclose
 
 THRESHOLD_MAP = {
@@ -99,7 +100,8 @@ if __name__ == "__main__":
     ATOL = THRESHOLD_MAP[DTYPE]
     RTOL = THRESHOLD_MAP[DTYPE]
 
-    hf_model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=DTYPE)
+    config = AutoConfig.from_pretrained(args.model)
+    hf_model = init_model_cpu(model_name=args.model, dtype=DTYPE)
     hf_mlp = hf_model.model.layers[0].mlp.eval()
     mlp = TP_MoE(rank=RANK, world_size=WORLD_SIZE, group=TP_GROUP, autotune=args.autotune)
     mlp._init_parameters(hf_mlp, verbose=True)

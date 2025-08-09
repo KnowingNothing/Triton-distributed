@@ -26,10 +26,10 @@
 import torch
 import torch.nn.functional as F
 import gc
-
-from transformers import Qwen3MoeForCausalLM, Qwen3MoeConfig
+from transformers import AutoConfig
 from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeDecoderLayer
 from triton_dist.models.kv_cache import KV_Cache
+from triton_dist.models.utils import init_model_cpu
 
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is not available. Please ensure you have a compatible GPU and CUDA installed.")
@@ -114,7 +114,7 @@ class Qwen3MoE:
 
     def __init__(self, model_config, group) -> None:
         self.dtype = model_config.dtype
-        self.config = Qwen3MoeConfig.from_pretrained(model_config.model_name, local_files_only=model_config.local_only)
+        self.config = AutoConfig.from_pretrained(model_config.model_name, local_files_only=model_config.local_only)
         self.model_name = model_config.model_name
         self.max_length = model_config.max_length
         self.hidden_size = self.config.hidden_size
@@ -139,7 +139,7 @@ class Qwen3MoE:
             layer.set_fwd(mode)
 
     def init_parameters(self):
-        hf_model = Qwen3MoeForCausalLM.from_pretrained(self.model_name, torch_dtype=self.dtype)
+        hf_model = init_model_cpu(model_name=self.model_name, dtype=self.dtype)
         self.embed_tokens = hf_model.model.embed_tokens.weight.detach().cuda()
         self.lm_head = hf_model.lm_head.weight.detach().cuda()
         self.norm_weight = hf_model.model.norm.weight.detach().cuda()

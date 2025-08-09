@@ -27,8 +27,8 @@ import torch
 import torch.nn.functional as F
 import gc
 
-from transformers import Qwen3ForCausalLM, Qwen3Config
-from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer
+from transformers import AutoConfig
+from triton_dist.models.utils import init_model_cpu
 
 from triton_dist.kernels.allreduce import AllReduceMethod
 from triton_dist.models.kv_cache import KV_Cache
@@ -50,9 +50,9 @@ except ImportError as e:
     ) from e
 
 
-class Qwen3Layer:
+class DenseLLMLayer:
     """
-    A single layer of Qwen3 model, containing self-attention and MLP.
+    A single layer of DenseLLM, containing self-attention and MLP.
     This layer is designed to be used in a tensor parallel setting.
     It initializes the parameters and sets the forward pass method based on the mode.
     """
@@ -69,7 +69,7 @@ class Qwen3Layer:
         self.layer_idx = layer_idx
         self.group = group
 
-    def init_parameters(self, hf_layer: Qwen3DecoderLayer, rank: int, world_size: int):
+    def init_parameters(self, hf_layer, rank: int, world_size: int):
         self.mlp = TP_MLP(rank=rank, world_size=world_size, group=self.group)
         self.mlp._init_parameters(hf_layer.mlp)
 
@@ -91,6 +91,9 @@ class Qwen3Layer:
         elif mode == 'triton_dist_AR':
             self.attn.fwd = self.attn.dist_triton_AR_fwd
             self.mlp.fwd = self.mlp.dist_triton_AR_fwd
+        elif mode == 'triton_dist_gemm_ar':
+            self.attn.fwd = self.attn.dist_triton_gemm_ar_fwd
+            self.mlp.fwd = self.mlp.dist_triton_gemm_ar_fwd
         else:
             raise ValueError(f"Unsupported mode: {mode}, choose from ['dist_triton', 'torch']")
 
@@ -111,16 +114,16 @@ class Qwen3Layer:
         return hidden_states
 
 
-class Qwen3:
+class DenseLLM:
     """
-    Qwen3 model implementation for tensor parallel training.
+    DenseLLM model implementation for tensor parallel training.
     This model initializes the parameters, sets the forward pass method, and provides an inference method.
     It supports both torch and triton_dist modes for forward pass.
     """
 
     def __init__(self, model_config, group) -> None:
         self.dtype = model_config.dtype
-        self.config = Qwen3Config.from_pretrained(model_config.model_name, local_files_only=model_config.local_only)
+        self.config = AutoConfig.from_pretrained(model_config.model_name, local_files_only=model_config.local_only)
         self.model_name = model_config.model_name
         self.max_length = model_config.max_length
         self.hidden_size = self.config.hidden_size
@@ -145,17 +148,17 @@ class Qwen3:
             layer.set_fwd(mode)
 
     def init_parameters(self):
-        hf_model = Qwen3ForCausalLM.from_pretrained(self.model_name, torch_dtype=self.dtype)
+        hf_model = init_model_cpu(self.model_name, dtype=self.dtype)
         self.embed_tokens = hf_model.model.embed_tokens.weight.detach().cuda()
         self.lm_head = hf_model.lm_head.weight.detach().cuda()
         self.norm_weight = hf_model.model.norm.weight.detach().cuda()
         self.norm_variance_epsilon = hf_model.model.norm.variance_epsilon
         self.cos_sin_cache = _set_cos_sin_cache(hf_model.model.rotary_emb.inv_freq.cuda(), max_length=self.max_length)
 
-        self.layers: list[Qwen3Layer] = []
+        self.layers: list[DenseLLMLayer] = []
 
         for idx, hf_layer in enumerate(hf_model.model.layers):
-            layer = Qwen3Layer(idx, self.group)
+            layer = DenseLLMLayer(idx, self.group)
             layer.init_parameters(hf_layer=hf_layer, rank=self.rank, world_size=self.world_size)
             self.layers.append(layer)
             hf_model.model.layers[idx] = None
@@ -199,6 +202,15 @@ class Qwen3:
             layer.attn.ar_method = self.layers[0].attn.ar_method
             layer.mlp.ar_ctx = self.layers[0].mlp.ar_ctx
             layer.mlp.ar_method = self.layers[0].mlp.ar_method
+        self.use_ar = True
+
+    def init_triton_dist_gemm_ar_ctx(self, max_M: int = 4096):
+        self.layers[0].attn._init_gemm_ar_ctx(max_M=max_M, dtype=self.dtype)
+        self.layers[0].mlp._init_gemm_ar_ctx(max_M=max_M, dtype=self.dtype)
+
+        for layer in self.layers[1:]:
+            layer.attn.gemm_ar_ctx = self.layers[0].attn.gemm_ar_ctx
+            layer.mlp.gemm_ar_ctx = self.layers[0].mlp.gemm_ar_ctx
         self.use_ar = True
 
     def finalize(self):

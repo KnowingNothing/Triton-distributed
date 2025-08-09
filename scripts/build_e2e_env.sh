@@ -103,6 +103,8 @@ pip install --upgrade deepspeed
 
 # --- Define Hugging Face models to download ---
 MODELS=(
+  "Qwen/Qwen3-0.6B"
+  "Qwen/Qwen3-8B"
   "Qwen/Qwen3-32B"
   "Qwen/Qwen3-30B-A3B"
 )
@@ -110,9 +112,9 @@ MODELS=(
 # --- Loop through each model and download it ---
 for MODEL_NAME in "${MODELS[@]}"; do
   while true; do
-    echo "Attempting to download model: $MODEL_NAME (timeout: 120s)..."
+    echo "Attempting to download model config: $MODEL_NAME (timeout: 120s)..."
     # Use timeout to prevent the script from hanging indefinitely.
-    timeout 120s huggingface-cli download "$MODEL_NAME"
+    timeout 120s hf download "$MODEL_NAME" --include "config.json"
 
     EXIT_CODE=$?
 
@@ -130,6 +132,9 @@ for MODEL_NAME in "${MODELS[@]}"; do
 done
 
 echo "All specified models have been downloaded."
+
+pip install accelerate
+pip uninstall triton -y
 
 # --- Final check ---
 if [[ $? -eq 0 ]]; then

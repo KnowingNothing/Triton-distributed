@@ -41,12 +41,12 @@ def parse_args() -> Namespace:
     p.add_argument("--gen_len", type=int, default=256, help="Length of generated tokens")
     p.add_argument("--max_length", type=int, default=384)
     p.add_argument("--seed", type=int, default=42)
-
     p.add_argument("--profile", action="store_true", help="Enable profiling")
     p.add_argument("--no_graph", action="store_true", help="Disable CUDA graph")
-    p.add_argument("--triton_dist", action="store_true", help="Use triton_dist for distributed inference")
-    p.add_argument("--triton_dist_AR", action="store_true", help="Use triton_dist_AR for distributed inference")
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    p.add_argument("--backend", type=str, default="torch",
+                   choices=["torch", "triton_dist", "triton_dist_AR", "triton_dist_gemm_ar"],
+                   help="Specify the inference backend. 'torch' is the default native backend.")
     return p.parse_args()
 
 
@@ -68,8 +68,8 @@ if __name__ == "__main__":
     model_config = ModelConfig(model_name=args.model, max_length=args.max_length, dtype=DTYPE, rank=RANK,
                                world_size=WORLD_SIZE)
     bsz = args.bsz
-    assert bsz % WORLD_SIZE == 0, "Batch size must be divisible by world size for distributed inference."
-    engine = Engine(model_config, temperature=0.6, top_p=0.95, verbose=args.verbose)
+    assert bsz % WORLD_SIZE == 0
+    engine = Engine(model_config, temperature=0.6, top_p=0.95, verbose=args.verbose, group=TP_GROUP)
 
     if args.profile:
         engine.enable_profile = True
@@ -81,15 +81,9 @@ if __name__ == "__main__":
     input_ids = engine.tokenizer(prompt, return_tensors="pt").input_ids.cuda().repeat(bsz, 1)
     gen_len = args.gen_len
 
-    if args.triton_dist:
-        engine.logger.log("🔗 Using triton_dist for distributed inference.", "info")
-        engine.backend = 'triton_dist'
-    elif args.triton_dist_AR:
-        engine.logger.log("🔗 Using triton_dist_AR for distributed inference.", "info")
-        engine.backend = 'triton_dist_AR'
-    else:
-        engine.logger.log("🔗 Using torch native backend for inference.", "info")
-        engine.backend = 'torch'
+    # Directly set the backend from the parsed argument
+    engine.backend = args.backend
+    engine.logger.log(f"🔗 Using '{args.backend}' backend for inference.", "info")
 
     engine.serve(input_ids=input_ids, gen_len=gen_len)
     engine.logger.log("✅ Inference completed!", "success")

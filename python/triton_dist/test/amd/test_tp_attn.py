@@ -28,11 +28,12 @@ import argparse
 import torch
 import torch.distributed
 from functools import partial
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig
 
 import pyrocshmem
 from triton_dist.layers.amd.tp_attn import TP_Attn, _set_cos_sin_cache
 from triton_dist.models.kv_cache import KV_Cache
+from triton_dist.models.utils import init_model_cpu
 from triton_dist.utils import perf_func, dist_print, group_profile
 
 THRESHOLD_MAP = {
@@ -136,8 +137,8 @@ if __name__ == "__main__":
     RTOL = THRESHOLD_MAP[DTYPE]
     MODE = args.mode
 
-    hf_model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=DTYPE,
-                                                    attn_implementation="flash_attention_2")
+    config = AutoConfig.from_pretrained(args.model)
+    hf_model = init_model_cpu(model_name=args.model, dtype=DTYPE)
     hf_attn = hf_model.model.layers[0].self_attn.eval()
     attn = TP_Attn(rank=RANK, world_size=WORLD_SIZE, group=TP_GROUP)
     cos_sin_cache = _set_cos_sin_cache(hf_model.model.rotary_emb.inv_freq.cuda(), max_length=args.seq_len + 128)
