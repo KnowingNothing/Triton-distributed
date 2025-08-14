@@ -89,6 +89,7 @@ function run_moe_reduce_rs_testcases() {
 function run_ep_a2a_testcases() {
   NVSHMEM_SYMMETRIC_SIZE=10000000000 bash scripts/launch.sh python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8 --check
   NVSHMEM_SYMMETRIC_SIZE=10000000000 bash scripts/launch.sh python/triton_dist/test/nvidia/test_ep_a2a.py -M 8192 -N 7168 --topk 8
+  NVSHMEM_SYMMETRIC_SIZE=10000000000 bash scripts/launch.sh python/triton_dist/test/nvidia/test_ep_a2a.py -M 4096 -N 6144 --topk 6  --drop_ratio 0.3  --check --with-scatter-indices  --has_weight
 }
 
 function run_sp_ag_attention_testcases() {
