@@ -59,6 +59,7 @@ function run_allgather_testcases() {
 function run_ep_all2all_testcases() {
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_all_to_all.py
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_ep_moe_inference.py
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_all_to_all_single_2d.py
 }
 
 function run_nvshmem_api_testcases() {
