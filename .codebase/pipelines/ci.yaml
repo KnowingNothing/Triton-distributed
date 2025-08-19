@@ -5,6 +5,14 @@ trigger:
     types: [ create, push ]
     notification:
       when: [ success, failure ]
+    paths:
+      - "*"
+      - "!asset/**"
+      - "!docs/*"
+      - "!*.md"
+      - "!LICENSE"
+      - "!NOTICE"
+
 
 jobs:
   # ===================================================================
@@ -417,18 +425,27 @@ jobs:
 
   triton-nvidia-L20:
     name: L20 Unit Tests
-    image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
+    image: hub.byted.org/codebase/ci_python_39 # pull images faster
+    # image: hub.byted.org/compile/data.aml.flux_compile:cu124-py311-torch24-241101-3
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
-    runs-on:
-      cluster: gpu-l20
-      docker:
-        shared-memory: 40960
+    # runs-on:
+    #   cluster: gpu-l20
+    #   docker:
+    #     shared-memory: 40960
     steps:
+      - name: L20 CI runs on Merlin
+        uses: merlin/training-action
+        inputs:
+          job_def_name: "TRITON_DISTITRIBUTED_L20_CI" # https://ml.bytedance.net/development/template/jobs/TRITON_DISTITRIBUTED_L20_CI?version=1
+          namespace: 	/topic/89cf6d38b5e781c0 # for Seed_Project
+          wait_result_timeout: 90
+        parallel-with-next-step: true
       - name: "Pre-flight Check"
+        if: 0 # skip this steps and run on Merlin
         commands:
           - |
             export PLATFORM="nvidia"
@@ -438,11 +455,13 @@ jobs:
             python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
             echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
       - name: code-format-check
+        if: 0 # skip this steps and run on Merlin
         commands:
           - bash .codebase/scripts/run_step.sh "pip3 install black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
           - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
           - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
       - name: env-check
+        if: 0 # skip this steps and run on Merlin
         commands:
           - nvidia-smi
           - curl -IivvL https://oaitriton.blob.core.windows.net/public/llvm-builds/
@@ -454,6 +473,7 @@ jobs:
           - pip3 --version
           - python3 -c "import torch; print(torch.__version__)"
       - name: build
+        if: 0 # skip this steps and run on Merlin
         commands:
           - |
             bash .codebase/scripts/run_step.sh "
@@ -468,6 +488,7 @@ jobs:
               MAX_JOBS=126 pip3 install -e python --verbose --no-build-isolation --use-pep517
             "
       - name: build_wheel
+        if: 0 # skip this steps and run on Merlin
         commands:
           - |
             bash .codebase/scripts/run_step.sh "
@@ -476,6 +497,7 @@ jobs:
               cd ..
             "
       - name: unit tests
+        if: 0 # skip this steps and run on Merlin
         commands:
           - bash .codebase/scripts/run_step.sh "L20_NO_RUN=1 bash -x .codebase/scripts/nvidia/run_unittest.sh"
 

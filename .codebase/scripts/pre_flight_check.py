@@ -2,7 +2,7 @@ import os
 import sys
 import subprocess
 import re
-from typing import List, Set
+from typing import List, Set, Dict
 
 
 def get_changed_files(base_sha: str, head_sha: str) -> List[str]:
@@ -20,15 +20,21 @@ def get_changed_files(base_sha: str, head_sha: str) -> List[str]:
         return ["*"]
 
 
-def get_required_suite(changed_files: List[str]) -> Set[str]:
-    """Determines the required test suite using a platform-aware rule structure."""
+def get_required_suite(changed_files: List[str]) -> Dict[str, Set[str]]:
+    """
+    Determines the required test suite and affected platforms using a platform-aware rule structure.
+    Returns a dictionary containing the set of required suites and the set of affected platforms.
+    """
     if changed_files == ["*"]:
         print(
             "Warning: git diff failed. Assuming full test suite is required.",
             file=sys.stderr)
-        return {"all", "compile-check"}
+        return {
+            "suites": {"all", "compile-check"},
+            "platforms": {"nvidia", "amd"}
+        }
 
-    IGNORE_PATTERNS = r"(\.md|docs/|asset/|LICENSE|README)$|(\.codebase/pipelines/ci\.yaml|\.codebase/scripts/pre_flight_check\.py|\.codebase/scripts/check_ci_run\.sh|\.codebase/scripts/run_step\.sh|code-format\.sh)$"
+    IGNORE_PATTERNS = r"(\.md|LICENSE|README)$|^(docs/|asset/)|^\.codebase/scripts/(pre_flight_check\.py|check_ci_run\.sh|run_step\.sh)$|^code-format\.sh$"
 
     PATTERNS = {
         "generic": {
@@ -43,7 +49,6 @@ def get_required_suite(changed_files: List[str]) -> Set[str]:
                 r"^(python/triton_dist/models/)",
                 {"e2e"},
             ),
-            # change in 'scripts/build_e2e_env.sh'
             "e2e env build change": (r"scripts/build_e2e_env\.sh", {"e2e"}),
             "Tutorial Change": (r"tutorials/", {"tutorial"}),
         },
@@ -81,7 +86,8 @@ def get_required_suite(changed_files: List[str]) -> Set[str]:
         }
     }
 
-    required_suite = set()
+    required_suites = set()
+    affected_platforms = set()
 
     all_files_ignorable = all(
         re.search(IGNORE_PATTERNS, file) for file in changed_files)
@@ -89,7 +95,7 @@ def get_required_suite(changed_files: List[str]) -> Set[str]:
         print(
             "Rule match: All changed files are documentation or CI config. No tests needed.",
             file=sys.stderr)
-        return set()
+        return {"suites": set(), "platforms": set()}
 
     for file in changed_files:
         if re.search(IGNORE_PATTERNS, file):
@@ -102,25 +108,34 @@ def get_required_suite(changed_files: List[str]) -> Set[str]:
                 if re.search(pattern, file):
                     log_msg = f"[{platform_name}] Rule match ({rule_name}): '{file}' requires suite(s): {', '.join(suite)}"
                     print(log_msg, file=sys.stderr)
-                    required_suite.update(suite)
+                    required_suites.update(suite)
+
+                    if platform_name in ["nvidia", "amd"]:
+                        affected_platforms.add(platform_name)
+                    else:  # A generic change affects all platforms
+                        affected_platforms.update({"nvidia", "amd"})
+
                     matched_any_rule = True
 
         if not matched_any_rule:
             print(
                 f"[general] Rule match (Fallback): Unclassified change in '{file}'. Defaulting to all tests for safety.",
                 file=sys.stderr)
-            required_suite.add("all")
+            required_suites.add("all")
 
-    if not required_suite:
+    if not required_suites:
         print("No runnable code changes found after filtering.",
               file=sys.stderr)
-        return set()
+        return {"suites": set(), "platforms": set()}
 
-    return required_suite
+    # If a fallback to "all" happened, it affects all platforms
+    if "all" in required_suites:
+        affected_platforms.update({"nvidia", "amd"})
+
+    return {"suites": required_suites, "platforms": affected_platforms}
 
 
 def main():
-    # This main function remains exactly the same.
     platform = os.environ.get("PLATFORM")
     job_type = os.environ.get("JOB_TYPE")
     base_sha = os.environ.get("BASE_SHA")
@@ -158,40 +173,39 @@ def main():
     print("Changed files:\n" + "\n".join(f"- {f}" for f in changed_files),
           file=sys.stderr)
 
-    required_suite = get_required_suite(changed_files)
+    analysis = get_required_suite(changed_files)
+    required_suites = analysis["suites"]
+    affected_platforms = analysis["platforms"]
 
-    run_job = True
+    print("\nAnalysis complete.", file=sys.stderr)
+    print(f"-> Required Suites: {required_suites or {'None'}}",
+          file=sys.stderr)
+    print(f"-> Affected Platforms: {affected_platforms or {'None'}}",
+          file=sys.stderr)
 
-    is_amd_specific_change = any(
-        re.search(
-            r"^(backends/amd/|python/triton_dist/layers/amd/|python/triton_dist/test/amd/)",
-            f) for f in changed_files)
-    is_nvidia_specific_change = any(
-        re.search(
-            r"^(backends/nvidia/|python/triton_dist/layers/nvidia/|python/triton_dist/test/nvidia/)",
-            f) for f in changed_files)
-    is_generic_change = any(
-        re.search(
-            r"^(csrc/|include/|lib/|python/triton_dist/models/|python/triton_dist/language/)",
-            f) for f in changed_files)
-
-    if platform == "amd" and not is_amd_specific_change and not is_generic_change:
+    run_job = False
+    if not required_suites:
         run_job = False
-    if platform == "nvidia" and not is_nvidia_specific_change and not is_generic_change:
-        run_job = False
+    else:
+        # A job should run if:
+        # 1. The current platform is one of the affected platforms.
+        # 2. AND the current job type is in the required suites (or 'all' is required).
+        # Note: If affected_platforms is empty (e.g. from a tutorial change), we assume
+        # it's a generic task that any runner can handle, so the platform check passes.
+        platform_match = (platform
+                          in affected_platforms) or (not affected_platforms)
+        suite_match = ("all" in required_suites) or (job_type
+                                                     in required_suites)
 
-    if "all" not in required_suite and job_type not in required_suite:
-        run_job = False
-
-    if not required_suite:
-        run_job = False
+        if platform_match and suite_match:
+            run_job = True
 
     if run_job:
-        print(f"DECISION: PROCEED with job ('{job_type}' on '{platform}').",
+        print(f"\nDECISION: PROCEED with job ('{job_type}' on '{platform}').",
               file=sys.stderr)
         print("PROCEED", end='')
     else:
-        print(f"DECISION: SKIP job ('{job_type}' on '{platform}').",
+        print(f"\nDECISION: SKIP job ('{job_type}' on '{platform}').",
               file=sys.stderr)
         print("SKIP", end='')
 
