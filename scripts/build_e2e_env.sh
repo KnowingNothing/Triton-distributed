@@ -107,6 +107,7 @@ MODELS=(
   "Qwen/Qwen3-8B"
   "Qwen/Qwen3-32B"
   "Qwen/Qwen3-30B-A3B"
+  "ByteDance-Seed/Seed-OSS-36B-Instruct"
 )
 
 # --- Loop through each model and download it ---

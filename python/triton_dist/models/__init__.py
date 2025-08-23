@@ -39,6 +39,7 @@ class AutoLLM:
         "Qwen/Qwen3-30B-A3B": Qwen3MoE,
         "Qwen/Qwen3-235B-A22B": Qwen3MoE,
         "meta-llama/Meta-Llama-3-70B": DenseLLM,
+        "ByteDance-Seed/Seed-OSS-36B-Instruct": DenseLLM,
     }
 
     @staticmethod

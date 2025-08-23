@@ -116,6 +116,13 @@ class TP_Attn:
             self.k_norm_eps = self_attn.k_norm.variance_epsilon
             self.k_norm_w = self_attn.k_norm.weight.detach().to("cuda", non_blocking=True)
 
+        # bias
+        if self_attn.q_proj.bias is not None:
+            bq = shard_local(self_attn.q_proj.bias.detach(), self.world_size, 0, self.rank)
+            bk = shard_local(self_attn.k_proj.bias.detach(), self.world_size, 0, self.rank)
+            bv = shard_local(self_attn.v_proj.bias.detach(), self.world_size, 0, self.rank)
+            self.bqkv = torch.cat((bq, bk, bv), dim=0).to("cuda", non_blocking=True)  # [qkv_dim]
+
         if verbose:
             print(f"[RANK {self.rank}] Attn initialized with parameters: qkv ({self.wqkv.shape}, o ({self.wo.shape}))")
 
@@ -160,6 +167,8 @@ class TP_Attn:
     def apply_rotary_pos_emb(self, q: torch.Tensor, k: torch.Tensor, position_ids: torch.Tensor,
                              cos_sin_cache: torch.Tensor):
         """Applies Rotary Position Embedding inplace."""
+        if cos_sin_cache.dtype != torch.float32:
+            cos_sin_cache = cos_sin_cache.to(torch.float32)
         bsz, seq, _ = q.shape
         flashinfer.apply_rope_with_cos_sin_cache_inplace(position_ids, q.view(bsz * seq, -1), k.view(bsz * seq, -1),
                                                          self.head_dim, cos_sin_cache, True),
@@ -176,6 +185,8 @@ class TP_Attn:
         """
         bsz, q_len, _ = x.size()
         qkv = torch.nn.functional.linear(x, self.wqkv)
+        if hasattr(self, 'bqkv'):
+            qkv = qkv + self.bqkv.view(1, 1, -1).expand(bsz, q_len, -1)
 
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         v = v.view(bsz, q_len, -1, self.head_dim)
@@ -213,6 +224,8 @@ class TP_Attn:
         # ag + gemm
         qkv = ag_gemm(x.view(-1, d), self.wqkv, ctx=self.ag_ctx, persistent=ag_gemm_persistent,
                       autotune=autotune).view(bsz * self.world_size, q_len, -1)
+        if hasattr(self, 'bqkv'):
+            qkv = qkv + self.bqkv.view(1, 1, -1).expand(bsz * self.world_size, q_len, -1)
 
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         v = v.view(bsz * self.world_size, q_len, -1, self.head_dim)
@@ -246,6 +259,8 @@ class TP_Attn:
         """
         bsz, q_len, _ = x.size()
         qkv = torch.nn.functional.linear(x, self.wqkv)
+        if hasattr(self, 'bqkv'):
+            qkv = qkv + self.bqkv.view(1, 1, -1).expand(bsz, q_len, -1)
 
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         v = v.view(bsz, q_len, -1, self.head_dim)
@@ -282,6 +297,8 @@ class TP_Attn:
     def dist_triton_gemm_ar_fwd(self, x, position_ids, cos_sin_cache, kv_cache, layer_idx: int):
         bsz, q_len, _ = x.size()
         qkv = torch.nn.functional.linear(x, self.wqkv)
+        if hasattr(self, 'bqkv'):
+            qkv = qkv + self.bqkv.view(1, 1, -1).expand(bsz, q_len, -1)
 
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         v = v.view(bsz, q_len, -1, self.head_dim)

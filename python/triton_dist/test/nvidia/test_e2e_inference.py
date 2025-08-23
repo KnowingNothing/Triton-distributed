@@ -77,8 +77,15 @@ if __name__ == "__main__":
         engine.no_graph = True
         engine.logger.log("❌ CUDA graph disabled!", "warning")
 
-    prompt = "<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n"
-    input_ids = engine.tokenizer(prompt, return_tensors="pt").input_ids.cuda().repeat(bsz, 1)
+    messages = [
+        {"role": "user", "content": "How to make pasta?"},
+    ]
+    input_ids = engine.tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+    ).cuda().repeat(bsz, 1)
     gen_len = args.gen_len
 
     # Directly set the backend from the parsed argument
