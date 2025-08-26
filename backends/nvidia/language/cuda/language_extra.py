@@ -139,6 +139,21 @@ def __fence(scope: core.constexpr = core.constexpr("gpu"), _semantic=None):
 
 
 @core.extern
+def tma_sync(N: core.constexpr = core.constexpr(0), _semantic=None):
+    return core.inline_asm_elementwise(
+        asm=f"""
+        cp.async.bulk.wait_group {N.value};
+        """,
+        constraints="=r",  # force have a return value, even not used.
+        args=[],
+        dtype=tl.uint32,
+        is_pure=False,  # no optimize this!
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
 def _load_v4_impl(ptr, suffix: core.constexpr, _semantic=None):
     val_type: core.constexpr = _ptx_suffix_to_tl_type(suffix,
                                                       _semantic=_semantic)
