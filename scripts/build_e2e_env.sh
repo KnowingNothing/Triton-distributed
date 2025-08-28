@@ -82,10 +82,21 @@ if command -v nvcc &> /dev/null; then
     fi
 
     echo "Installing CUDA-specific libraries..."
-    flashinfer_whl_url="https://flashinfer.ai/whl/${parsed_cuda_slug}/${parsed_pytorch_slug}/"
-    pip install flashinfer-python -i "$flashinfer_whl_url"
+    
+    # Check for local flashinfer whl files first
+    local_flashinfer_whl=$(find . -name "*flashinfer*.whl" | head -1)
+    if [[ -n "$local_flashinfer_whl" ]]; then
+        echo "Found local flashinfer whl: $local_flashinfer_whl"
+        echo "Installing local flashinfer whl..."
+        pip install "$local_flashinfer_whl"
+    else
+        echo "No local flashinfer whl found, installing from remote..."
+        flashinfer_whl_url="https://flashinfer.ai/whl/${parsed_cuda_slug}/${parsed_pytorch_slug}/"
+        pip install flashinfer-python -i "$flashinfer_whl_url"
+    fi
     pip install flash-attn --no-build-isolation
     echo "Finished installing CUDA-specific libraries."
+
 # --- AMD ROCm ---
 elif command -v hipcc &> /dev/null; then
     echo "AMD ROCm compiler (hipcc) found. Proceeding with ROCm-specific installations."
@@ -101,38 +112,6 @@ echo "Installing common packages: transformers and numpy..."
 pip install transformers==4.51.3 numpy==1.26.4 termcolor
 pip install --upgrade deepspeed
 
-# --- Define Hugging Face models to download ---
-MODELS=(
-  "Qwen/Qwen3-0.6B"
-  "Qwen/Qwen3-8B"
-  "Qwen/Qwen3-32B"
-  "Qwen/Qwen3-30B-A3B"
-  "ByteDance-Seed/Seed-OSS-36B-Instruct"
-)
-
-# --- Loop through each model and download it ---
-for MODEL_NAME in "${MODELS[@]}"; do
-  while true; do
-    echo "Attempting to download model config: $MODEL_NAME (timeout: 120s)..."
-    # Use timeout to prevent the script from hanging indefinitely.
-    timeout 120s hf download "$MODEL_NAME" --include "config.json"
-
-    EXIT_CODE=$?
-
-    if [ $EXIT_CODE -eq 0 ]; then
-      echo "Model '$MODEL_NAME' downloaded successfully! 🎉"
-      break # Exit the while loop and move to the next model
-    elif [ $EXIT_CODE -eq 124 ]; then
-      echo "Download timed out for '$MODEL_NAME'. Retrying in 5 seconds... ⏳"
-    else
-      echo "Download failed for '$MODEL_NAME' with exit code $EXIT_CODE. Retrying in 5 seconds... 🔁"
-    fi
-
-    sleep 5
-  done
-done
-
-echo "All specified models have been downloaded."
 
 pip install accelerate
 pip uninstall triton -y

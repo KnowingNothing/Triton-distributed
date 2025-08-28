@@ -8,8 +8,8 @@ pushd ${PROJECT_ROOT}
 
 export PYTHONPATH=$PYTHONPATH:$(realpath python)
 
-DENSE_MODEL="Qwen/Qwen3-0.6B"
-MOE_MODEL="Qwen/Qwen3-30B-A3B"
+DENSE_MODEL=".codebase/hf_configs/Qwen/Qwen3-0.6B"
+MOE_MODEL=".codebase/hf_configs/Qwen/Qwen3-30B-A3B"
 
 function run_e2e_testcases_dense() {
   # tp mlp

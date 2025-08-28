@@ -8,7 +8,7 @@ pushd ${PROJECT_ROOT}
 
 export PYTHONPATH=$PYTHONPATH:$(realpath python)
 
-DENSE_MODEL="Qwen/Qwen3-0.6B"
+DENSE_MODEL=".codebase/hf_configs/Qwen/Qwen3-0.6B"
 
 function run_amd_testcases() {
   CUDA_GRAPH=1 bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_tp_mlp.py --M 4096 --model ${DENSE_MODEL}
