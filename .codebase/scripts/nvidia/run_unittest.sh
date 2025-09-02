@@ -51,7 +51,9 @@ function run_gemm_rs_testcases() {
 }
 
 function run_allgather_testcases() {
+if [ -z "$L20_NO_RUN" ]; then
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_small_msg.py
+fi
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_all_gather.py
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_fast_allgather.py --iters 10 --warmup_iters 20 --mode push_2d_ll --minbytes 4096 --maxbytes 8192
 }
