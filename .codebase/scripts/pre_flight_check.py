@@ -60,8 +60,8 @@ def get_required_suite(changed_files: List[str]) -> Dict[str, Set[str]]:
             (r"python/triton_dist/layers/nvidia/p2p\.py", {"internal"}),
             "Layer Change (E2E)":
             (r"python/triton_dist/layers/nvidia/tp_.*\.py", {"e2e"}),
-            "Megakernel Change":
-            (r"python/triton_dist/mega_triton_kernel/", {"megakernel"}),
+            "Megakernel Change": (r"python/triton_dist/mega_triton_kernel/",
+                                  {"megakernel"}),
             "Megakernel Test Change": (
                 r"test/nvidia/.*megakernel|run_mega_kernel_test\.sh",
                 {"megakernel"},
@@ -70,8 +70,9 @@ def get_required_suite(changed_files: List[str]) -> Dict[str, Set[str]]:
                 r"test/nvidia/.*(e2e|tp_attn|tp_mlp|tp_moe)|run_e2e_test\.sh",
                 {"e2e"},
             ),
-            "Unit Test Change": (r"test/nvidia/.*unittest|run_unittest\.sh",
-                                 {"unittest"}),
+            "Unit Test Change":
+            (r"test/nvidia/.*unittest|run_unittest\.sh|patch_torch_compile|monkey_inductor",
+             {"unittest"}),
             "Internal Test Change": (r"run_m10_related_tests\.sh",
                                      {"internal"}),
         },

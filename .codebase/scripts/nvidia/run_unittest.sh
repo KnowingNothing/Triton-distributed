@@ -32,6 +32,14 @@ function run_aot_testcases() {
   USE_TRITON_DISTRIBUTED_AOT=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_compile_aot.py
 }
 
+function run_inductor_patch_testcases() {
+  #############
+  # ad-hoc test
+  #############
+  # incompibility of triton 3.4.0 with `torch.compile` (2.7.0 ... 2.8.0)
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_patch_torch_compile.py
+}
+
 function run_ag_gemm_testcases() {
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness
 if [ -z "$L20_NO_RUN" ]; then
@@ -127,6 +135,9 @@ function run_gemm_ar_testcases() {
   fi
 }
 
+function run_gdn_testcases() {
+  USE_TRITON_DISTRIBUTED_AOT=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_gdn.py --num_heads 12
+}
 
 function run_utils_testcases() {
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_utils.py --case max_occupancy
@@ -149,4 +160,6 @@ run_sp_ag_attention_testcases
 run_allreduce_testcases
 run_gemm_ar_testcases
 run_utils_testcases
+run_inductor_patch_testcases
 run_moe_reduce_ar_testcases
+run_gdn_testcases
