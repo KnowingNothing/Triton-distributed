@@ -16,6 +16,10 @@ function run_mega_kernel_testcases() {
   python3 python/triton_dist/mega_triton_kernel/test/ops/test_rms_norm.py
   python3 python/triton_dist/mega_triton_kernel/test/ops/test_add.py
   python3 python/triton_dist/mega_triton_kernel/test/ops/test_page_attn.py
+  python3 python/triton_dist/mega_triton_kernel/test/ops/test_qk_norm_rope.py
+  python3 python/triton_dist/mega_triton_kernel/test/ops/test_qkv_proj_qk_norm_rope_attn.py
+  python3 python/triton_dist/mega_triton_kernel/test/ops/test_flash_attn.py
+  python3 python/triton_dist/mega_triton_kernel/test/ops/test_flash_attn.py --qkv_pack
   NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/mega_triton_kernel/test/ops/test_allreduce.py
   NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/mega_triton_kernel/test/models/test_qwen3.py --model .codebase/hf_configs/Qwen/Qwen3-8B --backend mega_kernel
   NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/mega_triton_kernel/test/models/bench_qwen3.py --model .codebase/hf_configs/Qwen/Qwen3-8B --seq_len 128 --allreduce_method one_shot_multimem
