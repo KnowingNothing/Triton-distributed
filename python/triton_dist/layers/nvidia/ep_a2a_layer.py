@@ -32,7 +32,7 @@ from triton_dist.kernels.nvidia.ep_a2a import (
     kernel_combine_token,
     kernel_dispatch_token,
     bincount,
-    get_dispatch_send_reqs_for_target_node,
+    get_dispatch_send_reqs,
     get_ag_splits_and_recv_offset_for_dispatch,
 )
 from triton_dist.utils import NVSHMEM_SIGNAL_DTYPE, nvshmem_barrier_all_on_stream, nvshmem_free_tensor_sync, nvshmem_create_tensor
@@ -154,16 +154,8 @@ class EPAll2AllLayer(torch.nn.Module):
     def preprocess(self, input: torch.Tensor, exp_indices: torch.Tensor, full_scatter_indices: Union[torch.Tensor,
                                                                                                      None] = None):
         num_dispatch_token_cur_rank = exp_indices.shape[0]
-        token_node_idx = exp_indices // (self.experts_per_rank * self.local_world_size)
-
-        # TODO(zhengxuegui.0): use triton kernel to gen send requests. It takes 150us to generate a request for each node(4096 tokens top 8).
-        for traget_node_id in range(self.nnodes):
-            if traget_node_id == self.node_id:
-                continue
-            start_indices, end_indices = get_dispatch_send_reqs_for_target_node(token_node_idx, traget_node_id,
-                                                                                index_type=self.offset_dtype)
-            self.send_reqs_for_nodes[traget_node_id, 0, :start_indices.shape[0]].copy_(start_indices)
-            self.send_reqs_for_nodes[traget_node_id, 1, :end_indices.shape[0]].copy_(end_indices)
+        get_dispatch_send_reqs(exp_indices, self.send_reqs_for_nodes, self.experts_per_rank, self.local_world_size,
+                               self.num_sm)
 
         # assume that the expert indices of the drop token is num_tot_experts,
         # it will be counted in the `local_splits_buf[num_tot_experts]`
