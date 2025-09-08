@@ -112,6 +112,54 @@ echo "Installing common packages: transformers and numpy..."
 pip install transformers==4.51.3 numpy==1.26.4 termcolor
 pip install --upgrade deepspeed
 
+# --- Define Hugging Face models to download ---
+MODELS=(
+  "Qwen/Qwen3-0.6B"
+  "Qwen/Qwen3-8B"
+  "Qwen/Qwen3-32B"
+  "Qwen/Qwen3-30B-A3B"
+)
+
+download_model=false
+
+for arg in "$@"; do
+    case $arg in
+        --download_model)
+            download_model=true
+            shift
+            ;;
+        *)
+            ;;
+    esac
+done
+
+if [ "$download_model" = true ]; then
+    # --- Loop through each model and download it ---
+    for MODEL_NAME in "${MODELS[@]}"; do
+    while true; do
+        echo "Attempting to download model: $MODEL_NAME (timeout: 120s)..."
+        # Use timeout to prevent the script from hanging indefinitely.
+        timeout 120s huggingface-cli download "$MODEL_NAME"
+
+        EXIT_CODE=$?
+
+        if [ $EXIT_CODE -eq 0 ]; then
+        echo "Model '$MODEL_NAME' downloaded successfully! 🎉"
+        break # Exit the while loop and move to the next model
+        elif [ $EXIT_CODE -eq 124 ]; then
+        echo "Download timed out for '$MODEL_NAME'. Retrying in 5 seconds... ⏳"
+        else
+        echo "Download failed for '$MODEL_NAME' with exit code $EXIT_CODE. Retrying in 5 seconds... 🔁"
+        fi
+
+        sleep 5
+    done
+    done
+
+    echo "All specified models have been downloaded."
+else
+    echo "No Model download required. If you want to download model, add '--download_model' option."
+fi
 
 pip install accelerate
 pip uninstall triton -y

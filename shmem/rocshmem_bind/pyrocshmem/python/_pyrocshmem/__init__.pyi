@@ -49,19 +49,19 @@ class symm_rocshmem_buffer:
         ...
 
 
-def rocshmem_my_pe() -> np.int32:
-    ...
-
-
 def rocshmem_n_pes() -> np.int32:
     ...
 
 
-def rocshmem_team_my_pe(team: np.uintp) -> np.int32:
+def rocshmem_my_pe() -> np.int32:
     ...
 
 
 def rocshmem_team_n_pes(team: np.uintp) -> np.int32:
+    ...
+
+
+def rocshmem_team_my_pe(team: np.int32) -> np.int32:
     ...
 
 

@@ -307,7 +307,6 @@ def ag_gemm_intra_node_op(a, b, c, rank, num_ranks, workspace_tensors, one, barr
         )
     else:
         raise NotImplementedError("Non-perisitent gemm is not yet supported")
-
     if os.getenv('CUDA_GRAPH') in ['1', 'true', 'True']:
         for ag_stream in ag_streams:
             current_stream.wait_stream(ag_stream)
@@ -374,7 +373,7 @@ def create_ag_gemm_intra_node_context(max_M, N, K, input_dtype, output_dtype, ra
                                 requires_grad=False)
 
     torch.cuda.synchronize()
-    torch.distributed.barrier()
+
     _ag_streams = [torch.cuda.Stream(priority=-1) for i in range(num_ranks)] if ag_streams is None else ag_streams
     one = torch.ones((1024, ), dtype=torch.int32, device=torch.cuda.current_device())
     ret = AllGatherGEMMTensorParallelContext(

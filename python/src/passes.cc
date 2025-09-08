@@ -44,7 +44,6 @@ void init_triton_distributed_passes_ttgpuir_for_amd(py::module &&m) {
   using namespace mlir::triton;
   ADD_PASS_WRAPPER_1("add_lib_device_to_llvmir",
                      createConvertLibDeviceToLLVMPass, bool);
-
   ADD_PASS_WRAPPER_2("add_distributed_to_llvm",
                      createConvertAMDDistributedToLLVMPass, const std::string &,
                      bool);

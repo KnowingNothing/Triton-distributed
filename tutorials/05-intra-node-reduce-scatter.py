@@ -51,8 +51,11 @@ import triton.language as tl
 import triton_dist
 from triton_dist.kernels.nvidia.common_ops import \
     barrier_all_intra_node_atomic_cas_block
-from triton_dist.utils import (nvshmem_barrier_all_on_stream, nvshmem_create_tensor, nvshmem_create_tensors,
-                               nvshmem_free_tensor_sync, requires_p2p_native_atomic, supports_p2p_native_atomic)
+from triton_dist.utils import (nvshmem_barrier_all_on_stream,
+                               nvshmem_create_tensor, nvshmem_create_tensors,
+                               nvshmem_free_tensor_sync,
+                               requires_p2p_native_atomic,
+                               supports_p2p_native_atomic)
 
 ################### triton kernel ####################
 
@@ -98,13 +101,20 @@ def kernel_ring_reduce(
         tile_id_n = tile_id % num_tiles_n
         # accum = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=out_ptr.dtype.element_ty)
         cur_rank = (begin_idx + 1) % num_splits
-        accum = c_desc.load([tile_id_m * BLOCK_SIZE_M + cur_rank * M_per_rank, tile_id_n * BLOCK_SIZE_N])
+        accum = c_desc.load([
+            tile_id_m * BLOCK_SIZE_M + cur_rank * M_per_rank,
+            tile_id_n * BLOCK_SIZE_N
+        ])
         for i in range(1, num_splits):
             cur_rank = (i + begin_idx + 1) % num_splits
-            data = c_desc.load([tile_id_m * BLOCK_SIZE_M + cur_rank * M_per_rank, tile_id_n * BLOCK_SIZE_N])
+            data = c_desc.load([
+                tile_id_m * BLOCK_SIZE_M + cur_rank * M_per_rank,
+                tile_id_n * BLOCK_SIZE_N
+            ])
             accum += data
 
-        output_desc.store([tile_id_m * BLOCK_SIZE_M, tile_id_n * BLOCK_SIZE_N], accum)
+        output_desc.store([tile_id_m * BLOCK_SIZE_M, tile_id_n * BLOCK_SIZE_N],
+                          accum)
 
 
 def ring_reduce(
@@ -124,7 +134,8 @@ def ring_reduce(
     M_per_split = total_M // num_splits
     assert output.shape[0] == M_per_split and total_M % num_splits == 0
     if num_sms == -1:
-        grid = lambda META: (triton.cdiv(M_per_split, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
+        grid = lambda META: (triton.cdiv(M_per_split, META["BLOCK_SIZE_M"]) *
+                             triton.cdiv(N, META["BLOCK_SIZE_N"]), )
         with torch.cuda.stream(stream):
             kernel_ring_reduce[grid](
                 input,
@@ -139,7 +150,8 @@ def ring_reduce(
             )
     else:
         grid = lambda META: (min(
-            triton.cdiv(M_per_split, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), num_sms), )
+            triton.cdiv(M_per_split, META["BLOCK_SIZE_M"]) * triton.cdiv(
+                N, META["BLOCK_SIZE_N"]), num_sms), )
         with torch.cuda.stream(stream):
             kernel_ring_reduce[grid](
                 input,
@@ -156,7 +168,9 @@ def ring_reduce(
     return output
 
 
-def intra_node_scatter(input_intra_node, scatter_bufs_intra_node: List[torch.Tensor], local_rank, stream):
+def intra_node_scatter(input_intra_node,
+                       scatter_bufs_intra_node: List[torch.Tensor], local_rank,
+                       stream):
     M, N = input_intra_node.shape
     local_world_size = len(scatter_bufs_intra_node)
     M_per_rank = M // local_world_size
@@ -177,15 +191,18 @@ def intra_node_scatter(input_intra_node, scatter_bufs_intra_node: List[torch.Ten
             """
             remote_local_rank = (local_rank + i + 1) % local_world_size
 
-            remote_buf = scatter_bufs_intra_node[remote_local_rank][local_rank * M_per_rank:(local_rank + 1) *
-                                                                    M_per_rank, :]
-            local_buf = input_intra_node[remote_local_rank * M_per_rank:(remote_local_rank + 1) * M_per_rank, :]
+            remote_buf = scatter_bufs_intra_node[remote_local_rank][
+                local_rank * M_per_rank:(local_rank + 1) * M_per_rank, :]
+            local_buf = input_intra_node[remote_local_rank *
+                                         M_per_rank:(remote_local_rank + 1) *
+                                         M_per_rank, :]
             # use copy engine to perform scatter(torch will use `cudamemcpy` to copy continuous data)
             remote_buf.copy_(local_buf)
 
 
 @requires_p2p_native_atomic
-def reduce_scatter_intra_node(input, scatter_bufs, sync_buf, local_rank, local_world_size):
+def reduce_scatter_intra_node(input, scatter_bufs, sync_buf, local_rank,
+                              local_world_size):
 
     stream = torch.cuda.current_stream()
     M, N = input.shape
@@ -196,9 +213,11 @@ def reduce_scatter_intra_node(input, scatter_bufs, sync_buf, local_rank, local_w
     intra_node_scatter(input, scatter_bufs, local_rank, stream)
 
     # step 2: waits for all ranks to complete the scatter.
-    barrier_all_intra_node_atomic_cas_block[(1, )](local_rank, local_rank, local_world_size, sync_buf)
+    barrier_all_intra_node_atomic_cas_block[(1, )](local_rank, local_rank,
+                                                   local_world_size, sync_buf)
     # step 3: perform reduction to get the result of the intra-node reduce-scatter.
-    ring_reduce(scatter_bufs[local_rank], output, local_rank, local_world_size, stream)
+    ring_reduce(scatter_bufs[local_rank], output, local_rank, local_world_size,
+                stream)
     return output
 
 
@@ -207,14 +226,18 @@ def torch_rs(
     TP_GROUP,
 ):
     M, N = input.shape
-    rs_output = torch.empty((M // WORLD_SIZE, N), dtype=input.dtype, device=input.device)
+    rs_output = torch.empty((M // WORLD_SIZE, N),
+                            dtype=input.dtype,
+                            device=input.device)
     torch.distributed.reduce_scatter_tensor(rs_output, input, group=TP_GROUP)
     return rs_output
 
 
 if __name__ == "__main__":
     if not supports_p2p_native_atomic():
-        print("Skip because this testcase need P2P native atomic support. use `nvidia-smi topo -p2p a` to check it out")
+        print(
+            "Skip because this testcase need P2P native atomic support. use `nvidia-smi topo -p2p a` to check it out"
+        )
         import sys
         sys.exit()
 
@@ -233,22 +256,28 @@ if __name__ == "__main__":
 
     input = torch.rand((M, N), dtype=dtype).cuda()
 
-    symm_scatter_bufs = nvshmem_create_tensors([M, N], dtype, RANK, LOCAL_WORLD_SIZE)
-    symm_sync_buf = nvshmem_create_tensor((LOCAL_WORLD_SIZE, ), dtype=torch.int32)
+    symm_scatter_bufs = nvshmem_create_tensors([M, N], dtype, RANK,
+                                               LOCAL_WORLD_SIZE)
+    symm_sync_buf = nvshmem_create_tensor((LOCAL_WORLD_SIZE, ),
+                                          dtype=torch.int32)
     symm_sync_buf.fill_(0)
 
     torch_output = torch_rs(input, TP_GROUP)
 
     nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
 
-    dist_triton_output = reduce_scatter_intra_node(input, symm_scatter_bufs, symm_sync_buf, LOCAL_RANK,
+    dist_triton_output = reduce_scatter_intra_node(input, symm_scatter_bufs,
+                                                   symm_sync_buf, LOCAL_RANK,
                                                    LOCAL_WORLD_SIZE)
 
     nvshmem_barrier_all_on_stream(torch.cuda.current_stream())
     torch.cuda.synchronize()
 
     atol, rtol = 6e-2, 6e-2
-    torch.testing.assert_close(torch_output, dist_triton_output, atol=atol, rtol=rtol)
+    torch.testing.assert_close(torch_output,
+                               dist_triton_output,
+                               atol=atol,
+                               rtol=rtol)
     torch.cuda.synchronize()
     print(f"RANK {LOCAL_RANK}: pass!")
 

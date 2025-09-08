@@ -409,6 +409,7 @@ def create_gemm_rs_intra_node_context(max_M, N, output_dtype, rank, num_ranks, t
     scatter_bufs_ptr = torch.tensor([t.data_ptr() for t in scatter_bufs], device=torch.cuda.current_device(),
                                     requires_grad=False)
 
+    print("from gemm_reduce_scatter")
     torch.cuda.synchronize()
     torch.distributed.barrier()
 

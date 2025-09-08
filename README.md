@@ -33,7 +33,7 @@
     <img src="https://img.shields.io/badge/License-MIT-blue"></a>
 </p> -->
 
-[Original Triton README](upstream-README.md) | [README in Chinese](README-cn.md)
+[Original Triton README](https://github.com/triton-lang/triton/blob/main/README.md) | [README in Chinese](README-cn.md)
 
 Triton-distributed is a distributed compiler designed for computation-communication overlapping, which is based on OpenAI Triton.
 
@@ -42,9 +42,48 @@ Triton-distributed currently mainly targets Nvidia GPU and AMD GPU. It can also 
 Feel free to contact us if you want to use Triton-distributed on your own hardware.
 
 ## Getting started
-### Install Triton-distributed from source
 
-[Build Guide](docs/build.md)
+### Install Triton-distributed
+
+#### Method 1. From source
+
+See [build from source](docs/build.md).
+
+#### Method 2. Using pip
+
+Prepare PyTorch container
+
+```sh
+docker run --name triton-dist --ipc=host --network=host --privileged --cap-add=SYS_ADMIN --shm-size=10g --gpus=all -itd nvcr.io/nvidia/pytorch:25.04-py3 /bin/bash
+docker exec -it triton-dist /bin/bash
+```
+
+Install Dependencies
+
+```sh
+pip3 install cuda-python==12.4 setuptools==69.0.0 wheel pybind11
+```
+
+Then, pip install triton-dist.
+```sh
+# Remove triton installed with torch
+pip uninstall triton
+pip uninstall triton_dist # remove previous triton-dist
+rm -rf /usr/local/lib/python3.12/dist-packages/triton
+# Install Triton-distributed
+pip install https://github.com/ByteDance-Seed/Triton-distributed/releases/download/v0.0.1-rc/triton_dist-3.4.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+```
+
+### Latest News
+- 09/03/2025 ✨✨✨: Introduced Intra-Kernel Profiler, See the [doc](https://github.com/ByteDance-Seed/Triton-distributed/blob/main/docs/getting-started/profiler/intra_kernel_profiler.md) for details.
+- 08/24/2025 ⚡⚡⚡: Support inference acceleration for [ByteDance-Seed/Seed-OSS-36B-Instruct](https://huggingface.co/ByteDance-Seed/Seed-OSS-36B-Instruct), achieving a 1.33x speedup.
+- 08/13/2025 ✨✨✨: Introduced the MegaTritonKernel and provided a Qwen3 TP demo on H20/H800, See the [doc](https://github.com/ByteDance-Seed/Triton-distributed/blob/main/docs/getting-started/megakernel/megakernel.md) for details.
+- 08/06/2025 ✨✨✨: Support GEMM+AllReduce on H800 and support MoE operators on L20, see [GEMM+AR Test](https://github.com/ByteDance-Seed/Triton-distributed/blob/main/python/triton_dist/test/nvidia/test_gemm_ar.py) and [MOE Test](https://github.com/ByteDance-Seed/Triton-distributed/blob/main/python/triton_dist/test/nvidia/test_moe_reduce_rs.py) for detail.
+- 07/24/2025 🤖🤖🤖: Introduced end-to-end inference acceleration demo with unified support for both NVIDIA and AMD GPUs. See the [doc](https://github.com/ByteDance-Seed/Triton-distributed/blob/main/docs/getting-started/e2e/e2e_dense.md) for details.
+- 07/11/2025 ✨✨✨: Fast AllReduce implemented with Triton-distributed, see [AllReduce Test](https://github.com/ByteDance-Seed/Triton-distributed/blob/main/python/triton_dist/test/nvidia/test_allreduce.py).
+- 07/11/2025 ✨✨✨: Improved MoE operators for tensor parallel. See [AG+MoE Test](https://github.com/ByteDance-Seed/Triton-distributed/blob/main/python/triton_dist/test/nvidia/test_ag_moe.py) and [MoE+RS Test](https://github.com/ByteDance-Seed/Triton-distributed/blob/main/python/triton_dist/test/nvidia/test_moe_reduce_rs.py).
+- 07/11/2025 ✨✨✨: Triton 3.4 support with NVSHMEM4py ([MR](https://github.com/ByteDance-Seed/Triton-distributed/pull/54)). `pip install` is also supported without any need to modify NVSHMEM code.
+- 05/12/2025 🚀🚀🚀: Our paper `TileLink: Generating Efficient Compute-Communication Overlapping Kernels using Tile-Centric Primitives` accepted by MLSys 2025.
 
 ### How to use Triton-distributed
 Triton-distributed provides a set of easy-to use primitives to support the development of distributed compute-communication overlapping kernels. The primitives are divided into low-level primitives and high-level primitives. Currently, we have released our low-level primitives, and we plan to release high-level primitives in future.
@@ -167,11 +206,13 @@ The batch size is 1 (one query) for decoding.
 
 
 ## Roadmaps
+
 ### Functionalities
 - [x] Release low-level primitives
 - [ ] Release high-level primitives
-- [ ] Tutorials
-- [ ] Pre-built binary
+- [x] Tutorials
+- [x] Pre-built binary
+
 ### Kernels
 - [x] Release single-node GEMM TP overlapping kernels
 - [x] Release single-node MoE TP overlapping kernels
@@ -181,7 +222,8 @@ The batch size is 1 (one query) for decoding.
 - [x] Release cross-node MoE TP overlapping kernels
 - [x] Release cross-node distributed Flash-Decoding kernels
 - [x] Release cross-node EP all-to-all kernels (similar to [DeepEP](https://github.com/deepseek-ai/DeepEP))
-- [ ] Provide tutorials for kernel implementation
+- [x] Provide tutorials for kernel implementation
+
 ### Backends
 Computation
 - [x] Nvidia SM90a support
@@ -192,29 +234,35 @@ Computation
 Communication
 - [x] NVLink
 - [x] IB
-- [ ] PCIe
+- [x] PCIe
+
 ### Performance
-- [ ] Performance report
+- [x] Performance report
 
 ## License
 The Triton-distributed project is under MIT license.
 Part of our code is under Apache-2.0 License:
-- `python/triton_dist/kernels/nvidia/flash_decode.py`
-
-Triton's original code is partially under Apache-2.0 License, these files include:
-- `include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
-- `lib/Dialect/TritonGPU/Transforms/Pipeliner/PipelineExpander.cpp`
-- `python/triton/_C/include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
-- `utils/generate-test-checks.py`
+- `python/triton_dist/kernels/flash_decode.py`
 
 
 ## Citation
 If you use Triton-distributed in a scientific publication, we encourage you to add the following reference to the related papers:
 ```bibtex
-@misc{zheng2025tilelink,
-      title={TileLink: Generating Efficient Compute-Communication Overlapping Kernels using Tile-Centric Primitives},
-      author={Size Zheng, Jin Fang, Xuegui Zheng, Qi Hou, Wenlei Bao, Ningxin Zheng, Ziheng Jiang, Dongyang Wang, Jianxi Ye, Haibin Lin, Li-Wen Chang, Xin Liu},
+@misc{zheng2025tritondistributed,
+      title={Triton-distributed: Programming Overlapping Kernels on Distributed AI Systems with the Triton Compiler},
+      author={Size Zheng and Wenlei Bao and Qi Hou and Xuegui Zheng and Jin Fang and Chenhui Huang and Tianqi Li and Haojie Duanmu and Renze Chen and Ruifan Xu and Yifan Guo and Ningxin Zheng and Ziheng Jiang and Xinyi Di and Dongyang Wang and Jianxi Ye and Haibin Lin and Li-Wen Chang and Liqiang Lu and Yun Liang and Jidong Zhai and Xin Liu},
       year={2025},
+      eprint={2504.19442},
+      archivePrefix={arXiv},
+      primaryClass={cs.DC},
+      url={https://arxiv.org/abs/2504.19442},
+}
+
+@article{zheng2025tilelink,
+  title={Tilelink: Generating efficient compute-communication overlapping kernels using tile-centric primitives},
+  author={Zheng, Size and Fang, Jin and Zheng, Xuegui and Hou, Qi and Bao, Wenlei and Zheng, Ningxin and Jiang, Ziheng and Wang, Dongyang and Ye, Jianxi and Lin, Haibin and others},
+  journal={arXiv preprint arXiv:2503.20313},
+  year={2025}
 }
 ```
 

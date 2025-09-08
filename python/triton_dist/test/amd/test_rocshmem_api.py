@@ -153,7 +153,6 @@ if __name__ == "__main__":
         rank=RANK,
         timeout=datetime.timedelta(seconds=1800),
     )
-
     assert torch.distributed.is_initialized()
     TP_GROUP = torch.distributed.new_group(ranks=list(range(torch.distributed.get_world_size())), backend="nccl")
 

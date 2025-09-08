@@ -27,16 +27,57 @@ import triton.language as tl
 from triton.language.extra.cuda.language_extra import (
     st,
     pack_b32_v2,
-    globaltimer_lo,
-    smid,
-    membar,
 )
+
 from triton.language.core import to_tensor
+from triton.language import core
 
 NUM_BITS_ID = 20  # global_id = block_id * num_blocks + group_id
 NUM_BITS_TASK_TYPE = 11
 NUM_BITS_EVENT = 1  # only start/end
 NUM_BITS_PAYLOAD = 32
+
+
+@core.extern
+def globaltimer_lo(_semantic=None):
+    return tl.inline_asm_elementwise(
+        asm="mov.u32 $0, %globaltimer_lo;",
+        constraints=("=r"),
+        args=[],
+        dtype=tl.uint32,
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
+def smid(_semantic=None):
+    return tl.inline_asm_elementwise(
+        asm="mov.u32 $0, %smid;",
+        constraints=("=r"),
+        args=[],
+        dtype=tl.uint32,
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
+
+
+@core.extern
+def membar(scope: core.constexpr = core.constexpr("cta"), _semantic=None):
+    return tl.inline_asm_elementwise(
+        asm=f"""
+        membar.{scope.value};
+        mov.u32 $0, 0;
+        """,
+        constraints=("=r"),
+        args=[],
+        dtype=tl.uint32,
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
 
 
 @tl.core._aggregate
