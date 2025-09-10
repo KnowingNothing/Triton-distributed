@@ -139,6 +139,12 @@ function run_gdn_testcases() {
   USE_TRITON_DISTRIBUTED_AOT=1 bash scripts/launch.sh python/triton_dist/test/nvidia/test_gdn.py --num_heads 12
 }
 
+function run_a2a_single_gemm_testcases() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_all_to_all_single_gemm.py --M 7168 --N 9216 --K 3072 --dtype int8 --check --iters 10
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_all_to_all_single_gemm.py --M 7168 --N 9216 --K 3072 --dtype float8_e4m3fn --check --iters 10
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_all_to_all_single_gemm.py --M 7168 --N 9216 --K 3072 --dtype float8_e5m2 --check --iters 10
+}
+
 function run_utils_testcases() {
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_utils.py --case max_occupancy
 }
@@ -163,3 +169,4 @@ run_utils_testcases
 run_inductor_patch_testcases
 run_moe_reduce_ar_testcases
 run_gdn_testcases
+run_a2a_single_gemm_testcases
