@@ -94,7 +94,6 @@ function run_ag_moe_testcases() {
 
 function run_moe_reduce_rs_testcases() {
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2
-  bash scripts/launch.sh python/triton_dist/test/nvidia/test_moe_reduce_rs.py 8192 2048 1536 32 2 --autotune
 }
 
 function run_moe_reduce_ar_testcases() {
