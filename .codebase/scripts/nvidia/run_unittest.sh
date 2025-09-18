@@ -130,7 +130,10 @@ function run_gemm_ar_testcases() {
       NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 28000 7168 4096 --no-copy-to-local --num_comm_sms 4
       NVSHMEM_DISABLE_CUDA_VMM=0 bash ./scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 28000 7168 4096 --check --num_comm_sms 4
   else
-      echo "Skipping GEMM AR tests for GPU with compute capability lower than 9.0"
+       bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 1000 3584 3584
+       bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 1000 3584 3584 --low-latency
+       bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 1000 3584 3584 --check
+       bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_ar.py 1000 3584 3584 --low-latency --check
   fi
 }
 
