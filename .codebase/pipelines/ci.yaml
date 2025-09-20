@@ -20,7 +20,7 @@ jobs:
   # ===================================================================
   triton-amd-unittest:
     name: AMD Unit Tests
-    image: hub.byted.org/base/lab.bernard.llmserver_amd:3db122918aee545879df2fbb15635290
+    image: rocm/pytorch:rocm6.3_ubuntu22.04_py3.10_pytorch_release_2.4.0
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
       LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/home/code/shmem/rocshmem_bind/ompi_build/install/ompi/lib
@@ -42,6 +42,7 @@ jobs:
       - name: code-format-check
         commands:
           - bash .codebase/scripts/run_step.sh "pip3 install ninja black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "pip3 install hip-python==6.4.1.552.39  -i https://test.pypi.org/simple"
           - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
           - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
           - bash .codebase/scripts/run_step.sh "python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude '3rdparty/*,.codebase/*' --depth 10 --skip_git_commit_log"
@@ -61,7 +62,7 @@ jobs:
 
   triton-amd-e2e:
     name: AMD E2E Tests
-    image: hub.byted.org/base/lab.bernard.llmserver_amd:3db122918aee545879df2fbb15635290
+    image: rocm/pytorch:rocm6.3_ubuntu22.04_py3.10_pytorch_release_2.4.0
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
       LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/home/code/shmem/rocshmem_bind/ompi_build/install/ompi/lib
@@ -83,6 +84,7 @@ jobs:
       - name: code-format-check
         commands:
           - bash .codebase/scripts/run_step.sh "pip3 install ninja black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "pip3 install hip-python==6.4.1.552.39  -i https://test.pypi.org/simple"
           - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
           - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
           - bash .codebase/scripts/run_step.sh "python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude '3rdparty/*,.codebase/*' --depth 10 --skip_git_commit_log"
@@ -103,6 +105,7 @@ jobs:
               set -e
               export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
               wget https://tosv.byted.org/obj/hanshi-cn/hf_configs.zip
+              wget https://tosv.byted.org/obj/turing/dist_triton/flash_attn-2.8.1-cp310-cp310-linux_x86_64.whl -O ./flash_attn-2.8.1-cp310-cp310-linux_x86_64.whl && pip3 install ./flash_attn-2.8.1-cp310-cp310-linux_x86_64.whl
               sudo apt-get update
               sudo apt-get install -y unzip
               unzip hf_configs.zip -d .codebase/
@@ -112,7 +115,7 @@ jobs:
 
   triton-amd-tutorial:
     name: AMD Tutorial Tests
-    image: hub.byted.org/base/lab.bernard.llmserver_amd:3db122918aee545879df2fbb15635290
+    image: rocm/pytorch:rocm6.3_ubuntu22.04_py3.10_pytorch_release_2.4.0
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
       LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/home/code/shmem/rocshmem_bind/ompi_build/install/ompi/lib
@@ -134,6 +137,7 @@ jobs:
       - name: code-format-check
         commands:
           - bash .codebase/scripts/run_step.sh "pip3 install ninja black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
+          - bash .codebase/scripts/run_step.sh "pip3 install hip-python==6.4.1.552.39  -i https://test.pypi.org/simple"
           - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
           - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
           - bash .codebase/scripts/run_step.sh "python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude '3rdparty/*,.codebase/*' --depth 10 --skip_git_commit_log"
