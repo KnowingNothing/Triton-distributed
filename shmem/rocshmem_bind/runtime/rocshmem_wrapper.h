@@ -24,9 +24,16 @@
 
 extern "C" {
 
-__device__ int rocshmem_my_pe_wrapper();
+__device__ int __attribute__((visibility("default"))) rocshmem_my_pe_wrapper();
 
-__device__ int rocshmem_n_pes_wrapper();
+__device__ int __attribute__((visibility("default"))) rocshmem_n_pes_wrapper();
 
-__device__ void *rocshmem_ptr_wrapper(void *dest, int pe);
+__device__ void __attribute__((visibility("default")))
+rocshmem_int_p_wrapper(int *dest, int value, int pe);
+
+__device__ void *__attribute__((visibility("default")))
+rocshmem_ptr_wrapper(void *dest, int pe);
+
+__device__ void __attribute__((visibility("default")))
+rocshmem_set_ctx(void *ctx);
 }

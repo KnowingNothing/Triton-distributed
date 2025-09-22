@@ -19,7 +19,7 @@ jobs:
   # AMD Jobs
   # ===================================================================
   triton-amd-unittest:
-    name: AMD Unit Tests
+    name: AMD Unit Tests and Tutorial
     image: rocm/pytorch:rocm6.3_ubuntu22.04_py3.10_pytorch_release_2.4.0
     envs:
       PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
@@ -59,6 +59,9 @@ jobs:
       - name: unit tests
         commands:
           - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/amd/run_unittest.sh"
+      - name: tutorial tests
+        commands:
+          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/amd/run_tutorial_test.sh"
 
   triton-amd-e2e:
     name: AMD E2E Tests
@@ -112,48 +115,6 @@ jobs:
               bash ./scripts/build_e2e_env.sh
               bash -x .codebase/scripts/amd/run_e2e_test.sh
             "
-
-  triton-amd-tutorial:
-    name: AMD Tutorial Tests
-    image: rocm/pytorch:rocm6.3_ubuntu22.04_py3.10_pytorch_release_2.4.0
-    envs:
-      PYTHONPATH: $PYTHONPATH:/home/code/python:/home/code/shmem/rocshmem_bind/python/
-      LD_LIBRARY_PATH: $LD_LIBRARY_PATH:/home/code/shmem/rocshmem_bind/ompi_build/install/ompi/lib
-      http_proxy: http://sys-proxy-rd-relay.byted.org:3128
-      https_proxy: http://sys-proxy-rd-relay.byted.org:3128
-      PATH: /home/code/.local/bin:$PATH
-    runs-on:
-      cluster: triton_distributed_amd_109
-    steps:
-      - name: "Pre-flight Check"
-        commands:
-          - |
-            export PLATFORM="amd"
-            export JOB_TYPE="tutorial"
-            export BASE_SHA=${{Event.Change.Target.SHA}}
-            export HEAD_SHA=${{Event.Change.Source.SHA}}
-            python3 .codebase/scripts/pre_flight_check.py > ci_decision.txt
-            echo "--- Pre-flight check complete. Decision: $(cat ci_decision.txt) ---"
-      - name: code-format-check
-        commands:
-          - bash .codebase/scripts/run_step.sh "pip3 install ninja black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
-          - bash .codebase/scripts/run_step.sh "pip3 install hip-python==6.4.1.552.39  -i https://test.pypi.org/simple"
-          - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
-          - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
-          - bash .codebase/scripts/run_step.sh "python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude '3rdparty/*,.codebase/*' --depth 10 --skip_git_commit_log"
-      - name: build
-        commands:
-          - |
-            bash .codebase/scripts/run_step.sh "
-              set -e
-              python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
-              git submodule update --init --recursive
-              bash shmem/rocshmem_bind/build.sh
-              MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
-            "
-      - name: tutorial tests
-        commands:
-          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/amd/run_tutorial_test.sh"
 
   # ===================================================================
   # NVIDIA Jobs

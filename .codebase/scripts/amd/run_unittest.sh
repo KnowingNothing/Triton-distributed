@@ -9,6 +9,8 @@ pushd ${PROJECT_ROOT}
 export PYTHONPATH=$PYTHONPATH:$(realpath python)
 
 function run_unittest_testcases() {
+  # rocshmem api tests
+  bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_rocshmem_api.py
   # distributed ops
   bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_distributed-notify-wait.py
   # ag gemm

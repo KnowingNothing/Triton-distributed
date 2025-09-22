@@ -1,6 +1,6 @@
 [submodule "3rdparty/triton"]
 	path = 3rdparty/triton
-	url = https://github.com/triton-lang/triton.git
+	url = https://github.com/ByteDance-Seed/triton.git
 [submodule "3rdparty/rocshmem"]
 	path = 3rdparty/rocshmem
 	url = https://github.com/ROCm/rocSHMEM.git

@@ -25,11 +25,18 @@
 import sys
 
 
+def set_rocshmem_ctx(ctx):
+    """ROCSHMEM only"""
+    ...
+
+
 def my_pe():
+    """Both NVSHMEM and ROCSHMEM"""
     ...
 
 
 def n_pes():
+    """Both NVSHMEM and ROCSHMEM"""
     ...
 
 
@@ -42,10 +49,12 @@ def team_n_pes(team):
 
 
 def int_p(dest, value, pe):
+    """Both NVSHMEM and ROCSHMEM"""
     ...
 
 
 def remote_ptr(local_ptr, pe):
+    """Both NVSHMEM and ROCSHMEM"""
     ...
 
 
@@ -338,8 +347,3 @@ NVSHMEMI_TEAM_GPU_LEADERS = 5
 NVSHMEM_TEAM_GPU_LEADERS_INDEX = 5
 NVSHMEM_TEAMS_MIN = 6
 NVSHMEM_TEAM_INDEX_MAX = sys.maxsize
-
-
-## TODO: add rocshmem
-def set_rocshmem_ctx(ctx):
-    ...
