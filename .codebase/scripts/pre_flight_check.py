@@ -71,17 +71,16 @@ def get_required_suite(changed_files: List[str]) -> Dict[str, Set[str]]:
                 {"e2e"},
             ),
             "Unit Test Change":
-            (r"test/nvidia/.*unittest|run_unittest\.sh|patch_torch_compile|monkey_inductor",
+            (r"test/nvidia/*|run_unittest\.sh|patch_torch_compile|monkey_inductor",
              {"unittest"}),
             "Internal Test Change": (r"run_m10_related_tests\.sh",
                                      {"internal"}),
         },
         "amd": {
             "Layer Change": (r"python/triton_dist/layers/amd/", {"e2e"}),
-            "Unit Test Change":
-            (r"test/amd/.*unittest|run_unittest\.sh", {"unittest"}),
+            "Unit Test Change": (r"test/amd/*|run_unittest\.sh", {"unittest"}),
             "E2E Test Change": (
-                r"test/amd/.*(e2e|tp_attn|tp_mlp|tp_moe)|run_e2e_test\.sh",
+                r"test/amd/*|run_e2e_test\.sh",
                 {"e2e"},
             ),
         }

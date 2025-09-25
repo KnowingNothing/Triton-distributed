@@ -42,7 +42,6 @@ jobs:
       - name: code-format-check
         commands:
           - bash .codebase/scripts/run_step.sh "pip3 install ninja black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
-          - bash .codebase/scripts/run_step.sh "pip3 install hip-python==6.4.1.552.39  -i https://test.pypi.org/simple"
           - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
           - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
           - bash .codebase/scripts/run_step.sh "python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude '3rdparty/*,.codebase/*' --depth 10 --skip_git_commit_log"
@@ -53,6 +52,9 @@ jobs:
               set -e
               python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
               git submodule update --init --recursive
+              export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
+              wget https://tosv.byted.org/obj/hanshi-cn/hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
+              pip3 install hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
               bash shmem/rocshmem_bind/build.sh
               MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
             "
@@ -87,7 +89,6 @@ jobs:
       - name: code-format-check
         commands:
           - bash .codebase/scripts/run_step.sh "pip3 install ninja black 'clang-format==20.1.8' pre-commit ruff yapf==0.43 chardet"
-          - bash .codebase/scripts/run_step.sh "pip3 install hip-python==6.4.1.552.39  -i https://test.pypi.org/simple"
           - bash .codebase/scripts/run_step.sh "./code-format.sh --show-only --fail-on-diff --target ${{Event.Change.Source.SHA}} --base ${{Event.Change.Target.SHA}}"
           - bash .codebase/scripts/run_step.sh "python3 scripts/check_license.py"
           - bash .codebase/scripts/run_step.sh "python3 .codebase/scripts/check/opensource_check.py --repo_folder_path . --exclude '3rdparty/*,.codebase/*' --depth 10 --skip_git_commit_log"
@@ -98,6 +99,9 @@ jobs:
               set -e
               python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
               git submodule update --init --recursive
+              export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
+              wget https://tosv.byted.org/obj/hanshi-cn/hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
+              pip3 install hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
               bash shmem/rocshmem_bind/build.sh
               MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
             "
