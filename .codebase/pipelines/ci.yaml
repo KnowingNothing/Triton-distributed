@@ -117,6 +117,9 @@ jobs:
               sudo apt-get install -y unzip
               unzip hf_configs.zip -d .codebase/
               bash ./scripts/build_e2e_env.sh
+              echo 'Waiting 6min for unit tests finish...'
+              sleep 6m
+              echo 'Resuming e2e test'
               bash -x .codebase/scripts/amd/run_e2e_test.sh
             "
 
