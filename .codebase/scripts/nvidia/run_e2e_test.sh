@@ -60,6 +60,11 @@ function run_e2e_testcases_moe() {
   bash scripts/launch.sh --nproc_per_node=4 python/triton_dist/test/nvidia/test_e2e_inference.py --bsz 4096 --gen_len 128 --max_length 150 --model ${MOE_MODEL} --backend triton_dist
 }
 
+function run_e2e_testcases_pp() {
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_pp_block.py --bsz 8 --seq_len 128 --num_blocks 4 --pp_size 4 --model ${DENSE_MODEL}
+}
+
 export RANDOM_PARAMS=1
 run_e2e_testcases_dense
 run_e2e_testcases_moe
+run_e2e_testcases_pp
