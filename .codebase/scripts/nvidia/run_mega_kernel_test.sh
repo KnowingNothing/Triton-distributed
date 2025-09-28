@@ -12,6 +12,8 @@ export PYTHONPATH=$PYTHONPATH:$(realpath python)
 DENSE_MODEL=".codebase/hf_configs/Qwen/Qwen3-0.6B"
 
 function run_mega_kernel_testcases() {
+  python3 python/triton_dist/mega_triton_kernel/test/ops/test_attn_layer.py --skip_rmsnorm
+  python3 python/triton_dist/mega_triton_kernel/test/ops/test_attn_layer.py
   python3 python/triton_dist/mega_triton_kernel/test/ops/test_mlp_layer.py
   python3 python/triton_dist/mega_triton_kernel/test/ops/test_mlp_layer.py --enable_runtime_scheduler
   python3 python/triton_dist/mega_triton_kernel/test/ops/test_rms_norm.py
