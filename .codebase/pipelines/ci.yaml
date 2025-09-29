@@ -27,6 +27,7 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
+      TRITON_BUILD_PROTON: "0"
     runs-on:
       cluster: triton_distributed_amd_109
     steps:
@@ -74,6 +75,7 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
+      TRITON_BUILD_PROTON: "0"
     runs-on:
       cluster: triton_distributed_amd_109
     steps:
