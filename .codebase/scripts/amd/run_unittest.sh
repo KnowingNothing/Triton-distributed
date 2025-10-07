@@ -17,6 +17,8 @@ function run_unittest_testcases() {
   bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096
   # gemm rs
   bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_gemm_rs_intra_node.py 8192 4096 12288
+  # gemm ar
+  bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_gemm_ar_intra_node.py 8192 4096 12288 --stress
 }
 
 run_unittest_testcases
