@@ -14,7 +14,10 @@ function run_unittest_testcases() {
   # distributed ops
   bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_distributed-notify-wait.py
   # ag gemm
-  bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096
+  bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096 --stress
+  # for MI300X
+  bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096 --use_copy_kernel --stress
+  bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_ag_gemm_intra_node.py 8192 11008 4096 --use_copy_kernel --use_fused_kernel --stress
   # gemm rs
   bash ./scripts/launch_amd.sh ./python/triton_dist/test/amd/test_gemm_rs_intra_node.py 8192 4096 12288
   # gemm ar

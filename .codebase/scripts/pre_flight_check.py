@@ -1,3 +1,4 @@
+# PLATFORM=amd JOB_TYPE=e2e BASE_SHA=c78832a5958b7a20eaa1d8d283286638b48d19c4 python3 .codebase/scripts/pre_flight_check.py
 import os
 import sys
 import subprocess
@@ -34,7 +35,7 @@ def get_required_suite(changed_files: List[str]) -> Dict[str, Set[str]]:
             "platforms": {"nvidia", "amd"}
         }
 
-    IGNORE_PATTERNS = r"(\.md|LICENSE|README)$|^(docs/|asset/)|^\.codebase/scripts/(pre_flight_check\.py|check_ci_run\.sh|run_step\.sh)$|^code-format\.sh$"
+    IGNORE_PATTERNS = r"(\.md|LICENSE|README)$|^(docs/|asset/)|^\.codebase/scripts/(pre_flight_check\.py|check_ci_run\.sh|run_step\.sh)$|^code-format\.sh$|.gitignore"
 
     PATTERNS = {
         "generic": {
@@ -71,7 +72,7 @@ def get_required_suite(changed_files: List[str]) -> Dict[str, Set[str]]:
                 {"e2e"},
             ),
             "Unit Test Change":
-            (r"kernels/nvidia/*|test/nvidia/*|run_unittest\.sh|patch_torch_compile|monkey_inductor",
+            (r"kernels/nvidia/*|test/nvidia/*|nvidia/run_unittest\.sh|patch_torch_compile|monkey_inductor",
              {"unittest"}),
             "Internal Test Change": (r"run_m10_related_tests\.sh",
                                      {"internal"}),
@@ -79,7 +80,7 @@ def get_required_suite(changed_files: List[str]) -> Dict[str, Set[str]]:
         "amd": {
             "Layer Change": (r"python/triton_dist/layers/amd/", {"e2e"}),
             "Unit Test Change":
-            (r"kernels/amd/*|test/amd/*|run_unittest\.sh", {"unittest"}),
+            (r"kernels/amd/*|test/amd/*|amd/run_unittest\.sh", {"unittest"}),
             "E2E Test Change": (
                 r"test/amd/*|run_e2e_test\.sh",
                 {"e2e"},
