@@ -54,7 +54,7 @@ jobs:
               python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
               git submodule update --init --recursive
               export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
-              wget https://tosv.byted.org/obj/hanshi-cn/hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
+              wget --no-verbose https://tosv.byted.org/obj/hanshi-cn/hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
               pip3 install hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
               bash shmem/rocshmem_bind/build.sh
               MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
@@ -102,7 +102,7 @@ jobs:
               python3 -m pip install scipy==1.10.1 setuptools==69.0.0 pybind11
               git submodule update --init --recursive
               export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
-              wget https://tosv.byted.org/obj/hanshi-cn/hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
+              wget --no-verbose https://tosv.byted.org/obj/hanshi-cn/hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
               pip3 install hip_python-6.4.1.552.39-cp310-cp310-manylinux_2_17_x86_64.whl
               bash shmem/rocshmem_bind/build.sh
               MAX_JOBS=126 pip3 install -e python[build,tests,tutorials] --verbose --no-build-isolation --use-pep517
@@ -113,8 +113,8 @@ jobs:
             bash .codebase/scripts/run_step.sh "
               set -e
               export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
-              wget https://tosv.byted.org/obj/hanshi-cn/hf_configs.zip
-              wget https://tosv.byted.org/obj/turing/dist_triton/flash_attn-2.8.1-cp310-cp310-linux_x86_64.whl -O ./flash_attn-2.8.1-cp310-cp310-linux_x86_64.whl && pip3 install ./flash_attn-2.8.1-cp310-cp310-linux_x86_64.whl
+              wget --no-verbose https://tosv.byted.org/obj/hanshi-cn/hf_configs.zip
+              wget --no-verbose https://tosv.byted.org/obj/turing/dist_triton/flash_attn-2.8.1-cp310-cp310-linux_x86_64.whl -O ./flash_attn-2.8.1-cp310-cp310-linux_x86_64.whl && pip3 install ./flash_attn-2.8.1-cp310-cp310-linux_x86_64.whl
               sudo apt-get update
               sudo apt-get install -y unzip
               unzip hf_configs.zip -d .codebase/
@@ -136,6 +136,7 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
+      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-h100
       docker:
@@ -194,9 +195,9 @@ jobs:
             bash .codebase/scripts/run_step.sh "
               set -e
               export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
-              wget https://tosv.byted.org/obj/hanshi-cn/hf_configs.zip
+              wget --no-verbose https://tosv.byted.org/obj/hanshi-cn/hf_configs.zip
               unzip hf_configs.zip -d .codebase/
-              wget https://tosv.byted.org/obj/hanshi-cn/flashinfer_python-0.2.5%2Bcu124torch2.4-cp38-abi3-linux_x86_64.whl
+              wget --no-verbose https://tosv.byted.org/obj/hanshi-cn/flashinfer_python-0.2.5%2Bcu124torch2.4-cp38-abi3-linux_x86_64.whl
               bash ./scripts/build_e2e_env.sh
               bash -x .codebase/scripts/nvidia/run_e2e_test.sh
             "
@@ -209,6 +210,7 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
+      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-h100
       docker:
@@ -276,6 +278,7 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
+      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-h100
       docker:
@@ -334,9 +337,9 @@ jobs:
             bash .codebase/scripts/run_step.sh "
               set -e
               export http_proxy=http://sys-proxy-rd-relay.byted.org:3128 https_proxy=http://sys-proxy-rd-relay.byted.org:3128 no_proxy=code.byted.org
-              wget https://tosv.byted.org/obj/hanshi-cn/hf_configs.zip
+              wget --no-verbose https://tosv.byted.org/obj/hanshi-cn/hf_configs.zip
               unzip hf_configs.zip -d .codebase/
-              wget https://tosv.byted.org/obj/hanshi-cn/flashinfer_python-0.2.5%2Bcu124torch2.4-cp38-abi3-linux_x86_64.whl
+              wget --no-verbose https://tosv.byted.org/obj/hanshi-cn/flashinfer_python-0.2.5%2Bcu124torch2.4-cp38-abi3-linux_x86_64.whl
               bash ./scripts/build_e2e_env.sh
               bash -x .codebase/scripts/nvidia/run_mega_kernel_test.sh
             "
@@ -349,6 +352,7 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
+      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-h100
       docker:
@@ -416,6 +420,7 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
+      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-l20
       docker:

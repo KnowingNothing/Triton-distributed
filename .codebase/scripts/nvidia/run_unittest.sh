@@ -41,21 +41,21 @@ function run_inductor_patch_testcases() {
 }
 
 function run_ag_gemm_testcases() {
-  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case check
 if [ -z "$L20_NO_RUN" ]; then
-  bash scripts/launch.sh --nproc_per_node 2 python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness --local_world_size 2
+  bash scripts/launch.sh --nproc_per_node 2 python/triton_dist/test/nvidia/test_ag_gemm.py --case check
 fi
-  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness_autotune
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case check --autotune
 if [ -z "$L20_NO_RUN" ]; then
-  bash scripts/launch.sh --nproc_per_node 4 python/triton_dist/test/nvidia/test_ag_gemm.py --case correctness_autotune --local_world_size 2
+  bash scripts/launch.sh --nproc_per_node 4 python/triton_dist/test/nvidia/test_ag_gemm.py --case check --autotune
 fi
 }
 
 function run_gemm_rs_testcases() {
-  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568
-  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py 8192 8192 29568 --check
-  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py 4096 4096 12288 --fuse_scatter --check
-  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py 4096 4096 12288 --fuse_scatter --no-persistent --check
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py -M 8192 -N 8192 -K 29568
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py -M 8192 -N 8192 -K 29568 --check
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py -M 4096 -N 4096 -K 12288 --fuse_scatter --check
+  bash scripts/launch.sh python/triton_dist/test/nvidia/test_gemm_rs.py -M 4096 -N 4096 -K 12288 --fuse_scatter --no-persistent --check
 }
 
 function run_allgather_testcases() {
