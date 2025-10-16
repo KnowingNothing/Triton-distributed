@@ -136,7 +136,6 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
-      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-h100
       docker:
@@ -210,7 +209,6 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
-      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-h100
       docker:
@@ -278,7 +276,6 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
-      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-h100
       docker:
@@ -352,7 +349,6 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
-      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-h100
       docker:
@@ -420,7 +416,6 @@ jobs:
       http_proxy: http://sys-proxy-rd-relay.byted.org:3128
       https_proxy: http://sys-proxy-rd-relay.byted.org:3128
       PATH: /home/code/.local/bin:$PATH
-      TRITON_DIST_SKIP_WAIT_GPU_CLOCK: 1
     runs-on:
       cluster: gpu-l20
       docker:
@@ -488,7 +483,7 @@ jobs:
       - name: unit tests
         # if: 0 # skip this steps and run on Merlin
         commands:
-          - bash .codebase/scripts/run_step.sh "L20_NO_RUN=1 bash -x .codebase/scripts/nvidia/run_unittest.sh"
+          - bash .codebase/scripts/run_step.sh "bash -x .codebase/scripts/nvidia/run_unittest.sh"
 
   # ===================================================================
   # Compile Check Jobs

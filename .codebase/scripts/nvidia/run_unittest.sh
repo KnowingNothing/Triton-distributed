@@ -42,13 +42,9 @@ function run_inductor_patch_testcases() {
 
 function run_ag_gemm_testcases() {
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case check
-if [ -z "$L20_NO_RUN" ]; then
   bash scripts/launch.sh --nproc_per_node 2 python/triton_dist/test/nvidia/test_ag_gemm.py --case check
-fi
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_gemm.py --case check --autotune
-if [ -z "$L20_NO_RUN" ]; then
   bash scripts/launch.sh --nproc_per_node 4 python/triton_dist/test/nvidia/test_ag_gemm.py --case check --autotune
-fi
 }
 
 function run_gemm_rs_testcases() {
@@ -59,9 +55,7 @@ function run_gemm_rs_testcases() {
 }
 
 function run_allgather_testcases() {
-if [ -z "$L20_NO_RUN" ]; then
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_ag_small_msg.py
-fi
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_all_gather.py
   bash scripts/launch.sh python/triton_dist/test/nvidia/test_fast_allgather.py --iters 10 --warmup_iters 20 --mode push_2d_ll --minbytes 4096 --maxbytes 8192
 }
@@ -151,7 +145,7 @@ function run_a2a_single_gemm_testcases() {
 }
 
 function run_utils_testcases() {
-  bash scripts/launch.sh python/triton_dist/test/nvidia/test_utils.py --case max_occupancy
+  python3 python/triton_dist/test/nvidia/test_utils.py --case max_occupancy
 }
 
 # run all cases
